@@ -1,10 +1,8 @@
-# AshareInsight - A股智能分析平台
-
-![AshareInsight Banner](https://via.placeholder.com/1200x300/ff6699/ffffff?text=AshareInsight)
+# FuckAshare - A股智能分析平台
 
 ## 项目简介
 
-AshareInsight（原名FuckAshare）是一个基于PHP和Python的股票数据查询与AI分析平台，专为A股投资者设计。该平台集成了股票数据查询、AI智能分析、资金流向排名等功能，帮助投资者快速获取股票行情数据并获得专业的投资建议。
+FuckAshare 是一个基于PHP和Python的股票数据查询与AI分析平台，专为A股投资者设计。该平台集成了股票数据查询、AI智能分析、资金流向排名等功能，帮助投资者快速获取股票行情数据并获得专业的投资建议。
 
 ## 功能特点
 
@@ -44,8 +42,8 @@ AshareInsight（原名FuckAshare）是一个基于PHP和Python的股票数据查
 1. **克隆仓库到本地**
 
 ```bash
-git clone https://github.com/yourusername/AshareInsight.git
-cd AshareInsight
+git clone https://github.com/yourusername/FuckAshare.git
+cd FuckAshare
 ```
 
 2. **安装Python依赖**
@@ -93,7 +91,7 @@ chmod 755 -R ./*
 ## 文件结构
 
 ```
-AshareInsight/
+FuckAshare/
 ├── index.php          # 网站主页
 ├── api.php            # 股票数据API接口
 ├── ai_api.php         # AI分析接口
