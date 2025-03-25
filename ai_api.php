@@ -29,7 +29,7 @@ $sessionId = isset($input['session_id']) ? $input['session_id'] : session_id();
 //$chatHistoryFile = $chatHistoryDir . '/' . $sessionId . '.json';
 
 // DeepSeek API 配置
-$apiKey = 'sk-6e20ac384fe241048de4d28f02e115e3'; // API密钥
+$apiKey = 'sk-11111111111111111111111111111111111'; // API密钥
 $apiUrl = 'https://api.deepseek.com/chat/completions';
 
 // 获取模型选择，默认使用 deepseek-chat
