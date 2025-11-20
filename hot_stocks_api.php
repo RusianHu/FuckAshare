@@ -55,8 +55,9 @@ function fetchHotStocks() {
             $lastError = $error ? '请求失败: ' . $error : '服务器返回错误状态码: ' . $httpCode;
         }
         
-        // 记录切换密钥日志
-        error_log("密钥 $key 请求失败，错误: $lastError，尝试下一个密钥");
+        // 记录切换密钥日志（使用临时变量防止未定义警告）
+        $logLastError = isset($lastError) ? $lastError : '未知错误';
+        error_log("密钥 $key 请求失败，错误: {$logLastError}，尝试下一个密钥");
     }
     
     // 所有密钥都失败了，返回错误信息
