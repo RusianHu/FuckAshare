@@ -60,11 +60,19 @@ pip install pandas requests
 
 4. **配置AI API密钥**
 
-修改 `ai_api.php` 文件中的 API 密钥：
+复制示例文件并填入你的 API 密钥：
+
+```bash
+cp ai_api.php.example ai_api.php
+```
+
+然后修改 `ai_api.php` 文件中的 API 密钥：
 
 ```php
 $apiKey = 'your-deepseek-api-key';
 ```
+
+> ⚠️ **安全提示**：`ai_api.php` 已被加入 `.gitignore`，不会被提交到仓库。请勿将包含真实 API 密钥的文件提交到版本控制中。如需共享配置，请修改 `ai_api.php.example`。
 
 5. **确保文件权限**
 
@@ -96,7 +104,7 @@ chmod 755 -R ./*
 FuckAshare/
 ├── index.php          # 网站主页
 ├── api.php            # 股票数据API接口
-├── ai_api.php         # AI分析接口
+├── ai_api.php.example # AI分析接口示例配置（需复制为ai_api.php并填入密钥）
 ├── hot_stocks_api.php # 热门股票API接口
 ├── get_stock_data.py  # Python股票数据获取脚本
 ├── Ashare.py          # 股票数据核心库
