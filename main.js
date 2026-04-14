@@ -1,396 +1,1241 @@
-// 安全降级：如果 CDN 未加载 marked 或 DOMPurify，则提供简单占位实现，避免整页报错
+// ============================================================
+// FuckAshare - A股智能分析平台 主脚本
+// ============================================================
+
+// 安全降级
 if (typeof window !== 'undefined') {
     if (typeof window.marked === 'undefined') {
-        window.marked = {
-            parse: function (text) { return text; },
-            setOptions: function () {},
-            Renderer: function () {}
-        };
-        console.warn('marked.js 未加载，已使用降级版解析（仅原样显示文本）');
+        window.marked = { parse: t => t, setOptions: () => {}, Renderer: function(){} };
     }
     if (typeof window.DOMPurify === 'undefined') {
-        window.DOMPurify = {
-            sanitize: function (html) { return html; }
-        };
-        console.warn('DOMPurify 未加载，已使用降级版 sanitize（不进行XSS过滤，仅用于本地调试）');
+        window.DOMPurify = { sanitize: h => h };
     }
 }
 
-
-// 全局变量
-let userInput;
-let chatContainer;
-let messageHistory;
-let currentSessionId;
-
-// 全局配置
-const CONFIG = {
-    // 超级查询时最多查询的股票数量，设为null则不限制
-    maxQueryStocks: 50
+// ============================================================
+// 全局状态
+// ============================================================
+const APP = {
+    // AI聊天
+    chatContainer: null,
+    userInput: null,
+    messageHistory: [{ role: 'system', content: '你是一位专业的股票分析师，擅长解读股票数据并给出建议。' }],
+    currentSessionId: null,
+    // 图表
+    chart: null,
+    candleSeries: null,
+    volumeSeries: null,
+    indicatorSeries: {},
+    currentStockCode: '',
+    currentStockData: [],
+    // 自选股
+    watchlist: JSON.parse(localStorage.getItem('fa_watchlist') || '[]'),
+    // 自选基金
+    fundWatchlist: JSON.parse(localStorage.getItem('fa_fund_watchlist') || '[]'),
+    // 实时看板
+    realtimeCodes: JSON.parse(localStorage.getItem('fa_realtime_codes') || '[]'),
+    realtimeTimer: null,
+    // 超级查询
+    allStocksData: {},
+    // 查询时是否触发AI分析
+    queryWithAI: false,
+    // 配置
+    config: { maxQueryStocks: 50, autoRefreshInterval: 30 }
 };
 
-// 格式化成交量
-function formatVolume(volume) {
-    if (volume >= 100000000) {
-        return (volume / 100000000).toFixed(2) + '亿';
-    } else if (volume >= 10000) {
-        return (volume / 10000).toFixed(2) + '万';
-    } else {
-        return volume;
+// ============================================================
+// 工具函数
+// ============================================================
+function formatVolume(v) {
+    v = parseFloat(v);
+    if (isNaN(v)) return '-';
+    if (v >= 1e8) return (v / 1e8).toFixed(2) + '亿';
+    if (v >= 1e4) return (v / 1e4).toFixed(2) + '万';
+    return v.toFixed(0);
+}
+
+function formatAmount(n) {
+    n = parseFloat(n);
+    if (isNaN(n)) return '-';
+    if (Math.abs(n) >= 1e8) return (n / 1e8).toFixed(2) + '亿';
+    if (Math.abs(n) >= 1e4) return (n / 1e4).toFixed(2) + '万';
+    return n.toFixed(2);
+}
+
+function formatPct(v) {
+    v = parseFloat(v);
+    if (isNaN(v)) return '-';
+    return (v >= 0 ? '+' : '') + v.toFixed(2) + '%';
+}
+
+function colorClass(v) {
+    v = parseFloat(v);
+    if (v > 0) return 'up';
+    if (v < 0) return 'down';
+    return 'flat';
+}
+
+function colorStyle(v) {
+    v = parseFloat(v);
+    if (v > 0) return 'color:var(--price-up)';
+    if (v < 0) return 'color:var(--price-down)';
+    return 'color:var(--price-flat)';
+}
+
+// 股票代码转东方财富secid格式
+function codeToSecid(code) {
+    code = code.trim();
+    if (code.includes('.XSHG')) return '1.' + code.replace('.XSHG', '');
+    if (code.includes('.XSHE')) return '0.' + code.replace('.XSHE', '');
+    if (code.toLowerCase().startsWith('sh')) return '1.' + code.substring(2);
+    if (code.toLowerCase().startsWith('sz')) return '0.' + code.substring(2);
+    if (/^6\d{5}$/.test(code)) return '1.' + code;
+    if (/^(0|3)\d{5}$/.test(code)) return '0.' + code;
+    return '1.' + code;
+}
+
+// 标准化股票代码为 sh/sz 格式
+function normalizeCode(code) {
+    code = code.trim();
+    if (code.includes('.XSHG')) return 'sh' + code.replace('.XSHG', '');
+    if (code.includes('.XSHE')) return 'sz' + code.replace('.XSHE', '');
+    if (/^[0-9]{6}$/.test(code)) {
+        return (code.startsWith('6') ? 'sh' : 'sz') + code;
     }
+    return code.toLowerCase();
 }
 
-// 自动向AI发送数据
-function autoSendToAI(message) {
-    // 确保消息记录到历史
-    messageHistory.push({ role: 'user', content: message });
-
-    // 向聊天界面添加用户消息
-    appendMessage(message, null, 'user-message');
-
-    const loadingMessage = appendMessage('思考中...', null, 'loading-message');
-
-    let seconds = 0;
-    const timer = setInterval(() => {
-        seconds++;
-        loadingMessage.textContent = `思考中... ${seconds}s`;
-    }, 1000);
-
-    sendToAI(loadingMessage, timer);
-}
-
-// 添加消息到聊天容器
-function appendMessage(content, reasoningContent, className) {
-    if (!chatContainer) return null;
-    const container = document.createElement('div');
-    container.classList.add('message', className);
-
-    if (className === 'user-message') {
-        const contentDiv = document.createElement('div');
-        contentDiv.classList.add('content');
-        contentDiv.textContent = content;
-        container.appendChild(contentDiv);
-    } else {
-        if (reasoningContent) {
-            const reasoningDiv = document.createElement('div');
-            reasoningDiv.classList.add('reasoning-content');
-            reasoningDiv.innerHTML = DOMPurify.sanitize(marked.parse(reasoningContent));
-            container.appendChild(reasoningDiv);
+// ============================================================
+// 技术指标计算
+// ============================================================
+const Indicators = {
+    // 移动平均线
+    MA(data, period) {
+        const result = [];
+        for (let i = 0; i < data.length; i++) {
+            if (i < period - 1) { result.push(null); continue; }
+            let sum = 0;
+            for (let j = i - period + 1; j <= i; j++) sum += data[j];
+            result.push(sum / period);
         }
+        return result;
+    },
 
-        if (content) {
-            const contentDiv = document.createElement('div');
-            contentDiv.classList.add('content');
-            contentDiv.innerHTML = DOMPurify.sanitize(marked.parse(content));
-            container.appendChild(contentDiv);
+    // EMA指数移动平均
+    EMA(data, period) {
+        const result = [];
+        const k = 2 / (period + 1);
+        result[0] = data[0];
+        for (let i = 1; i < data.length; i++) {
+            result[i] = data[i] * k + result[i - 1] * (1 - k);
         }
+        return result;
+    },
+
+    // MACD
+    MACD(closes, fast = 12, slow = 26, signal = 9) {
+        const emaFast = this.EMA(closes, fast);
+        const emaSlow = this.EMA(closes, slow);
+        const dif = emaFast.map((v, i) => v - emaSlow[i]);
+        const dea = this.EMA(dif, signal);
+        const macd = dif.map((v, i) => (v - dea[i]) * 2);
+        return { dif, dea, macd };
+    },
+
+    // RSI
+    RSI(closes, period = 14) {
+        const result = [];
+        let gains = 0, losses = 0;
+        for (let i = 0; i < closes.length; i++) {
+            if (i === 0) { result.push(null); continue; }
+            const change = closes[i] - closes[i - 1];
+            if (i <= period) {
+                if (change > 0) gains += change; else losses -= change;
+                if (i < period) { result.push(null); continue; }
+                const avgGain = gains / period;
+                const avgLoss = losses / period;
+                result.push(avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss));
+            } else {
+                const prevGain = result[i - 1] !== null ? (100 / (100 - result[i - 1]) - 1) : 0;
+                const avgGain = (prevGain * (period - 1) + (change > 0 ? change : 0)) / period;
+                const avgLoss = (prevGain * (period - 1) + (change < 0 ? -change : 0)) / period;
+                result.push(avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss));
+            }
+        }
+        return result;
+    },
+
+    // KDJ
+    KDJ(highs, lows, closes, n = 9, m1 = 3, m2 = 3) {
+        const K = [], D = [], J = [];
+        let prevK = 50, prevD = 50;
+        for (let i = 0; i < closes.length; i++) {
+            if (i < n - 1) { K.push(null); D.push(null); J.push(null); continue; }
+            let highN = -Infinity, lowN = Infinity;
+            for (let j = i - n + 1; j <= i; j++) {
+                highN = Math.max(highN, highs[j]);
+                lowN = Math.min(lowN, lows[j]);
+            }
+            const rsv = highN === lowN ? 50 : (closes[i] - lowN) / (highN - lowN) * 100;
+            const k = (2 / m1) * prevK + (1 / m1) * rsv;
+            const d = (2 / m2) * prevD + (1 / m2) * k;
+            const j = 3 * k - 2 * d;
+            K.push(k); D.push(d); J.push(j);
+            prevK = k; prevD = d;
+        }
+        return { k: K, d: D, j: J };
+    },
+
+    // BOLL布林带
+    BOLL(closes, period = 20, mult = 2) {
+        const mid = this.MA(closes, period);
+        const upper = [], lower = [];
+        for (let i = 0; i < closes.length; i++) {
+            if (mid[i] === null) { upper.push(null); lower.push(null); continue; }
+            let sum = 0;
+            for (let j = i - period + 1; j <= i; j++) sum += (closes[j] - mid[i]) ** 2;
+            const std = Math.sqrt(sum / period);
+            upper.push(mid[i] + mult * std);
+            lower.push(mid[i] - mult * std);
+        }
+        return { mid, upper, lower };
     }
+};
 
-    chatContainer.appendChild(container);
-    chatContainer.scrollTop = chatContainer.scrollHeight;
-    return container;
-}
+// ============================================================
+// 图表模块
+// ============================================================
+const ChartModule = {
+    indicatorSeries: {},
+    init() {
+        const container = document.getElementById('chart-container');
+        if (!container || typeof LightweightCharts === 'undefined') return;
 
-// 发送到AI API
-async function sendToAI(loadingMessage, timer) {
-    try {
-        const response = await fetch('ai_api.php', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                session_id: currentSessionId,
-                messages: messageHistory,
-                stream: true,
-                model: 'deepseek-chat'
-            })
+        this.chart = LightweightCharts.createChart(container, {
+            width: container.clientWidth,
+            height: container.clientHeight,
+            layout: {
+                background: { type: 'solid', color: '#0d1117' },
+                textColor: '#8b949e',
+                fontSize: 12,
+            },
+            grid: {
+                vertLines: { color: '#1c2128' },
+                horzLines: { color: '#1c2128' },
+            },
+            crosshair: {
+                mode: LightweightCharts.CrosshairMode.Normal,
+                vertLine: { color: '#30363d', width: 1, style: 2 },
+                horzLine: { color: '#30363d', width: 1, style: 2 },
+            },
+            rightPriceScale: { borderColor: '#30363d' },
+            timeScale: { borderColor: '#30363d', timeVisible: true },
         });
 
-        if (!response.ok) {
-            // 处理HTTP错误状态
-            const errorText = await response.text();
-            throw new Error(`服务器返回错误(${response.status}): ${errorText}`);
+        this.candleSeries = this.chart.addCandlestickSeries({
+            upColor: '#f85149', downColor: '#3fb950',
+            borderUpColor: '#f85149', borderDownColor: '#3fb950',
+            wickUpColor: '#f85149', wickDownColor: '#3fb950',
+        });
+
+        // 成交量
+        this.volumeSeries = this.chart.addHistogramSeries({
+            priceFormat: { type: 'volume' },
+            priceScaleId: 'vol',
+        });
+        this.chart.priceScale('vol').applyOptions({
+            scaleMargins: { top: 0.8, bottom: 0 },
+        });
+
+        // 响应式
+        const ro = new ResizeObserver(() => {
+            this.chart.applyOptions({ width: container.clientWidth, height: container.clientHeight });
+        });
+        ro.observe(container);
+    },
+
+    // 更新K线数据
+    updateData(data) {
+        if (!this.candleSeries) return;
+        APP.currentStockData = data;
+
+        const candleData = data.map(row => ({
+            time: row.time,
+            open: parseFloat(row.open),
+            high: parseFloat(row.high),
+            low: parseFloat(row.low),
+            close: parseFloat(row.close),
+        }));
+
+        const volumeData = data.map(row => ({
+            time: row.time,
+            value: parseFloat(row.volume),
+            color: parseFloat(row.close) >= parseFloat(row.open) ? 'rgba(248,81,73,0.4)' : 'rgba(63,185,80,0.4)',
+        }));
+
+        this.candleSeries.setData(candleData);
+        this.volumeSeries.setData(volumeData);
+
+        // 计算并显示技术指标
+        this.updateIndicators(data);
+        this.chart.timeScale().fitContent();
+    },
+
+    updateIndicators(data) {
+        // 清除旧的指标线
+        Object.values(this.indicatorSeries).forEach(s => { try { this.chart.removeSeries(s); } catch(e){} });
+        this.indicatorSeries = {};
+
+        const closes = data.map(r => parseFloat(r.close));
+        const highs = data.map(r => parseFloat(r.high));
+        const lows = data.map(r => parseFloat(r.low));
+        const times = data.map(r => r.time);
+
+        // MA均线
+        if (document.getElementById('ind-ma')?.checked) {
+            [5, 10, 20, 60].forEach((period, idx) => {
+                const ma = Indicators.MA(closes, period);
+                const colors = ['#f0883e', '#58a6ff', '#bc8cff', '#3fb950'];
+                const series = this.chart.addLineSeries({
+                    priceLineVisible: false, lastValueVisible: false,
+                    color: colors[idx], lineWidth: 1,
+                });
+                series.setData(ma.map((v, i) => v !== null ? { time: times[i], value: v } : null).filter(Boolean));
+                this.indicatorSeries['ma' + period] = series;
+            });
         }
 
-        if (!response.body) {
-            throw new Error('无法获取响应数据流');
+        // BOLL布林带
+        if (document.getElementById('ind-boll')?.checked) {
+            const boll = Indicators.BOLL(closes);
+            ['upper', 'mid', 'lower'].forEach((key, idx) => {
+                const colors = ['rgba(248,81,73,0.5)', 'rgba(210,153,34,0.8)', 'rgba(63,185,80,0.5)'];
+                const series = this.chart.addLineSeries({
+                    priceLineVisible: false, lastValueVisible: false,
+                    color: colors[idx], lineWidth: 1, lineStyle: idx === 1 ? 0 : 2,
+                });
+                series.setData(boll[key].map((v, i) => v !== null ? { time: times[i], value: v } : null).filter(Boolean));
+                this.indicatorSeries['boll_' + key] = series;
+            });
         }
 
-        const reader = response.body.getReader();
-        let botMessageDiv = appendMessage('', '', 'bot-message');
-        let decoder = new TextDecoder('utf-8');
-        let fullBotResponse = '';
-        let fullReasoningContent = '';
-        let isError = false;
+        // MACD
+        if (document.getElementById('ind-macd')?.checked) {
+            const macd = Indicators.MACD(closes);
+            const macdSeries = this.chart.addHistogramSeries({
+                priceFormat: { type: 'price', precision: 3 },
+                priceScaleId: 'macd',
+            });
+            this.chart.priceScale('macd').applyOptions({
+                scaleMargins: { top: 0.85, bottom: 0 },
+            });
+            macdSeries.setData(macd.macd.map((v, i) => ({
+                time: times[i],
+                value: v,
+                color: v >= 0 ? 'rgba(248,81,73,0.6)' : 'rgba(63,185,80,0.6)',
+            })));
+            this.indicatorSeries['macd_hist'] = macdSeries;
 
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
+            const difSeries = this.chart.addLineSeries({
+                priceLineVisible: false, lastValueVisible: false,
+                color: '#f0883e', lineWidth: 1, priceScaleId: 'macd',
+            });
+            difSeries.setData(macd.dif.map((v, i) => ({ time: times[i], value: v })));
+            this.indicatorSeries['macd_dif'] = difSeries;
 
-            const chunk = decoder.decode(value, { stream: true });
-            const lines = chunk.split('\n');
+            const deaSeries = this.chart.addLineSeries({
+                priceLineVisible: false, lastValueVisible: false,
+                color: '#58a6ff', lineWidth: 1, priceScaleId: 'macd',
+            });
+            deaSeries.setData(macd.dea.map((v, i) => ({ time: times[i], value: v })));
+            this.indicatorSeries['macd_dea'] = deaSeries;
+        }
 
-            for (const line of lines) {
-                if (line.trim() === '') continue;
+        // RSI
+        if (document.getElementById('ind-rsi')?.checked) {
+            const rsi = Indicators.RSI(closes);
+            const rsiSeries = this.chart.addLineSeries({
+                priceLineVisible: false, lastValueVisible: false,
+                color: '#bc8cff', lineWidth: 1, priceScaleId: 'rsi',
+            });
+            this.chart.priceScale('rsi').applyOptions({
+                scaleMargins: { top: 0.85, bottom: 0 },
+            });
+            rsiSeries.setData(rsi.map((v, i) => v !== null ? { time: times[i], value: v } : null).filter(Boolean));
+            this.indicatorSeries['rsi'] = rsiSeries;
+        }
 
-                if (line.trim() === 'data: [DONE]') {
-                    messageHistory.push({
-                        role: 'assistant',
-                        content: fullBotResponse
-                    });
-                    clearInterval(timer);
-                    chatContainer.removeChild(loadingMessage);
-                    return;
+        // KDJ
+        if (document.getElementById('ind-kdj')?.checked) {
+            const kdj = Indicators.KDJ(highs, lows, closes);
+            const kdjScale = 'kdj';
+            ['k', 'd', 'j'].forEach((key, idx) => {
+                const colors = ['#f0883e', '#58a6ff', '#bc8cff'];
+                const series = this.chart.addLineSeries({
+                    priceLineVisible: false, lastValueVisible: false,
+                    color: colors[idx], lineWidth: 1, priceScaleId: kdjScale,
+                });
+                series.setData(kdj[key].map((v, i) => v !== null ? { time: times[i], value: v } : null).filter(Boolean));
+                this.indicatorSeries['kdj_' + key] = series;
+            });
+            this.chart.priceScale(kdjScale).applyOptions({
+                scaleMargins: { top: 0.85, bottom: 0 },
+            });
+        }
+    },
+
+    // 重新绘制指标
+    refreshIndicators() {
+        if (APP.currentStockData.length > 0) {
+            this.updateIndicators(APP.currentStockData);
+        }
+    }
+};
+
+// ============================================================
+// 实时行情面板
+// ============================================================
+const QuoteModule = {
+    async fetch(code) {
+        try {
+            const secid = codeToSecid(code);
+            const resp = await fetch(`stock_quote_api.php?codes=${encodeURIComponent(code)}`);
+            const data = await resp.json();
+            if (data.success && data.data.length > 0) return data.data[0];
+            return null;
+        } catch (e) { console.error('获取实时行情失败:', e); return null; }
+    },
+
+    render(quote) {
+        const el = document.getElementById('quote-content');
+        if (!quote) { el.innerHTML = '<p class="placeholder-text">暂无行情数据</p>'; return; }
+
+        const pctClass = colorClass(quote.change_pct);
+        el.innerHTML = `
+            <div class="quote-stock-name">
+                <span>${quote.name || '-'}</span>
+                <span style="font-size:0.8rem;color:var(--text-muted);font-family:var(--font-mono)">${quote.code}</span>
+            </div>
+            <div class="quote-price-big ${pctClass}">${quote.price > 0 ? quote.price.toFixed(2) : '-'}</div>
+            <div class="quote-change ${pctClass}">
+                ${formatPct(quote.change_pct)} ${quote.change_amt > 0 ? '+' : ''}${quote.change_amt.toFixed(2)}
+            </div>
+            <div class="quote-grid">
+                <span class="q-label">开盘</span><span class="q-value">${quote.open > 0 ? quote.open.toFixed(2) : '-'}</span>
+                <span class="q-label">最高</span><span class="q-value up">${quote.high > 0 ? quote.high.toFixed(2) : '-'}</span>
+                <span class="q-label">收盘</span><span class="q-value">${quote.close > 0 ? quote.close.toFixed(2) : '-'}</span>
+                <span class="q-label">最低</span><span class="q-value down">${quote.low > 0 ? quote.low.toFixed(2) : '-'}</span>
+                <span class="q-label">昨收</span><span class="q-value">${quote.prev_close > 0 ? quote.prev_close.toFixed(2) : '-'}</span>
+                <span class="q-label">振幅</span><span class="q-value">${quote.amplitude > 0 ? quote.amplitude.toFixed(2) + '%' : '-'}</span>
+                <span class="q-label">换手率</span><span class="q-value">${quote.turnover_rate > 0 ? quote.turnover_rate.toFixed(2) + '%' : '-'}</span>
+                <span class="q-label">成交额</span><span class="q-value">${formatAmount(quote.amount)}</span>
+                <span class="q-label">PE(TTM)</span><span class="q-value">${quote.pe_ttm > 0 ? quote.pe_ttm.toFixed(2) : '-'}</span>
+                <span class="q-label">PB</span><span class="q-value">${quote.pb > 0 ? quote.pb.toFixed(2) : '-'}</span>
+                <span class="q-label">总市值</span><span class="q-value">${formatAmount(quote.total_mv)}</span>
+            </div>
+        `;
+    }
+};
+
+// ============================================================
+// 资金流向面板
+// ============================================================
+const FlowModule = {
+    async fetch(code) {
+        try {
+            const resp = await fetch(`stock_flow_api.php?code=${encodeURIComponent(code)}`);
+            const data = await resp.json();
+            if (data.success) return data.data;
+            return [];
+        } catch (e) { console.error('获取资金流向失败:', e); return []; }
+    },
+
+    render(flowData) {
+        const el = document.getElementById('flow-content');
+        if (!flowData || flowData.length === 0) {
+            el.innerHTML = '<p class="placeholder-text">暂无资金流向数据</p>';
+            return;
+        }
+
+        // 取最近一天的数据
+        const latest = flowData[flowData.length - 1];
+        const items = [
+            { label: '主力', value: latest.main_net_inflow },
+            { label: '超大单', value: latest.super_net_inflow },
+            { label: '大单', value: latest.big_net_inflow },
+            { label: '中单', value: latest.mid_net_inflow },
+            { label: '小单', value: latest.small_net_inflow },
+        ];
+
+        const maxVal = Math.max(...items.map(i => Math.abs(i.value)), 1);
+
+        let html = `<div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:8px">日期: ${latest.time}</div><div class="flow-bars">`;
+        items.forEach(item => {
+            const isInflow = item.value >= 0;
+            const pct = Math.abs(item.value) / maxVal * 100;
+            html += `
+                <div class="flow-bar-item">
+                    <span class="flow-bar-label">${item.label}</span>
+                    <div class="flow-bar-track">
+                        <div class="flow-bar-fill ${isInflow ? 'inflow' : 'outflow'}" style="width:${pct}%"></div>
+                    </div>
+                    <span class="flow-bar-value ${colorClass(item.value)}">${formatAmount(item.value)}</span>
+                </div>
+            `;
+        });
+        html += '</div>';
+        el.innerHTML = html;
+    }
+};
+
+// ============================================================
+// 自选股模块
+// ============================================================
+const WatchlistModule = {
+    save() {
+        localStorage.setItem('fa_watchlist', JSON.stringify(APP.watchlist));
+        document.getElementById('watchlist-count').textContent = APP.watchlist.length;
+    },
+
+    add(code, name) {
+        code = normalizeCode(code);
+        if (APP.watchlist.find(w => w.code === code)) return;
+        APP.watchlist.push({ code, name: name || code });
+        this.save();
+        this.render();
+    },
+
+    remove(code) {
+        APP.watchlist = APP.watchlist.filter(w => w.code !== code);
+        this.save();
+        this.render();
+    },
+
+    has(code) {
+        return APP.watchlist.some(w => w.code === normalizeCode(code));
+    },
+
+    render() {
+        const container = document.getElementById('watchlist-items');
+        if (APP.watchlist.length === 0) {
+            container.innerHTML = '<p class="placeholder-text">暂无自选股</p>';
+            return;
+        }
+        let html = '';
+        APP.watchlist.forEach(w => {
+            html += `
+                <div class="wl-item" data-code="${w.code}">
+                    <div class="wl-item-info" onclick="WatchlistModule.query('${w.code}')">
+                        <div class="wl-item-name">${w.name}</div>
+                        <div class="wl-item-code">${w.code}</div>
+                    </div>
+                    <div class="wl-item-price" id="wl-price-${w.code.replace('.', '')}">-</div>
+                    <button class="wl-item-remove" onclick="WatchlistModule.remove('${w.code}')">✕</button>
+                </div>
+            `;
+        });
+        container.innerHTML = html;
+
+        // 异步刷新价格
+        this.refreshPrices();
+    },
+
+    async refreshPrices() {
+        for (const w of APP.watchlist) {
+            try {
+                const resp = await fetch(`stock_quote_api.php?codes=${encodeURIComponent(w.code)}`);
+                const data = await resp.json();
+                if (data.success && data.data.length > 0) {
+                    const q = data.data[0];
+                    const el = document.getElementById('wl-price-' + w.code.replace('.', ''));
+                    if (el) {
+                        el.innerHTML = `
+                            <div class="wl-item-pct" style="${colorStyle(q.change_pct)}">${formatPct(q.change_pct)}</div>
+                            <div class="wl-item-val">${q.price > 0 ? q.price.toFixed(2) : '-'}</div>
+                        `;
+                    }
                 }
+            } catch(e) {}
+        }
+    },
 
-                if (line.startsWith('data:')) {
-                    try {
-                        const json = JSON.parse(line.slice(5).trim());
+    query(code) {
+        document.getElementById('code').value = code;
+        document.getElementById('frequency').value = '1d';
+        document.getElementById('count').value = '120';
+        // 切换到股票tab
+        switchTab('stock');
+        document.getElementById('stockForm').dispatchEvent(new Event('submit'));
+        // 关闭侧边栏
+        document.getElementById('watchlist-sidebar').classList.remove('open');
+        document.getElementById('watchlist-overlay').classList.remove('open');
+    }
+};
 
-                        // 检查是否有错误信息
-                        if (json.error) {
-                            isError = true;
-                            const errorMessage = json.error.message || JSON.stringify(json.error);
-                            fullBotResponse = `**错误信息:** ${errorMessage}`;
+// ============================================================
+// 实时看板模块
+// ============================================================
+const RealtimeModule = {
+    init() {
+        this.render();
+        this.startAutoRefresh();
+    },
 
-                            const contentDiv = botMessageDiv.querySelector('.content');
-                            if (contentDiv) {
-                                contentDiv.innerHTML = DOMPurify.sanitize(marked.parse(fullBotResponse));
-                            } else {
-                                const newContentDiv = document.createElement('div');
-                                newContentDiv.classList.add('content');
-                                newContentDiv.innerHTML = DOMPurify.sanitize(marked.parse(fullBotResponse));
-                                botMessageDiv.appendChild(newContentDiv);
-                            }
-                            continue;
-                        }
+    addCode(code) {
+        code = normalizeCode(code);
+        if (!APP.realtimeCodes.includes(code)) {
+            APP.realtimeCodes.push(code);
+            localStorage.setItem('fa_realtime_codes', JSON.stringify(APP.realtimeCodes));
+        }
+        this.refresh();
+    },
 
-                        if (json.choices && json.choices[0] && json.choices[0].delta) {
-                            const delta = json.choices[0].delta;
+    removeCode(code) {
+        APP.realtimeCodes = APP.realtimeCodes.filter(c => c !== code);
+        localStorage.setItem('fa_realtime_codes', JSON.stringify(APP.realtimeCodes));
+        this.render();
+    },
 
-                            if (delta.content) {
-                                fullBotResponse += delta.content;
-                                const contentDiv = botMessageDiv.querySelector('.content');
-                                if (contentDiv) {
-                                    contentDiv.innerHTML = DOMPurify.sanitize(marked.parse(fullBotResponse));
-                                } else {
-                                    const newContentDiv = document.createElement('div');
-                                    newContentDiv.classList.add('content');
-                                    newContentDiv.innerHTML = DOMPurify.sanitize(marked.parse(delta.content));
-                                    botMessageDiv.appendChild(newContentDiv);
-                                }
-                            }
-                            if (delta.reasoning_content) {
-                                fullReasoningContent += delta.reasoning_content;
-                                const reasoningDiv = botMessageDiv.querySelector('.reasoning-content');
-                                if (reasoningDiv) {
-                                    reasoningDiv.textContent += delta.reasoning_content;
-                                } else {
-                                    const newReasoningDiv = document.createElement('div');
-                                    newReasoningDiv.classList.add('reasoning-content');
-                                    newReasoningDiv.textContent = fullReasoningContent;
-                                    botMessageDiv.insertBefore(newReasoningDiv, botMessageDiv.firstChild);
-                                }
-                            }
-                        }
-                    } catch (err) {
-                        console.error('解析流式数据失败:', err);
-                        // 尝试显示原始错误数据
+    async refresh() {
+        if (APP.realtimeCodes.length === 0) { this.render(); return; }
+        const codesStr = APP.realtimeCodes.join(',');
+        try {
+            const resp = await fetch(`stock_quote_api.php?codes=${encodeURIComponent(codesStr)}`);
+            const data = await resp.json();
+            if (data.success) {
+                this.renderCards(data.data);
+            }
+        } catch(e) { console.error('刷新实时行情失败:', e); }
+    },
+
+    render() {
+        const grid = document.getElementById('realtime-grid');
+        if (APP.realtimeCodes.length === 0) {
+            grid.innerHTML = '<p class="placeholder-text">点击"添加"按钮输入股票代码，或从自选股添加</p>';
+            return;
+        }
+        this.refresh();
+    },
+
+    renderCards(stocks) {
+        const grid = document.getElementById('realtime-grid');
+        let html = '';
+        stocks.forEach(s => {
+            const cls = colorClass(s.change_pct);
+            html += `
+                <div class="realtime-card" onclick="document.getElementById('code').value='${s.code}';switchTab('stock');document.getElementById('stockForm').dispatchEvent(new Event('submit'));">
+                    <button class="rc-remove" onclick="event.stopPropagation();RealtimeModule.removeCode('${s.code}')">✕</button>
+                    <div class="rc-name">${s.name}</div>
+                    <div class="rc-code">${s.code}</div>
+                    <div class="rc-price ${cls}">${s.price > 0 ? s.price.toFixed(2) : '-'}</div>
+                    <div class="rc-change ${cls}">${formatPct(s.change_pct)}</div>
+                    <div class="rc-details">
+                        <span>开盘</span><span>${s.open > 0 ? s.open.toFixed(2) : '-'}</span>
+                        <span>最高</span><span style="${colorStyle(s.high - s.prev_close)}">${s.high > 0 ? s.high.toFixed(2) : '-'}</span>
+                        <span>最低</span><span style="${colorStyle(s.low - s.prev_close)}">${s.low > 0 ? s.low.toFixed(2) : '-'}</span>
+                        <span>成交额</span><span>${formatAmount(s.amount)}</span>
+                        <span>换手率</span><span>${s.turnover_rate > 0 ? s.turnover_rate.toFixed(2) + '%' : '-'}</span>
+                        <span>PE</span><span>${s.pe_ttm > 0 ? s.pe_ttm.toFixed(1) : '-'}</span>
+                    </div>
+                </div>
+            `;
+        });
+        grid.innerHTML = html || '<p class="placeholder-text">暂无数据</p>';
+    },
+
+    startAutoRefresh() {
+        let countdown = APP.config.autoRefreshInterval;
+        const timerEl = document.getElementById('auto-refresh-timer');
+        if (APP.realtimeTimer) clearInterval(APP.realtimeTimer);
+        APP.realtimeTimer = setInterval(() => {
+            countdown--;
+            if (timerEl) timerEl.textContent = `自动刷新: ${countdown}s`;
+            if (countdown <= 0) {
+                countdown = APP.config.autoRefreshInterval;
+                this.refresh();
+            }
+        }, 1000);
+    }
+};
+
+// ============================================================
+// 板块资金模块
+// ============================================================
+const SectorModule = {
+    async query() {
+        const type = document.getElementById('sector-type').value;
+        const period = document.getElementById('sector-period').value;
+        const loading = document.getElementById('sector-loading');
+        loading.style.display = 'flex';
+
+        try {
+            const resp = await fetch(`sector_flow_api.php?key=${period}&type=${type}`);
+            const data = await resp.json();
+            loading.style.display = 'none';
+            if (data.success) {
+                this.renderBar(data.data);
+                this.renderTable(data.data);
+            } else {
+                document.getElementById('sector-bar-chart').innerHTML = `<p class="placeholder-text">${data.message}</p>`;
+            }
+        } catch(e) {
+            loading.style.display = 'none';
+            console.error('获取板块数据失败:', e);
+        }
+    },
+
+    renderBar(sectors) {
+        const container = document.getElementById('sector-bar-chart');
+        // 取前20
+        const top = sectors.slice(0, 20);
+        const maxVal = Math.max(...top.map(s => Math.abs(s.net_inflow_today)), 1);
+
+        let html = '';
+        top.forEach((s, i) => {
+            const isInflow = s.net_inflow_today >= 0;
+            const pct = Math.abs(s.net_inflow_today) / maxVal * 100;
+            html += `
+                <div class="sector-bar-item">
+                    <span class="sector-bar-rank">${i + 1}</span>
+                    <span class="sector-bar-name">${s.name}</span>
+                    <div class="sector-bar-track">
+                        <div class="sector-bar-fill ${isInflow ? 'inflow' : 'outflow'}" style="width:${pct}%"></div>
+                    </div>
+                    <span class="sector-bar-value ${colorClass(s.net_inflow_today)}">${formatAmount(s.net_inflow_today)}</span>
+                </div>
+            `;
+        });
+        container.innerHTML = html;
+    },
+
+    renderTable(sectors) {
+        const table = document.getElementById('sector-table');
+        const tbody = document.getElementById('sector-data');
+        tbody.innerHTML = '';
+        sectors.forEach((s, i) => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td>${i + 1}</td>
+                <td>${s.name}</td>
+                <td class="${colorClass(s.change_pct)}">${formatPct(s.change_pct)}</td>
+                <td class="${colorClass(s.net_inflow_today)}">${formatAmount(s.net_inflow_today)}</td>
+                <td class="${colorClass(s.main_net_inflow)}">${formatAmount(s.main_net_inflow)}</td>
+                <td class="${colorClass(s.super_net_inflow)}">${formatAmount(s.super_net_inflow)}</td>
+                <td class="${colorClass(s.big_net_inflow)}">${formatAmount(s.big_net_inflow)}</td>
+                <td>${s.turnover_rate > 0 ? s.turnover_rate.toFixed(2) + '%' : '-'}</td>
+            `;
+            tbody.appendChild(tr);
+        });
+        table.style.display = 'table';
+    }
+};
+
+// ============================================================
+// 基金模块
+// ============================================================
+const FundModule = {
+    async search() {
+        const keyword = document.getElementById('fund-search-input').value.trim();
+        if (!keyword) return;
+        const loading = document.getElementById('fund-loading');
+        loading.style.display = 'flex';
+
+        try {
+            const resp = await fetch(`fund_search_api.php?key=${encodeURIComponent(keyword)}`);
+            const data = await resp.json();
+            loading.style.display = 'none';
+            if (data.success) {
+                this.renderSearchResults(data.data);
+            }
+        } catch(e) {
+            loading.style.display = 'none';
+            console.error('搜索基金失败:', e);
+        }
+    },
+
+    renderSearchResults(funds) {
+        const container = document.getElementById('fund-search-results');
+        if (funds.length === 0) {
+            container.innerHTML = '<p class="placeholder-text">未找到相关基金</p>';
+            return;
+        }
+        let html = '';
+        funds.forEach(f => {
+            const inWl = APP.fundWatchlist.some(w => w.code === f.code);
+            html += `
+                <div class="fund-card">
+                    <div class="fc-name">${f.name}</div>
+                    <div class="fc-code">${f.code}</div>
+                    <span class="fc-type">${f.type || '-'}</span>
+                    <div class="fc-nav">${f.nav || '-'}</div>
+                    <div class="fc-meta">${f.company || ''} · ${f.manager || ''}</div>
+                    <div class="fc-actions">
+                        <button class="btn-sm ${inWl ? '' : 'btn-star'}" onclick="FundModule.addToWatchlist('${f.code}','${f.name}')">
+                            ${inWl ? '已添加' : '⭐ 加自选'}
+                        </button>
+                    </div>
+                </div>
+            `;
+        });
+        container.innerHTML = html;
+    },
+
+    addToWatchlist(code, name) {
+        if (APP.fundWatchlist.some(w => w.code === code)) return;
+        APP.fundWatchlist.push({ code, name });
+        localStorage.setItem('fa_fund_watchlist', JSON.stringify(APP.fundWatchlist));
+        this.renderWatchlist();
+        // 刷新搜索结果按钮
+        const keyword = document.getElementById('fund-search-input')?.value.trim();
+        if (keyword) this.search();
+    },
+
+    removeFromWatchlist(code) {
+        APP.fundWatchlist = APP.fundWatchlist.filter(w => w.code !== code);
+        localStorage.setItem('fa_fund_watchlist', JSON.stringify(APP.fundWatchlist));
+        this.renderWatchlist();
+    },
+
+    async renderWatchlist() {
+        const container = document.getElementById('fund-watchlist');
+        if (APP.fundWatchlist.length === 0) {
+            container.innerHTML = '<p class="placeholder-text">搜索基金后可添加到自选</p>';
+            return;
+        }
+
+        let html = '';
+        // 批量获取估值
+        for (const f of APP.fundWatchlist) {
+            let estimate = null;
+            try {
+                const resp = await fetch(`fund_estimate_api.php?code=${f.code}`);
+                const data = await resp.json();
+                if (data.success) estimate = data.data;
+            } catch(e) {}
+
+            const pctClass = estimate ? colorClass(parseFloat(estimate.gszzl)) : '';
+            html += `
+                <div class="fund-wl-item">
+                    <div class="fund-wl-info">
+                        <div class="fund-wl-name">${f.name}</div>
+                        <div class="fund-wl-code">${f.code}</div>
+                    </div>
+                    <div class="fund-wl-estimate">
+                        ${estimate ? `
+                            <div class="fund-wl-gsz">${estimate.gsz}</div>
+                            <div class="fund-wl-gszzl ${pctClass}">${formatPct(parseFloat(estimate.gszzl))}</div>
+                            <div class="fund-wl-time">${estimate.gztime}</div>
+                        ` : '<span style="color:var(--text-muted)">暂无估值</span>'}
+                    </div>
+                    <button class="fund-wl-remove" onclick="FundModule.removeFromWatchlist('${f.code}')">✕</button>
+                </div>
+            `;
+        }
+        container.innerHTML = html;
+    }
+};
+
+// ============================================================
+// AI聊天模块
+// ============================================================
+const AIModule = {
+    autoSend(message) {
+        APP.messageHistory.push({ role: 'user', content: message });
+        this.appendMessage(message, null, 'user-message');
+        const loadingMsg = this.appendMessage('思考中...', null, 'loading-message');
+        let seconds = 0;
+        const timer = setInterval(() => {
+            seconds++;
+            loadingMsg.textContent = `思考中... ${seconds}s`;
+        }, 1000);
+        this.sendToAI(loadingMsg, timer);
+    },
+
+    appendMessage(content, reasoningContent, className) {
+        if (!APP.chatContainer) return null;
+        const div = document.createElement('div');
+        div.classList.add('message', className);
+        if (className === 'user-message') {
+            const contentDiv = document.createElement('div');
+            contentDiv.classList.add('content');
+            contentDiv.textContent = content;
+            div.appendChild(contentDiv);
+        } else {
+            if (reasoningContent) {
+                const rd = document.createElement('div');
+                rd.classList.add('reasoning-content');
+                rd.innerHTML = DOMPurify.sanitize(marked.parse(reasoningContent));
+                div.appendChild(rd);
+            }
+            if (content) {
+                const cd = document.createElement('div');
+                cd.classList.add('content');
+                cd.innerHTML = DOMPurify.sanitize(marked.parse(content));
+                div.appendChild(cd);
+            }
+        }
+        APP.chatContainer.appendChild(div);
+        APP.chatContainer.scrollTop = APP.chatContainer.scrollHeight;
+        return div;
+    },
+
+    /**
+     * 更新 bot 消息气泡中的 reasoning 区域
+     */
+    _updateReasoning(botDiv, fullReasoning) {
+        let rd = botDiv.querySelector('.reasoning-content');
+        if (!rd) {
+            rd = document.createElement('div');
+            rd.classList.add('reasoning-content');
+            botDiv.insertBefore(rd, botDiv.firstChild);
+        }
+        // 推理内容用纯文本显示，避免大量 Markdown 解析卡顿
+        rd.textContent = fullReasoning;
+    },
+
+    /**
+     * 更新 bot 消息气泡中的 content 区域
+     */
+    _updateContent(botDiv, fullResponse) {
+        let cd = botDiv.querySelector('.content');
+        if (!cd) {
+            cd = document.createElement('div');
+            cd.classList.add('content');
+            botDiv.appendChild(cd);
+        }
+        cd.innerHTML = DOMPurify.sanitize(marked.parse(fullResponse));
+        APP.chatContainer.scrollTop = APP.chatContainer.scrollHeight;
+    },
+
+    async sendToAI(loadingMessage, timer) {
+        try {
+            // 渠道和模型由后端 ai_api.php 的 $defaultChannel 统一控制
+            const response = await fetch('ai_api.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    session_id: APP.currentSessionId,
+                    messages: APP.messageHistory,
+                    stream: true
+                })
+            });
+
+            if (!response.ok) throw new Error(`服务器错误(${response.status})`);
+            if (!response.body) throw new Error('无法获取响应流');
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder('utf-8');
+            let botDiv = this.appendMessage('', '', 'bot-message');
+            let fullResponse = '';
+            let fullReasoning = '';
+            let streamDone = false;
+
+            // SSE 行缓冲区：处理跨 chunk 的行分割
+            let lineBuffer = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                // 将新数据追加到行缓冲区，按换行拆分
+                lineBuffer += decoder.decode(value, { stream: true });
+                const lines = lineBuffer.split('\n');
+
+                // 最后一个元素可能是不完整的行，保留到下次处理
+                lineBuffer = lines.pop() || '';
+
+                for (const line of lines) {
+                    const trimmed = line.trim();
+                    if (!trimmed) continue;
+
+                    // 流结束标记
+                    if (trimmed === 'data: [DONE]') {
+                        streamDone = true;
+                        break;
+                    }
+
+                    // 解析 SSE data 行
+                    if (trimmed.startsWith('data:')) {
+                        const jsonStr = trimmed.slice(5).trim();
+                        if (!jsonStr) continue;
                         try {
-                            const rawData = line.slice(5).trim();
-                            if (!isError && rawData.includes('error')) {
-                                isError = true;
-                                fullBotResponse = `**解析错误:** ${rawData}`;
+                            const json = JSON.parse(jsonStr);
 
-                                const contentDiv = botMessageDiv.querySelector('.content');
-                                if (contentDiv) {
-                                    contentDiv.innerHTML = DOMPurify.sanitize(marked.parse(fullBotResponse));
-                                } else {
-                                    const newContentDiv = document.createElement('div');
-                                    newContentDiv.classList.add('content');
-                                    newContentDiv.innerHTML = DOMPurify.sanitize(marked.parse(fullBotResponse));
-                                    botMessageDiv.appendChild(newContentDiv);
+                            // 错误响应
+                            if (json.error) {
+                                fullResponse = `**错误:** ${json.error.message || JSON.stringify(json.error)}`;
+                                this._updateContent(botDiv, fullResponse);
+                                continue;
+                            }
+
+                            // 增量 delta
+                            const delta = json.choices?.[0]?.delta;
+                            if (delta) {
+                                // 推理内容（reasoning 模型特有）
+                                if (delta.reasoning_content) {
+                                    fullReasoning += delta.reasoning_content;
+                                    this._updateReasoning(botDiv, fullReasoning);
+                                }
+                                // 正式回复内容
+                                if (delta.content) {
+                                    fullResponse += delta.content;
+                                    this._updateContent(botDiv, fullResponse);
                                 }
                             }
-                        } catch (parseErr) {
-                            console.error('无法解析错误数据:', parseErr);
+                        } catch (e) {
+                            // JSON 解析失败，忽略（可能是不完整数据）
                         }
                     }
                 }
+
+                if (streamDone) break;
             }
-        }
 
-        clearInterval(timer);
-        chatContainer.removeChild(loadingMessage);
+            // 处理行缓冲区中可能残留的最后一行
+            if (!streamDone && lineBuffer.trim()) {
+                const trimmed = lineBuffer.trim();
+                if (trimmed === 'data: [DONE]') {
+                    streamDone = true;
+                } else if (trimmed.startsWith('data:')) {
+                    const jsonStr = trimmed.slice(5).trim();
+                    if (jsonStr) {
+                        try {
+                            const json = JSON.parse(jsonStr);
+                            if (json.error) {
+                                fullResponse = `**错误:** ${json.error.message || JSON.stringify(json.error)}`;
+                                this._updateContent(botDiv, fullResponse);
+                            }
+                            const delta = json.choices?.[0]?.delta;
+                            if (delta) {
+                                if (delta.reasoning_content) {
+                                    fullReasoning += delta.reasoning_content;
+                                    this._updateReasoning(botDiv, fullReasoning);
+                                }
+                                if (delta.content) {
+                                    fullResponse += delta.content;
+                                    this._updateContent(botDiv, fullResponse);
+                                }
+                            }
+                        } catch (e) { /* ignore */ }
+                    }
+                }
+            }
 
-        // 如果没有收到任何有效响应但也没有明确错误
-        if (fullBotResponse === '' && !isError) {
-            fullBotResponse = '**提示:** 服务器返回了空响应，可能是因为请求超时或模型上下文长度超限。';
-            const contentDiv = botMessageDiv.querySelector('.content');
-            if (contentDiv) {
-                contentDiv.innerHTML = DOMPurify.sanitize(marked.parse(fullBotResponse));
+            // 流结束：清理 loading 状态
+            clearInterval(timer);
+            if (loadingMessage.parentNode) APP.chatContainer.removeChild(loadingMessage);
+
+            // 如果有推理内容，渲染为 Markdown
+            if (fullReasoning) {
+                const rd = botDiv.querySelector('.reasoning-content');
+                if (rd) rd.innerHTML = DOMPurify.sanitize(marked.parse(fullReasoning));
+            }
+
+            // 将最终回复记入消息历史（仅记录正式内容，不含推理过程）
+            if (fullResponse) {
+                APP.messageHistory.push({ role: 'assistant', content: fullResponse });
+            } else if (fullReasoning) {
+                // 推理模型可能因超时只输出了推理过程而没有正式回复
+                // 将推理内容也记入历史，避免下次重发时丢失上下文
+                APP.messageHistory.push({ role: 'assistant', content: fullReasoning });
+                this._updateContent(botDiv, '> ⚠️ 模型思考超时，仅返回了推理过程，请重新发送以获取完整回复。');
             } else {
-                const newContentDiv = document.createElement('div');
-                newContentDiv.classList.add('content');
-                newContentDiv.innerHTML = DOMPurify.sanitize(marked.parse(fullBotResponse));
-                botMessageDiv.appendChild(newContentDiv);
+                this._updateContent(botDiv, '**提示:** 服务器返回空响应，请检查网络或稍后重试。');
             }
+
+        } catch(error) {
+            clearInterval(timer);
+            if (loadingMessage.parentNode) APP.chatContainer.removeChild(loadingMessage);
+            this.appendMessage(`**错误:** ${error.message}`, null, 'bot-message');
         }
-
-    } catch (error) {
-        clearInterval(timer);
-        chatContainer.removeChild(loadingMessage);
-        appendMessage(`**错误:** ${error.message}`, null, 'bot-message');
     }
-}
+};
 
-// 手动发送消息
+// 全局暴露给HTML的函数
 function sendMessage() {
-    if (!userInput) return;
-    const message = userInput.value.trim();
-    if (!message) return;
-
-    userInput.value = '';
-    userInput.style.height = '50px';
-
-    appendMessage(message, null, 'user-message');
-    messageHistory.push({ role: 'user', content: message });
-
-    const loadingMessage = appendMessage('思考中...', null, 'loading-message');
-
+    if (!APP.userInput) return;
+    const msg = APP.userInput.value.trim();
+    if (!msg) return;
+    APP.userInput.value = '';
+    APP.userInput.style.height = '44px';
+    APP.messageHistory.push({ role: 'user', content: msg });
+    AIModule.appendMessage(msg, null, 'user-message');
+    const loadingMsg = AIModule.appendMessage('思考中...', null, 'loading-message');
     let seconds = 0;
-    const timer = setInterval(() => {
-        seconds++;
-        loadingMessage.textContent = `思考中... ${seconds}s`;
-    }, 1000);
-
-    sendToAI(loadingMessage, timer);
+    const timer = setInterval(() => { seconds++; loadingMsg.textContent = `思考中... ${seconds}s`; }, 1000);
+    AIModule.sendToAI(loadingMsg, timer);
 }
 
-// 处理Enter键发送消息
 function handleKeyDown(event) {
-    if (!userInput) return;
-    if (event.key === 'Enter' && !event.shiftKey) {
-        event.preventDefault();
-        sendMessage();
-    }
+    if (!APP.userInput) return;
+    if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); sendMessage(); }
 }
 
-// 自动调整输入框高度
 function autoResizeTextarea() {
-    if (!userInput) return;
-    const minHeight = 50;
-    const maxHeight = 120;
-    userInput.style.height = minHeight + 'px';
-    const scrollHeight = userInput.scrollHeight;
-    if (scrollHeight <= maxHeight) {
-        userInput.style.height = scrollHeight + 'px';
-    } else {
-        userInput.style.height = maxHeight + 'px';
-    }
+    if (!APP.userInput) return;
+    const min = 44, max = 100;
+    APP.userInput.style.height = min + 'px';
+    const sh = APP.userInput.scrollHeight;
+    APP.userInput.style.height = (sh <= max ? sh : max) + 'px';
 }
 
+function switchTab(tabName) {
+    document.querySelectorAll('.nav-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tabName));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + tabName));
+}
+
+// ============================================================
+// 初始化
+// ============================================================
 document.addEventListener('DOMContentLoaded', function() {
+    // 确保弹窗遮罩初始隐藏
+    const modalOverlay = document.getElementById('stock-modal-overlay');
+    if (modalOverlay) modalOverlay.style.display = 'none';
+
+    // 配置marked
+    marked.setOptions({ gfm: true, breaks: false });
+
+    // 初始化聊天
+    APP.chatContainer = document.getElementById('chat-container');
+    APP.userInput = document.getElementById('user-input');
+
+    // 创建会话
+    fetch('create_session.php', { method: 'POST' })
+        .then(r => r.json())
+        .then(d => { if (d.session) APP.currentSessionId = d.session.id; })
+        .catch(() => {});
+
+    // 初始化图表
+    ChartModule.init();
+
+    // Tab切换
+    document.querySelectorAll('.nav-tab').forEach(tab => {
+        tab.addEventListener('click', () => switchTab(tab.dataset.tab));
+    });
+
+    // 自选股侧边栏
+    document.getElementById('watchlist-toggle')?.addEventListener('click', () => {
+        document.getElementById('watchlist-sidebar').classList.toggle('open');
+        document.getElementById('watchlist-overlay').classList.toggle('open');
+        WatchlistModule.render();
+    });
+    document.getElementById('watchlist-close')?.addEventListener('click', () => {
+        document.getElementById('watchlist-sidebar').classList.remove('open');
+        document.getElementById('watchlist-overlay').classList.remove('open');
+    });
+    document.getElementById('watchlist-overlay')?.addEventListener('click', () => {
+        document.getElementById('watchlist-sidebar').classList.remove('open');
+        document.getElementById('watchlist-overlay').classList.remove('open');
+    });
+
+    // 自选股添加
+    document.getElementById('watchlist-add-btn')?.addEventListener('click', () => {
+        const input = document.getElementById('watchlist-add-input');
+        const code = input.value.trim();
+        if (code) { WatchlistModule.add(code); input.value = ''; }
+    });
+
+    // 更新自选股计数
+    document.getElementById('watchlist-count').textContent = APP.watchlist.length;
+
+    // 加自选按钮
+    document.getElementById('add-watchlist-btn')?.addEventListener('click', () => {
+        const code = document.getElementById('code').value.trim();
+        if (code) WatchlistModule.add(code, code);
+    });
+
+    // 指标切换
+    ['ind-ma', 'ind-boll', 'ind-vol', 'ind-macd', 'ind-rsi', 'ind-kdj'].forEach(id => {
+        document.getElementById(id)?.addEventListener('change', () => ChartModule.refreshIndicators());
+    });
+
+    // === 股票查询表单 ===
     const stockForm = document.getElementById('stockForm');
     const stockTable = document.getElementById('stock-table');
     const stockData = document.getElementById('stock-data');
     const loading = document.getElementById('loading');
     const errorDiv = document.getElementById('error');
 
-    // 配置 marked
-    marked.setOptions({
-        renderer: new marked.Renderer(),
-        highlight: function(code, lang) {
-            return code;
-        },
-        pedantic: false,
-        gfm: true,
-        breaks: false,
-        sanitize: false,
-        smartypants: false,
-        xhtml: false
+    // AI分析按钮：设置标志后触发表单查询，查询完成后自动跳转AI标签卡
+    document.getElementById('ai-analyze-btn')?.addEventListener('click', () => {
+        const code = document.getElementById('code').value.trim();
+        if (!code) { alert('请先输入股票代码'); return; }
+        APP.queryWithAI = true;
+        stockForm.dispatchEvent(new Event('submit'));
     });
 
-    // 初始化聊天相关变量
-    chatContainer = document.getElementById('chat-container');
-    userInput = document.getElementById('user-input');
-    messageHistory = [
-        {role: 'system', content: '你是一位专业的股票分析师，擅长解读股票数据并给出建议。'}
-    ];
-
-    // 创建新会话
-    createNewSession();
-
-    // 创建新会话
-    function createNewSession() {
-        fetch('create_session.php', {
-            method: 'POST'
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.session) {
-                currentSessionId = data.session.id;
-                console.log('创建新会话:', currentSessionId);
-            }
-        })
-        .catch(error => {
-            console.error('无法创建新会话:', error);
-        });
-    }
-
-    // 股票表单提交事件处理
     stockForm.addEventListener('submit', function(e) {
         e.preventDefault();
-
         const code = document.getElementById('code').value.trim();
         const frequency = document.getElementById('frequency').value;
         const count = document.getElementById('count').value;
         const end_date = document.getElementById('end_date').value;
 
-        loading.style.display = 'block';
+        loading.style.display = 'flex';
         errorDiv.style.display = 'none';
         stockTable.style.display = 'none';
+        APP.currentStockCode = code;
 
         const url = `api.php?code=${encodeURIComponent(code)}&frequency=${encodeURIComponent(frequency)}&count=${encodeURIComponent(count)}&end_date=${encodeURIComponent(end_date)}`;
 
         fetch(url)
-            .then(response => response.json())
+            .then(r => r.json())
             .then(data => {
                 loading.style.display = 'none';
-
-                if (!data.success) {
-                    throw new Error(data.message || '获取数据失败');
-                }
+                if (!data.success) throw new Error(data.message || '获取数据失败');
 
                 stockData.innerHTML = '';
-
                 if (data.data && data.data.length > 0) {
-                    let aiDataString = `股票代码: ${code}\n频率: ${frequency}\n数据条数: ${count}\n\n`;
-                    aiDataString += "日期/时间,开盘价,收盘价,最高价,最低价,成交量\n";
+                    // 更新图表
+                    ChartModule.updateData(data.data);
+                    document.getElementById('chart-title').textContent = `📊 ${code} K线图表`;
+
+                    // 更新加自选按钮
+                    const starBtn = document.getElementById('add-watchlist-btn');
+                    if (starBtn) {
+                        starBtn.textContent = WatchlistModule.has(code) ? '⭐ 已自选' : '⭐ 加自选';
+                    }
+
+                    // 更新表格
+                    let aiStr = `股票代码: ${code}\n频率: ${frequency}\n数据条数: ${count}\n\n`;
+                    aiStr += "日期/时间,开盘价,收盘价,最高价,最低价,成交量\n";
 
                     data.data.forEach(row => {
-                        const tr = document.createElement('tr');
+                        const close = parseFloat(row.close);
+                        const open = parseFloat(row.open);
+                        const prevClose = stockData.rows.length > 0
+                            ? parseFloat(stockData.rows[stockData.rows.length - 1]?.cells[2]?.textContent || open)
+                            : open;
+                        const pct = prevClose !== 0 ? ((close - prevClose) / prevClose * 100) : 0;
 
+                        const tr = document.createElement('tr');
                         tr.innerHTML = `
                             <td>${row.time}</td>
                             <td>${parseFloat(row.open).toFixed(2)}</td>
-                            <td>${parseFloat(row.close).toFixed(2)}</td>
-                            <td>${parseFloat(row.high).toFixed(2)}</td>
-                            <td>${parseFloat(row.low).toFixed(2)}</td>
+                            <td>${close.toFixed(2)}</td>
+                            <td class="up">${parseFloat(row.high).toFixed(2)}</td>
+                            <td class="down">${parseFloat(row.low).toFixed(2)}</td>
                             <td>${formatVolume(row.volume)}</td>
+                            <td class="${colorClass(pct)}">${formatPct(pct)}</td>
                         `;
-
                         stockData.appendChild(tr);
-
-                        aiDataString += `${row.time},${parseFloat(row.open).toFixed(2)},${parseFloat(row.close).toFixed(2)},${parseFloat(row.high).toFixed(2)},${parseFloat(row.low).toFixed(2)},${formatVolume(row.volume)}\n`;
+                        aiStr += `${row.time},${parseFloat(row.open).toFixed(2)},${close.toFixed(2)},${parseFloat(row.high).toFixed(2)},${parseFloat(row.low).toFixed(2)},${formatVolume(row.volume)}\n`;
                     });
 
                     stockTable.style.display = 'table';
+                    document.getElementById('export-data-btn').style.display = 'inline-block';
 
-                    aiDataString += "\n请评估这些数据，考虑成交量、历史趋势、MACD指标、相对强弱指数（RSI）、支撑位和阻力位等常见因素，给出你的投资建议。\n今天是：";
-                    //提示今天的日期
-                    aiDataString += new Date().toISOString().split('T')[0];
-                    autoSendToAI(aiDataString);
+                    // 根据标志决定是否触发AI分析
+                    if (APP.queryWithAI) {
+                        APP.queryWithAI = false;
+                        aiStr += "\n请评估这些数据，考虑成交量、历史趋势、MACD指标、RSI、支撑位和阻力位等，给出投资建议。\n今天是：" + new Date().toISOString().split('T')[0];
+                        switchTab('ai');
+                        AIModule.autoSend(aiStr);
+                    }
 
+                    // 获取实时行情和资金流向
+                    QuoteModule.fetch(code).then(q => QuoteModule.render(q));
+                    FlowModule.fetch(code).then(f => FlowModule.render(f));
                 } else {
                     errorDiv.textContent = '没有查询到数据';
                     errorDiv.style.display = 'block';
@@ -403,79 +1248,69 @@ document.addEventListener('DOMContentLoaded', function() {
             });
     });
 
+    // 导出CSV
+    document.getElementById('export-data-btn')?.addEventListener('click', () => {
+        const rows = document.querySelectorAll('#stock-data tr');
+        if (!rows.length) return;
+        let csv = '日期/时间,开盘价,收盘价,最高价,最低价,成交量,涨跌幅\n';
+        rows.forEach(tr => {
+            const cells = tr.querySelectorAll('td');
+            csv += Array.from(cells).map(c => c.textContent.trim()).join(',') + '\n';
+        });
+        const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url; a.download = `stock_${APP.currentStockCode}_${new Date().toISOString().split('T')[0]}.csv`;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    });
+
+    // === 热门股票 ===
     const hotStocksTable = document.getElementById('hot-stocks-table');
     const hotStocksData = document.getElementById('hot-stocks-data');
     const loadingApi = document.getElementById('loading-api');
     const errorApi = document.getElementById('error-api');
 
-    // 页面加载时获取热门股票数据
-    fetchHotStocksData();
-
-    // 获取热门股票数据函数
     function fetchHotStocksData() {
-        loadingApi.style.display = 'block';
+        loadingApi.style.display = 'flex';
         errorApi.style.display = 'none';
         hotStocksTable.style.display = 'none';
 
         fetch('hot_stocks_api.php')
-            .then(response => response.json())
+            .then(r => r.json())
             .then(data => {
                 loadingApi.style.display = 'none';
-
-                if (data.error) {
-                    throw new Error(data.error || '获取热门股票数据失败');
-                }
+                if (data.error) throw new Error(data.error);
 
                 hotStocksData.innerHTML = '';
-
                 if (data && data.length > 0) {
                     data.forEach(stock => {
                         const tr = document.createElement('tr');
-
                         const netInflow = parseFloat(stock.jlr);
                         const netInflowRate = parseFloat(stock.jlrl);
-
                         tr.innerHTML = `
                             <td>${stock.dm}</td>
                             <td>${stock.mc}</td>
                             <td>${parseFloat(stock.zxj).toFixed(2)}</td>
-                            <td class="${stock.zdf >= 0 ? 'positive' : 'negative'}">${parseFloat(stock.zdf).toFixed(2)}</td>
+                            <td class="${colorClass(stock.zdf)}">${formatPct(stock.zdf)}</td>
                             <td>${parseFloat(stock.hsl).toFixed(2)}</td>
-                            <td>${formatAmount(stock.cje)}</td>
-                            <td class="${netInflow >= 0 ? 'positive' : 'negative'}">${formatAmount(netInflow)}</td>
-                            <td class="${netInflowRate >= 0 ? 'positive' : 'negative'}">${netInflowRate.toFixed(2)}</td>
-                            <td>
-                                <button class="btn-quick-query" data-code="${stock.dm}">AI快询60d</button>
-                            </td>
+                            <td class="${colorClass(netInflow)}">${formatAmount(netInflow)}</td>
+                            <td><button class="btn-quick-query" data-code="${stock.dm}">AI快询</button></td>
                         `;
-
                         hotStocksData.appendChild(tr);
                     });
 
                     hotStocksTable.style.display = 'table';
 
-                    document.querySelectorAll('.btn-quick-query').forEach(button => {
-                        button.addEventListener('click', function() {
-                            const stockCode = this.getAttribute('data-code');
-
-            document.getElementById('code').value = stockCode;
-            document.getElementById('frequency').value = '1d';
-            document.getElementById('count').value = '60';
-
-            const today = new Date();
-            const yyyy = today.getFullYear();
-            let mm = today.getMonth() + 1;
-            let dd = today.getDate();
-
-            if (dd < 10) dd = '0' + dd;
-            if (mm < 10) mm = '0' + mm;
-
-            const formattedDate = yyyy + '-' + mm + '-' + dd;
-            document.getElementById('end_date').value = formattedDate;
-
-            stockForm.dispatchEvent(new Event('submit'));
-        });
-    });
+                    document.querySelectorAll('.btn-quick-query').forEach(btn => {
+                        btn.addEventListener('click', function() {
+                            const code = this.getAttribute('data-code');
+                            document.getElementById('code').value = code;
+                            document.getElementById('frequency').value = '1d';
+                            document.getElementById('count').value = '60';
+                            stockForm.dispatchEvent(new Event('submit'));
+                        });
+                    });
                 } else {
                     errorApi.textContent = '没有热门股票数据';
                     errorApi.style.display = 'block';
@@ -487,377 +1322,157 @@ document.addEventListener('DOMContentLoaded', function() {
                 errorApi.style.display = 'block';
             });
     }
+    fetchHotStocksData();
 
-    // 格式化金额
-    function formatAmount(amount) {
-        const num = parseFloat(amount);
-        if (num >= 100000000) {
-            return (num / 100000000).toFixed(2) + '亿';
-        } else if (num >= 10000) {
-            return (num / 10000).toFixed(2) + '万';
-        } else {
-            return num.toFixed(2);
+    // === 超级查询 ===
+    document.getElementById('super-query-btn')?.addEventListener('click', async function() {
+        const rows = document.querySelectorAll('#hot-stocks-data tr');
+        if (!rows.length) { alert('没有可查询的股票数据'); return; }
+
+        const maxStocks = APP.config.maxQueryStocks || rows.length;
+        const stockRows = Array.from(rows).slice(0, maxStocks);
+        const total = stockRows.length;
+        const loadingEl = document.getElementById('super-query-loading');
+        loadingEl.style.display = 'block';
+        APP.allStocksData = {};
+
+        const batchSize = 5;
+        for (let i = 0; i < total; i += batchSize) {
+            const batch = stockRows.slice(i, Math.min(i + batchSize, total));
+            const tasks = batch.map(row => {
+                const code = row.cells[0]?.textContent.trim();
+                const name = row.cells[1]?.textContent.trim();
+                if (!code) return Promise.resolve();
+                return fetch(`api.php?code=${encodeURIComponent(code)}&frequency=1d&count=60&end_date=`)
+                    .then(r => r.json())
+                    .then(data => {
+                        if (data.success && data.data?.length > 0) {
+                            APP.allStocksData[code] = { name, data: data.data };
+                            row.classList.add('details-trigger');
+                            row.setAttribute('data-code', code);
+                            row.addEventListener('click', () => showStockModal(code));
+                        }
+                    })
+                    .catch(() => {});
+            });
+            await Promise.all(tasks);
+            loadingEl.innerHTML = `已加载 ${Object.keys(APP.allStocksData).length}/${total} 只股票`;
+            await new Promise(r => setTimeout(r, 100));
         }
-    }
 
-    // 发送按钮点击事件
-    document.getElementById('send-button').addEventListener('click', sendMessage);
-
-    // 输入框键盘事件
-    userInput.addEventListener('keydown', handleKeyDown);
-
-    // 输入框内容变化事件
-    userInput.addEventListener('input', autoResizeTextarea);
-});
-
-// 超级查询功能
-document.addEventListener('DOMContentLoaded', function() {
-    const superQueryBtn = document.getElementById('super-query-btn');
-    if (!superQueryBtn) return;
-
-    // 全局变量，存储所有查询到的股票数据
-    let allStocksData = {};
-
-    superQueryBtn.addEventListener('click', async function() {
-        // 获取所有股票代码
-        const allStockRows = document.querySelectorAll('#hot-stocks-data tr');
-        if (!allStockRows.length) {
-            alert('没有可查询的股票数据');
-            return;
-        }
-
-        // 应用最大查询数量限制
-        const maxStocks = CONFIG.maxQueryStocks || allStockRows.length;
-        const stockRows = Array.from(allStockRows).slice(0, maxStocks);
-        const actualCount = stockRows.length;
-
-        const superQueryLoading = document.getElementById('super-query-loading');
-        superQueryLoading.style.display = 'block';
-        superQueryLoading.innerHTML = `超级查询中，请稍候... <span class="query-progress">0/${actualCount}</span>` +
-                                     (actualCount < allStockRows.length ? `<span class="query-limit">(已限制查询前${actualCount}只股票)</span>` : '');
-
-        // 清除已有的子表格
-        document.querySelectorAll('.stock-details').forEach(el => el.remove());
-
-        // 存储所有查询结果的对象
-        allStocksData = {};
-
-        // 批量处理股票查询，使用限制后的股票数组
-        await batchProcessStocks(stockRows);
-
-        // 完成所有查询
-        superQueryLoading.style.display = 'none';
-
-        // 生成并存储用于未来AI询问的文本
-        const aiQueryText = generateAIQueryText(allStocksData);
-        localStorage.setItem('superQueryData', aiQueryText);
-
-        // 显示询问AI按钮和下载查询记录按钮
-        const askAiBtn = document.getElementById('ask-ai-btn');
-        const downloadQueryBtn = document.getElementById('download-query-btn');
-        if (askAiBtn) askAiBtn.style.display = 'inline-block';
-        if (downloadQueryBtn) downloadQueryBtn.style.display = 'inline-block';
-
-        console.log(`超级查询完成，共查询了${actualCount}只股票的数据`);
+        loadingEl.style.display = 'none';
+        const aiText = generateAIQueryText(APP.allStocksData);
+        localStorage.setItem('superQueryData', aiText);
+        document.getElementById('ask-ai-btn').style.display = 'inline-block';
+        document.getElementById('download-query-btn').style.display = 'inline-block';
     });
 
-    // 批量处理查询以避免浏览器卡顿
-    async function batchProcessStocks(stockRows) {
-        const batchSize = 5; // 每批处理5只股票
-        const totalStocks = stockRows.length;
-        const superQueryLoading = document.getElementById('super-query-loading');
+    // AI选股
+    document.getElementById('ask-ai-btn')?.addEventListener('click', () => {
+        const text = localStorage.getItem('superQueryData');
+        if (text) { switchTab('ai'); AIModule.autoSend(text); }
+        else alert('请先执行超级查询');
+    });
 
-        for (let i = 0; i < totalStocks; i += batchSize) {
-            const end = Math.min(i + batchSize, totalStocks);
-            superQueryLoading.innerHTML = `超级查询中，请稍候... <span class="query-progress">${i}/${totalStocks}</span>` +
-                                          (totalStocks < document.querySelectorAll('#hot-stocks-data tr').length ?
-                                           `<span class="query-limit">(已限制查询前${totalStocks}只股票)</span>` : '');
-
-            // 创建一批查询任务
-            const batchTasks = [];
-            for (let j = i; j < end; j++) {
-                const row = stockRows[j];
-                if (!row) continue; // 防止undefined错误
-
-                const stockCode = row.cells[0]?.textContent.trim();
-                const stockName = row.cells[1]?.textContent.trim();
-
-                if (!stockCode || !stockName) continue;
-
-                batchTasks.push(
-                    fetchStockData(stockCode, '1d', 60, '')
-                        .then(data => {
-                            if (data.success && data.data && data.data.length > 0) {
-                                allStocksData[stockCode] = {
-                                    name: stockName,
-                                    data: data.data
-                                };
-
-                                // 直接为父行添加点击事件，而不是创建子表格
-                                row.classList.add('details-trigger');
-                                row.setAttribute('data-code', stockCode);
-                                row.setAttribute('data-name', stockName);
-
-                                // 添加点击事件
-                                row.addEventListener('click', function() {
-                                    showStockDetailsModal(stockCode);
-                                });
-                            }
-                        })
-                        .catch(error => console.error(`获取 ${stockCode} 数据失败:`, error))
-                );
-            }
-
-            await Promise.all(batchTasks)
-                .then(results => {
-                    // 更新界面，显示有多少股票数据已加载成功
-                    const loadedCount = Object.keys(allStocksData).length;
-                    superQueryLoading.innerHTML = `已成功加载 ${loadedCount}/${totalStocks} 只股票数据`;
-                });
-
-
-            // 给浏览器UI线程喘息的机会
-            await new Promise(resolve => setTimeout(resolve, 100));
+    // 下载查询记录
+    document.getElementById('download-query-btn')?.addEventListener('click', () => {
+        const text = localStorage.getItem('superQueryData');
+        if (text) {
+            const blob = new Blob([text], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = `股票分析数据_${new Date().toISOString().split('T')[0]}.txt`;
+            document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            URL.revokeObjectURL(url);
         }
+    });
 
-        superQueryLoading.innerHTML = `超级查询中，请稍候... <span class="query-progress">${totalStocks}/${totalStocks}</span>` +
-                                     (totalStocks < document.querySelectorAll('#hot-stocks-data tr').length ?
-                                      `<span class="query-limit">(已限制查询前${totalStocks}只股票)</span>` : '');
-    }
-
-    // 获取股票数据的函数
-    function fetchStockData(code, frequency, count, end_date) {
-        return new Promise((resolve, reject) => {
-            const url = `api.php?code=${encodeURIComponent(code)}&frequency=${encodeURIComponent(frequency)}&count=${encodeURIComponent(count)}&end_date=${encodeURIComponent(end_date)}`;
-
-            fetch(url)
-                .then(response => response.json())
-                .then(data => resolve(data))
-                .catch(error => reject(error));
-        });
-    }
-
-    // 创建详情弹窗 (替换原来的createDetailsRow函数)
-    function createDetailsRow(parentRow, stockCode, stockName, stockData) {
-        // 不再创建内嵌行，而是为父行添加点击事件数据
-        parentRow.classList.add('details-trigger');
-        parentRow.setAttribute('data-code', stockCode);
-        parentRow.setAttribute('data-name', stockName);
-
-        // 将数据存储在全局变量中，以便点击时使用
-        if (!window.stockDetailsData) window.stockDetailsData = {};
-        window.stockDetailsData[stockCode] = {
-            name: stockName,
-            data: stockData
-        };
-
-        // 直接在这里添加点击事件
-        parentRow.addEventListener('click', function() {
-            showStockDetailsModal(stockCode);
-        });
-    }
-
-    // 显示股票详情模态框的函数
-    function showStockDetailsModal(stockCode) {
-        // 获取存储的数据
-        const stockDetails = allStocksData[stockCode];
-        if (!stockDetails) return;
-
-        // 创建模态框外层
-        const modal = document.createElement('div');
-        modal.classList.add('stock-details-modal');
-
-        // 创建模态框内容区
-        const modalContent = document.createElement('div');
-        modalContent.classList.add('modal-content');
-
-        // 创建模态框头部
-        const modalHeader = document.createElement('div');
-        modalHeader.classList.add('modal-header');
-
-        const modalTitle = document.createElement('h3');
-        modalTitle.textContent = `${stockDetails.name} (${stockCode}) 60天数据`;
-
-        const closeBtn = document.createElement('span');
-        closeBtn.classList.add('close-modal');
-        closeBtn.innerHTML = '&times;';
-        closeBtn.onclick = function() {
-            document.body.removeChild(modal);
-        };
-
-        modalHeader.appendChild(modalTitle);
-        modalHeader.appendChild(closeBtn);
-
-        // 创建模态框内容主体
-        const modalBody = document.createElement('div');
-        modalBody.classList.add('modal-body');
-
-        // 创建表格
-        const table = document.createElement('table');
-        table.classList.add('stock-details-table');
-
-        // 创建表头
-        const thead = document.createElement('thead');
-        const headerRow = document.createElement('tr');
-        const headers = ['日期', '开盘价', '收盘价', '最高价', '最低价', '成交量'];
-
-        headers.forEach(header => {
-            const th = document.createElement('th');
-            th.textContent = header;
-            headerRow.appendChild(th);
-        });
-
-        thead.appendChild(headerRow);
-        table.appendChild(thead);
-
-        // 创建表体
-        const tbody = document.createElement('tbody');
-
-        // 添加数据行
-        stockDetails.data.forEach(item => {
-            const dataRow = document.createElement('tr');
-
-            // 添加单元格
-            dataRow.innerHTML = `
+    function showStockModal(code) {
+        const stock = APP.allStocksData[code];
+        if (!stock) return;
+        const overlay = document.getElementById('stock-modal-overlay');
+        document.getElementById('modal-stock-title').textContent = `${stock.name} (${code}) 60天数据`;
+        const body = document.getElementById('modal-body-content');
+        let html = '<table class="stock-details-table"><thead><tr><th>日期</th><th>开盘</th><th>收盘</th><th>最高</th><th>最低</th><th>成交量</th></tr></thead><tbody>';
+        stock.data.forEach(item => {
+            html += `<tr>
                 <td>${item.time}</td>
                 <td>${parseFloat(item.open).toFixed(2)}</td>
                 <td>${parseFloat(item.close).toFixed(2)}</td>
                 <td>${parseFloat(item.high).toFixed(2)}</td>
                 <td>${parseFloat(item.low).toFixed(2)}</td>
                 <td>${formatVolume(item.volume)}</td>
-            `;
-
-            tbody.appendChild(dataRow);
+            </tr>`;
         });
-
-        table.appendChild(tbody);
-        modalBody.appendChild(table);
-
-        // 组装模态框
-        modalContent.appendChild(modalHeader);
-        modalContent.appendChild(modalBody);
-        modal.appendChild(modalContent);
-
-        // 添加到body
-        document.body.appendChild(modal);
-
-        // 点击模态框外部关闭
-        modal.onclick = function(event) {
-            if (event.target === modal) {
-                document.body.removeChild(modal);
-            }
-        };
+        html += '</tbody></table>';
+        body.innerHTML = html;
+        overlay.style.display = 'flex';
     }
 
+    document.getElementById('modal-close-btn')?.addEventListener('click', () => {
+        const overlay = document.getElementById('stock-modal-overlay');
+        if (overlay) overlay.style.display = 'none';
+    });
+    document.getElementById('stock-modal-overlay')?.addEventListener('click', (e) => {
+        if (e.target === e.currentTarget) e.currentTarget.style.display = 'none';
+    });
 
-    // 添加点击事件处理程序
-    function addClickHandlers() {
-        document.querySelectorAll('.details-trigger').forEach(row => {
-            row.addEventListener('click', function() {
-                const targetId = this.getAttribute('data-target');
-                const detailsRow = document.getElementById(targetId);
-
-                if (detailsRow.style.display === 'table-row') {
-                    detailsRow.style.display = 'none';
-                    this.classList.remove('active');
-                } else {
-                    detailsRow.style.display = 'table-row';
-                    this.classList.add('active');
-                }
-            });
-        });
-    }
-
-    // 生成用于AI查询的文本结构
     function generateAIQueryText(allData) {
-        let result = `# 股票超级查询结果\n\n`;
-        result += `查询时间: ${new Date().toLocaleString()}\n`;
-        result += `共查询 ${Object.keys(allData).length} 只股票的60天数据\n\n`;
-
-        // 获取热门股票表格中的数据
-        const hotStockRows = document.querySelectorAll('#hot-stocks-data tr');
-        let hotStocksInfo = {};
-
-        // 将热门股票数据存入对象中，便于查找
-        hotStockRows.forEach(row => {
+        let result = `# 股票超级查询结果\n\n查询时间: ${new Date().toLocaleString()}\n共查询 ${Object.keys(allData).length} 只股票的60天数据\n\n`;
+        const hotRows = document.querySelectorAll('#hot-stocks-data tr');
+        let hotInfo = {};
+        hotRows.forEach(row => {
             const cells = row.cells;
-            if (cells && cells.length >= 8) {
-                const code = cells[0].textContent.trim();
-                hotStocksInfo[code] = {
+            if (cells?.length >= 6) {
+                hotInfo[cells[0].textContent.trim()] = {
                     name: cells[1].textContent.trim(),
                     price: cells[2].textContent.trim(),
                     change: cells[3].textContent.trim(),
                     turnover: cells[4].textContent.trim(),
-                    volume: cells[5].textContent.trim(),
-                    netInflow: cells[6].textContent.trim(),
-                    netInflowRate: cells[7].textContent.trim()
+                    netInflow: cells[5].textContent.trim(),
                 };
             }
         });
-
         for (const code in allData) {
             const stock = allData[code];
             result += `## ${stock.name} (${code})\n\n`;
-
-            // 添加热门股票排名信息
-            if (hotStocksInfo[code]) {
-                result += `### 当前市场数据\n`;
-                result += `- 最新价: ${hotStocksInfo[code].price}\n`;
-                result += `- 涨跌幅: ${hotStocksInfo[code].change}%\n`;
-                result += `- 换手率: ${hotStocksInfo[code].turnover}%\n`;
-                result += `- 成交额: ${hotStocksInfo[code].volume}\n`;
-                result += `- 净流入: ${hotStocksInfo[code].netInflow}\n`;
-                result += `- 净流入率: ${hotStocksInfo[code].netInflowRate}%\n\n`;
+            if (hotInfo[code]) {
+                result += `当前价: ${hotInfo[code].price} | 涨跌: ${hotInfo[code].change}% | 净流入: ${hotInfo[code].netInflow}\n\n`;
             }
-
-            result += `### 历史60天数据\n`;
-            result += `日期,开盘价,收盘价,最高价,最低价,成交量\n`;
-
+            result += `日期,开盘,收盘,最高,最低,成交量\n`;
             stock.data.forEach(item => {
-                result += `${item.time},${parseFloat(item.open).toFixed(2)},${parseFloat(item.close).toFixed(2)},`;
-                result += `${parseFloat(item.high).toFixed(2)},${parseFloat(item.low).toFixed(2)},${formatVolume(item.volume)}\n`;
+                result += `${item.time},${parseFloat(item.open).toFixed(2)},${parseFloat(item.close).toFixed(2)},${parseFloat(item.high).toFixed(2)},${parseFloat(item.low).toFixed(2)},${formatVolume(item.volume)}\n`;
             });
-
-            result += `\n`;
+            result += '\n';
         }
-
-        result += `请根据以上数据分析这些股票的走势，剔除掉今日涨跌幅超过10%的，考虑成交量、历史趋势、MACD指标、相对强弱指数（RSI）、支撑位和阻力位等常见因素，根据证券和经济学规则，帮我选出几只下一个交易日最有可能会涨的股票，并简要分析原因。\n`;
+        result += `请根据以上数据分析，剔除今日涨跌幅超过10%的，考虑成交量、MACD、RSI、支撑阻力位等，选出几只下一个交易日最有可能涨的股票并分析原因。\n`;
         return result;
     }
 
-    const askAiBtn = document.getElementById('ask-ai-btn');
-    if (askAiBtn) {
-        askAiBtn.addEventListener('click', function() {
-            const aiQueryText = localStorage.getItem('superQueryData');
-            if (aiQueryText) {
-                // 向AI发送查询
-                autoSendToAI(aiQueryText);
-            } else {
-                alert('请先执行超级查询以获取股票数据');
-            }
-        });
-    }
+    // === 实时看板 ===
+    RealtimeModule.init();
+    document.getElementById('realtime-add-btn')?.addEventListener('click', () => {
+        const input = document.getElementById('realtime-code-input');
+        const code = input.value.trim();
+        if (code) { RealtimeModule.addCode(code); input.value = ''; }
+    });
+    document.getElementById('realtime-refresh-btn')?.addEventListener('click', () => RealtimeModule.refresh());
 
-    //超级查询记录下载
-    const downloadQueryBtn = document.getElementById('download-query-btn');
-    if (downloadQueryBtn) {
-        downloadQueryBtn.addEventListener('click', function() {
-            const aiQueryText = localStorage.getItem('superQueryData');
-            if (aiQueryText) {
-                // 创建下载链接
-                const blob = new Blob([aiQueryText], { type: 'text/plain' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = `股票分析数据_${new Date().toISOString().split('T')[0]}.txt`;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                URL.revokeObjectURL(url);
-            } else {
-                alert('请先执行超级查询以获取股票数据');
-            }
-        });
-    }
+    // === 板块资金 ===
+    document.getElementById('sector-query-btn')?.addEventListener('click', () => SectorModule.query());
 
+    // === 基金分析 ===
+    document.getElementById('fund-search-btn')?.addEventListener('click', () => FundModule.search());
+    document.getElementById('fund-search-input')?.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); FundModule.search(); }
+    });
+    document.getElementById('fund-refresh-btn')?.addEventListener('click', () => FundModule.renderWatchlist());
+    FundModule.renderWatchlist();
+
+    // === AI聊天 ===
+    document.getElementById('send-button')?.addEventListener('click', sendMessage);
+    document.getElementById('clear-chat-btn')?.addEventListener('click', () => {
+        APP.chatContainer.innerHTML = '';
+        APP.messageHistory = [{ role: 'system', content: '你是一位专业的股票分析师，擅长解读股票数据并给出建议。' }];
+    });
 });

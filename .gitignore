@@ -1,3 +1,5 @@
 /php
 /__pycache__
 ai_api.php
+/.playwright-mcp
+/doc

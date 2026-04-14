@@ -2,133 +2,319 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <!-- 确保移动端视口设置正确 -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>FuckAshare</title>
+    <title>FuckAshare - A股智能分析平台</title>
     <link rel="stylesheet" href="style.css">
-    <!-- 添加 marked.js 库用于解析Markdown -->
+    <!-- marked.js Markdown解析 -->
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <!-- 添加 DOMPurify 用于防止 XSS 攻击 -->
+    <!-- DOMPurify XSS防护 -->
     <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
-
+    <!-- Lightweight Charts K线图 -->
+    <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 </head>
 <body>
-    <div class="container">
-        <header>
-            <h1>FuckAshare</h1>
-            <p>幽默牢A行情分析</p>
-        </header>
-        
-        <main>
-            <section class="query-form">
-                <h2>股票行情查询</h2>
-                <form id="stockForm">
-                    <div class="form-group">
-                        <label for="code">股票代码:</label>
-                        <input type="text" id="code" name="code" placeholder="例如: sh000001 或 000001.XSHG" required>
-                    </div>
-                    <div class="form-group">
-                        <label for="frequency">频率:</label>
-                        <select id="frequency" name="frequency">
-                            <option value="1m">分钟线(1m)</option>
-                            <option value="5m">5分钟线(5m)</option>
-                            <option value="15m">15分钟线(15m)</option>
-                            <option value="30m">30分钟线(30m)</option>
-                            <option value="60m">60分钟线(60m)</option>
-                            <option value="1d" selected>日线(1d)</option>
-                            <option value="1w">周线(1w)</option>
-                            <option value="1M">月线(1M)</option>
-                        </select>
-                    </div>
-                    
-                    <div class="form-group">
-                        <label for="count">数据条数:</label>
-                        <input type="number" id="count" name="count" min="1" max="500" value="10">
-                    </div>
-                    
-                    <div class="form-group">
-                        <label for="end_date">结束日期 (可选):</label>
-                        <input type="date" id="end_date" name="end_date">
-                        <small>不填则默认获取最新数据</small>
-                    </div>
-                    
-                    <button type="submit" class="btn-submit">查询数据</button>
-                </form>
-            </section>
-            
-            <section class="results">
-                <h2>查询结果</h2>
-                <div id="loading" style="display: none;">加载中...</div>
-                <div id="error" class="error" style="display: none;"></div>
-                
-                <div id="data-container">
-                    <table id="stock-table" style="display: none;">
-                        <thead>
-                            <tr>
-                                <th>日期/时间</th>
-                                <th>开盘价</th>
-                                <th>收盘价</th>
-                                <th>最高价</th>
-                                <th>最低价</th>
-                                <th>成交量</th>
-                            </tr>
-                        </thead>
-                        <tbody id="stock-data">
-                        </tbody>
-                    </table>
-                </div>
-            </section>
-            
-            <!-- AI咨询区域 -->
-            <section class="ai-consultant">
-                <h2>D指导帮你看看</h2>
-                <div id="chat-container"></div>
-                <div id="input-container">
-                    <textarea id="user-input" placeholder="输入您的问题..." onkeydown="handleKeyDown(event)" oninput="autoResizeTextarea()"></textarea>
-                    <button id="send-button" onclick="sendMessage()">发送</button>
-                </div>
-            </section>
-            
-            <section class="hot-stocks">
-                <h2>牢A净流入额排名（每日16:00更新）
-                    <button id="super-query-btn" class="btn-super-query">超级查询(60d)</button>
-                    <button id="ask-ai-btn" class="btn-super-query" style="display: none;">AI选股!!!</button>
-                    <button id="download-query-btn" class="btn-super-query" style="display: none;">下载超级查询文本</button>
-                </h2>
-                <div id="loading-api" style="display: none;">正在获取最新资金流向数据...</div>
-                <div id="error-api" class="error" style="display: none;"></div>
-                <div id="super-query-loading" style="display: none;">超级查询中，请稍候...</div>
-                
-                <div id="hot-stocks-container">
-                    <table id="hot-stocks-table" style="display: none;">
-                        <thead>
-                            <tr>
-                                <th>代码</th>
-                                <th>名称</th>
-                                <th>最新价</th>
-                                <th>涨跌幅(%)</th>
-                                <th>换手率(%)</th>
-                                <th>成交额(元)</th>
-                                <th>净流入(元)</th>
-                                <th>净流入率(%)</th>
-                                <th>操作</th>
-                            </tr>
-                        </thead>
-                        <tbody id="hot-stocks-data">
-                        </tbody>
-                    </table>
-                </div>
-            </section>
+    <!-- 顶部导航栏 -->
+    <nav class="top-nav">
+        <div class="nav-brand">
+            <span class="brand-icon">📈</span>
+            <span class="brand-text">FuckAshare</span>
+            <span class="brand-sub">智能分析</span>
+        </div>
+        <div class="nav-tabs">
+            <button class="nav-tab active" data-tab="stock">股票行情</button>
+            <button class="nav-tab" data-tab="realtime">实时看板</button>
+            <button class="nav-tab" data-tab="sector">板块资金</button>
+            <button class="nav-tab" data-tab="fund">基金分析</button>
+            <button class="nav-tab" data-tab="ai">AI顾问</button>
+        </div>
+        <div class="nav-actions">
+            <button id="watchlist-toggle" class="btn-icon" title="自选股">
+                <span>⭐</span>
+                <span class="watchlist-count" id="watchlist-count">0</span>
+            </button>
+        </div>
+    </nav>
 
-        </main>
-        
-        <footer>
-            <p>by <a href="https://yanshanlaosiji.top" target="_blank">雁山老司机</a> 助梦每一位空中飞✈人</p>
-            <p>&copy; <?php echo date('Y'); ?> FuckAshare</p>
-        </footer>
+    <!-- 主内容区域 -->
+    <div class="main-wrapper">
+        <!-- 股票行情页 -->
+        <div class="tab-panel active" id="panel-stock">
+            <div class="stock-layout">
+                <!-- 左侧：查询表单 + 数据表 -->
+                <div class="stock-left">
+                    <div class="card query-card">
+                        <div class="card-header">
+                            <h3>🔍 股票行情查询</h3>
+                        </div>
+                        <form id="stockForm" class="query-form-inline">
+                            <div class="form-row">
+                                <div class="form-group flex-1">
+                                    <input type="text" id="code" name="code" placeholder="股票代码 如: sh000001" required>
+                                </div>
+                                <div class="form-group">
+                                    <select id="frequency" name="frequency">
+                                        <option value="1m">1分钟</option>
+                                        <option value="5m">5分钟</option>
+                                        <option value="15m">15分钟</option>
+                                        <option value="30m">30分钟</option>
+                                        <option value="60m">60分钟</option>
+                                        <option value="1d" selected>日线</option>
+                                        <option value="1w">周线</option>
+                                        <option value="1M">月线</option>
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <input type="number" id="count" name="count" min="1" max="500" value="120" placeholder="条数">
+                                </div>
+                                <div class="form-group">
+                                    <input type="date" id="end_date" name="end_date" title="结束日期(可选)">
+                                </div>
+                                <button type="submit" class="btn-primary">查询</button>
+                                <button type="button" id="ai-analyze-btn" class="btn-primary btn-ai">🤖 AI分析</button>
+                            </div>
+                        </form>
+                    </div>
+
+                    <!-- K线图区域 -->
+                    <div class="card chart-card">
+                        <div class="card-header">
+                            <h3 id="chart-title">📊 K线图表</h3>
+                            <div class="chart-controls">
+                                <div class="indicator-toggles">
+                                    <label class="toggle-label"><input type="checkbox" id="ind-ma" checked> MA</label>
+                                    <label class="toggle-label"><input type="checkbox" id="ind-boll"> BOLL</label>
+                                    <label class="toggle-label"><input type="checkbox" id="ind-vol" checked> VOL</label>
+                                    <label class="toggle-label"><input type="checkbox" id="ind-macd"> MACD</label>
+                                    <label class="toggle-label"><input type="checkbox" id="ind-rsi"> RSI</label>
+                                    <label class="toggle-label"><input type="checkbox" id="ind-kdj"> KDJ</label>
+                                </div>
+                                <button id="add-watchlist-btn" class="btn-sm btn-star" title="加入自选">⭐ 加自选</button>
+                            </div>
+                        </div>
+                        <div id="chart-container" class="chart-wrapper"></div>
+                    </div>
+
+                    <!-- 数据表格 -->
+                    <div class="card data-card">
+                        <div class="card-header">
+                            <h3>📋 数据明细</h3>
+                            <button id="export-data-btn" class="btn-sm" style="display:none;">📥 导出CSV</button>
+                        </div>
+                        <div id="loading" style="display: none;" class="loading-spinner">
+                            <div class="spinner"></div><span>加载中...</span>
+                        </div>
+                        <div id="error" class="error-msg" style="display: none;"></div>
+                        <div id="data-container" class="data-table-wrapper">
+                            <table id="stock-table" style="display: none;">
+                                <thead>
+                                    <tr>
+                                        <th>日期/时间</th>
+                                        <th>开盘价</th>
+                                        <th>收盘价</th>
+                                        <th>最高价</th>
+                                        <th>最低价</th>
+                                        <th>成交量</th>
+                                        <th>涨跌幅</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="stock-data"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 右侧：实时行情信息 + 资金流向 -->
+                <div class="stock-right">
+                    <div class="card quote-card" id="quote-panel">
+                        <div class="card-header"><h3>💹 实时行情</h3></div>
+                        <div class="quote-content" id="quote-content">
+                            <p class="placeholder-text">输入股票代码查询后显示</p>
+                        </div>
+                    </div>
+                    <div class="card flow-card" id="flow-panel">
+                        <div class="card-header"><h3>💰 资金流向</h3></div>
+                        <div class="flow-content" id="flow-content">
+                            <p class="placeholder-text">输入股票代码查询后显示</p>
+                        </div>
+                    </div>
+                    <!-- 热门股票排行 -->
+                    <div class="card hot-card">
+                        <div class="card-header">
+                            <h3>🔥 牢A净流入排名</h3>
+                            <div class="hot-actions">
+                                <button id="super-query-btn" class="btn-sm btn-accent">⚡超级查询(60d)</button>
+                                <button id="ask-ai-btn" class="btn-sm btn-ai" style="display:none;">🤖 AI选股</button>
+                                <button id="download-query-btn" class="btn-sm" style="display:none;">📥 下载</button>
+                            </div>
+                        </div>
+                        <div id="loading-api" style="display:none;" class="loading-spinner"><div class="spinner"></div><span>获取资金流向数据...</span></div>
+                        <div id="error-api" class="error-msg" style="display: none;"></div>
+                        <div id="super-query-loading" style="display: none;" class="query-progress-bar"></div>
+                        <div id="hot-stocks-container" class="hot-table-wrapper">
+                            <table id="hot-stocks-table" style="display: none;">
+                                <thead>
+                                    <tr>
+                                        <th>代码</th>
+                                        <th>名称</th>
+                                        <th>最新价</th>
+                                        <th>涨跌幅</th>
+                                        <th>换手率</th>
+                                        <th>净流入</th>
+                                        <th>操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="hot-stocks-data"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 实时看板页 -->
+        <div class="tab-panel" id="panel-realtime">
+            <div class="realtime-layout">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>📊 实时行情看板</h3>
+                        <div class="realtime-controls">
+                            <input type="text" id="realtime-code-input" placeholder="输入代码添加 如: sh600519">
+                            <button id="realtime-add-btn" class="btn-sm btn-accent">添加</button>
+                            <button id="realtime-refresh-btn" class="btn-sm">🔄 刷新</button>
+                            <span class="auto-refresh-hint" id="auto-refresh-timer">自动刷新: 30s</span>
+                        </div>
+                    </div>
+                    <div class="realtime-grid" id="realtime-grid">
+                        <p class="placeholder-text">点击"添加"按钮输入股票代码，或从自选股添加</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 板块资金页 -->
+        <div class="tab-panel" id="panel-sector">
+            <div class="sector-layout">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>🏦 板块资金流向</h3>
+                        <div class="sector-controls">
+                            <select id="sector-type">
+                                <option value="industry">行业板块</option>
+                                <option value="concept">概念板块</option>
+                                <option value="theme">主题板块</option>
+                                <option value="region">地域板块</option>
+                            </select>
+                            <select id="sector-period">
+                                <option value="f62">今日</option>
+                                <option value="f164">近5日</option>
+                                <option value="f174">近10日</option>
+                            </select>
+                            <button id="sector-query-btn" class="btn-sm btn-accent">查询</button>
+                        </div>
+                    </div>
+                    <div id="sector-loading" style="display:none;" class="loading-spinner"><div class="spinner"></div><span>加载板块数据...</span></div>
+                    <div class="sector-content">
+                        <div class="sector-bar-chart" id="sector-bar-chart"></div>
+                        <div class="sector-table-wrapper">
+                            <table id="sector-table" style="display:none;">
+                                <thead>
+                                    <tr>
+                                        <th>排名</th>
+                                        <th>板块名称</th>
+                                        <th>涨跌幅</th>
+                                        <th>净流入</th>
+                                        <th>主力净流入</th>
+                                        <th>超大单净流入</th>
+                                        <th>大单净流入</th>
+                                        <th>换手率</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="sector-data"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 基金分析页 -->
+        <div class="tab-panel" id="panel-fund">
+            <div class="fund-layout">
+                <div class="card">
+                    <div class="card-header">
+                        <h3>💳 基金分析</h3>
+                        <div class="fund-controls">
+                            <input type="text" id="fund-search-input" placeholder="输入基金代码或名称搜索">
+                            <button id="fund-search-btn" class="btn-sm btn-accent">搜索</button>
+                        </div>
+                    </div>
+                    <div id="fund-loading" style="display:none;" class="loading-spinner"><div class="spinner"></div><span>搜索基金中...</span></div>
+                    <div class="fund-content">
+                        <div class="fund-search-results" id="fund-search-results"></div>
+                    </div>
+                </div>
+                <!-- 自选基金 -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3>⭐ 自选基金</h3>
+                        <button id="fund-refresh-btn" class="btn-sm">🔄 刷新估值</button>
+                    </div>
+                    <div class="fund-watchlist" id="fund-watchlist">
+                        <p class="placeholder-text">搜索基金后可添加到自选</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- AI顾问页 -->
+        <div class="tab-panel" id="panel-ai">
+            <div class="ai-layout">
+                <div class="card ai-card">
+                    <div class="card-header">
+                        <h3>🤖 AI 智能顾问</h3>
+                        <button id="clear-chat-btn" class="btn-sm">🗑️ 清空对话</button>
+                    </div>
+                    <div id="chat-container" class="chat-messages"></div>
+                    <div class="chat-input-area">
+                        <textarea id="user-input" placeholder="输入您的问题... (Enter发送, Shift+Enter换行)" onkeydown="handleKeyDown(event)" oninput="autoResizeTextarea()"></textarea>
+                        <button id="send-button" onclick="sendMessage()">发送</button>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
-    
+
+    <!-- 自选股侧边栏 -->
+    <div class="watchlist-sidebar" id="watchlist-sidebar">
+        <div class="watchlist-header">
+            <h3>⭐ 自选股</h3>
+            <button id="watchlist-close" class="btn-icon-sm">✕</button>
+        </div>
+        <div class="watchlist-add">
+            <input type="text" id="watchlist-add-input" placeholder="输入代码添加 如: sh600519">
+            <button id="watchlist-add-btn" class="btn-sm btn-accent">添加</button>
+        </div>
+        <div class="watchlist-items" id="watchlist-items">
+            <p class="placeholder-text">暂无自选股</p>
+        </div>
+    </div>
+    <div class="watchlist-overlay" id="watchlist-overlay"></div>
+
+    <!-- 股票详情弹窗 -->
+    <div class="modal-overlay" id="stock-modal-overlay" style="display:none;">
+        <div class="modal-dialog" id="stock-modal">
+            <div class="modal-header-bar">
+                <h3 id="modal-stock-title">股票详情</h3>
+                <button class="modal-close-btn" id="modal-close-btn">✕</button>
+            </div>
+            <div class="modal-body-content" id="modal-body-content"></div>
+        </div>
+    </div>
+
+    <footer class="site-footer">
+        <p>by <a href="https://yanshanlaosiji.top" target="_blank">雁山老司机</a> · ⚠️ 仅供娱乐研究，不构成投资建议</p>
+    </footer>
+
     <script src="main.js"></script>
 </body>
 </html>

@@ -2,155 +2,244 @@
 
 ## 项目简介
 
-FuckAshare 是一个基于PHP和Python的股票数据查询与AI分析平台，专为A股投资者设计。该平台集成了股票数据查询、AI智能分析、资金流向排名等功能，帮助投资者快速获取股票行情数据并获得专业的投资建议。
+FuckAshare 是一个基于PHP和Python的全功能股票数据查询与AI分析平台，专为A股投资者设计。集成了K线图表、技术指标分析、实时行情看板、板块资金流向、基金估值追踪、AI智能分析等核心功能，帮助投资者快速获取行情数据并获得专业的投资参考。
 
 ![image](https://github.com/user-attachments/assets/4264dc74-e581-46ee-a002-37a6adf563b6)
 
-⚠️ **免责声明**：本系统仅供娱乐和研究，不构成任何投注建议。股市有风险，投注需谨慎。
+⚠️ **免责声明**：本系统仅供娱乐和研究，不构成任何投资建议。股市有风险，投资需谨慎。
 
-⚠️ **免责声明**：本系统仅供娱乐和研究，不构成任何投注建议。股市有风险，投注需谨慎。
+## ✨ 核心功能
 
-⚠️ **免责声明**：本系统仅供娱乐和研究，不构成任何投注建议。股市有风险，投注需谨慎。
+### 📊 K线图表 & 技术指标
+- **专业K线图**：基于 TradingView Lightweight Charts 的交互式K线图
+- **移动平均线 MA**：支持 MA5/MA10/MA20/MA60 多周期均线
+- **布林带 BOLL**：20日中轨 + 2倍标准差上下轨
+- **MACD 指标**：DIF/DEA/MACD 柱状图，经典参数 12/26/9
+- **RSI 相对强弱指数**：14日RSI超买超卖判断
+- **KDJ 随机指标**：K/D/J 三线分析
+- **成交量柱状图**：红涨绿跌配色，直观展示量能
 
-## 功能特点
+### 💹 实时行情看板
+- 多股票同时监控，实时刷新（30秒自动刷新）
+- 展示最新价、涨跌幅、开盘/最高/最低、成交额、换手率、PE等
+- 一键添加/移除监控股票
+- 数据来源于东方财富实时行情API
 
-- **多维度股票数据查询**：支持不同时间周期（分钟、日、周、月）的股票数据查询
-- **AI智能分析**：集成DeepSeek AI引擎，对股票数据进行智能分析和投资建议
-- **热门股票排行**：展示A股净流入额排名，直观了解市场热点
-- **超级查询功能**：一键查询多只股票数据，提高查询效率
+### 🏦 板块资金流向
+- **行业板块 / 概念板块 / 主题板块 / 地域板块** 四大分类
+- 今日/近5日/近10日 多时间维度资金流向
+- 可视化柱状图 + 详细数据表格
+- 主力/超大单/大单/中单/小单 分层资金数据
+
+### 💳 基金分析
+- 基金搜索：按代码或名称搜索基金产品
+- 实时估值：盘中实时估算基金净值和涨跌幅
+- 基金自选：添加关注基金，一键刷新估值
+- 展示基金类型、基金经理、基金公司等详细信息
+
+### 🤖 AI 智能分析
+- 集成 DeepSeek AI 引擎，流式输出分析结果
+- 查询股票数据后自动触发AI分析
+- 超级查询：批量查询热门股票60天数据后AI选股
+- 支持多轮对话深入咨询
+
+### ⭐ 自选股管理
+- 添加/移除自选股，数据本地持久化
+- 侧边栏展示自选股实时涨跌
+- 一键跳转查询详情
+
+### 📥 数据导出
+- 股票数据CSV导出（支持中文）
+- 超级查询结果文本下载
+
+## 🎨 界面特色
+
+- **深色交易主题**：专业金融级深色UI，长时间盯盘不疲劳
+- **A股配色习惯**：红涨绿跌，符合A股投资者直觉
+- **响应式布局**：完美适配桌面端和移动端
+- **模块化Tab页**：股票行情、实时看板、板块资金、基金分析、AI顾问五大模块
 
 ## 技术栈
 
-- **前端**：HTML, CSS, JavaScript
-- **后端**：PHP 7.4+
-- **数据处理**：Python 3.x
-- **股票数据源**：基于Ashare库（腾讯、新浪数据源）
-- **AI引擎**：DeepSeek API
-- **第三方库**：
-  - marked.js - Markdown解析
-  - DOMPurify - XSS防护
+| 层级 | 技术 |
+|------|------|
+| 前端 | HTML5, CSS3, JavaScript (ES6+) |
+| K线图 | [Lightweight Charts](https://github.com/tradingview/lightweight-charts) v4.1 |
+| Markdown | marked.js + DOMPurify |
+| 后端 | PHP 7.4+ (cURL) |
+| 数据处理 | Python 3.x + pandas |
+| 股票数据源 | Ashare库 (腾讯/新浪) + 东方财富API |
+| 基金数据源 | 东方财富基金API |
+| AI引擎 | DeepSeek API (流式输出) |
 
 ## 安装步骤
 
 ### 环境要求
 
-- PHP 7.4 或更高版本
+- PHP 7.4 或更高版本（需 cURL 扩展）
 - Python 3.6 或更高版本
-- Web服务器（如Apache、Nginx）
-- PHP cURL扩展
+- Web 服务器（Apache / Nginx / 宝塔等）
 
 ### 安装流程
 
-1. **克隆仓库到本地**
+1. **克隆仓库**
+   ```bash
+   git clone https://github.com/RusianHu/FuckAshare.git
+   cd FuckAshare
+   ```
 
-```bash
-git clone https://github.com/RusianHu/FuckAshare.git
-cd FuckAshare
-```
+2. **安装 Python 依赖**
+   ```bash
+   pip install pandas requests
+   ```
 
-2. **安装Python依赖**
+3. **配置 Web 服务器**
 
-```bash
-pip install pandas requests
-```
+   将项目文件放置于 Web 服务器根目录，确保 PHP 有执行权限。
 
-3. **配置Web服务器**
+4. **配置 AI API 密钥**
+   ```bash
+   cp ai_api.php.example ai_api.php
+   ```
+   然后修改 `ai_api.php` 中的 API 密钥：
+   ```php
+   $apiKey = 'your-deepseek-api-key';
+   ```
 
-将项目文件放置于Web服务器根目录，确保PHP执行权限。
-
-4. **配置AI API密钥**
-
-复制示例文件并填入你的 API 密钥：
-
-```bash
-cp ai_api.php.example ai_api.php
-```
-
-然后修改 `ai_api.php` 文件中的 API 密钥：
-
-```php
-$apiKey = 'your-deepseek-api-key';
-```
-
-> ⚠️ **安全提示**：`ai_api.php` 已被加入 `.gitignore`，不会被提交到仓库。请勿将包含真实 API 密钥的文件提交到版本控制中。如需共享配置，请修改 `ai_api.php.example`。
-
-5. **确保文件权限**
-
-```bash
-chmod +x get_stock_data.py
-chmod 755 -R ./*
-```
+5. **设置文件权限**（Linux）
+   ```bash
+   chmod +x get_stock_data.py
+   chmod 755 -R ./*
+   ```
 
 ## 使用方法
 
-1. **股票查询**
-   - 输入股票代码（如：sh000001 或 000001.XSHG）
-   - 选择时间频率（分钟线、日线、周线、月线）
-   - 设置数据条数
-   - 可选择结束日期
-   - 点击"查询数据"
+### 股票行情查询
+1. 输入股票代码（如：sh000001、600519、000001.XSHG）
+2. 选择K线周期（1分钟~月线）
+3. 设置数据条数（建议120+以获得完整指标）
+4. 点击"查询"，自动显示K线图 + 技术指标 + AI分析
 
-2. **AI分析**
-   - 查询股票数据后，AI会自动分析并给出投资建议
-   - 可在对话框中输入具体问题进行更深入的咨询
+### 实时看板
+- 点击"添加"输入股票代码，自动监控实时行情
+- 支持30秒自动刷新
 
-3. **热门股票查看**
-   - 页面下方展示当日A股净流入额排名
-   - 点击"AI快询"按钮可快速查询某只热门股票的60日数据
+### 板块资金
+- 选择板块类型（行业/概念/主题/地域）和时间维度
+- 查看资金流入流出排名
+
+### 基金分析
+- 搜索基金代码或名称
+- 添加到自选基金列表，实时查看估值
+
+### 自选股
+- 点击右上角⭐图标打开自选股侧边栏
+- 添加代码后可查看实时涨跌，点击跳转查询
 
 ## 文件结构
 
 ```
 FuckAshare/
-├── index.php          # 网站主页
-├── api.php            # 股票数据API接口
-├── ai_api.php.example # AI分析接口示例配置（需复制为ai_api.php并填入密钥）
-├── hot_stocks_api.php # 热门股票API接口
-├── get_stock_data.py  # Python股票数据获取脚本
-├── Ashare.py          # 股票数据核心库
-├── main.js            # 主JavaScript文件
-├── style.css          # 样式表
-└── README.md          # 项目说明文档
+├── index.php              # 主页面（五大模块Tab页）
+├── api.php                # 股票历史数据API（Ashare数据源）
+├── ai_api.php.example     # AI分析接口配置模板
+├── stock_quote_api.php    # 🆕 股票实时行情代理API（东方财富）
+├── stock_flow_api.php     # 🆕 股票资金流向代理API（东方财富）
+├── sector_flow_api.php    # 🆕 板块资金流向代理API（东方财富）
+├── fund_estimate_api.php  # 🆕 基金实时估值代理API（天天基金）
+├── fund_info_api.php      # 🆕 基金详细信息代理API（东方财富）
+├── fund_search_api.php    # 🆕 基金搜索代理API（东方财富）
+├── hot_stocks_api.php     # 热门股票资金流向API
+├── create_session.php     # AI聊天会话创建
+├── get_stock_data.py      # Python股票数据获取脚本
+├── Ashare.py              # 股票数据核心库（腾讯/新浪双核心）
+├── main.js                # 主JavaScript（图表/指标/模块逻辑）
+├── style.css              # 深色交易主题样式表
+├── doc/                   # 🆕 API文档目录
+│   └── 东方财富API接口文档.md
+└── README.md              # 项目说明文档
 ```
+
+## API接口说明
+
+### 后端代理API
+
+所有东方财富接口均通过PHP后端代理访问，解决跨域问题：
+
+| 接口文件 | 说明 | 参数 |
+|----------|------|------|
+| `stock_quote_api.php` | 股票实时行情 | `codes`=股票代码(逗号分隔) |
+| `stock_flow_api.php` | 个股资金流向 | `code`=代码, `market`=市场(可选), `lmt`=条数 |
+| `sector_flow_api.php` | 板块资金流向 | `type`=industry/concept/theme/region, `key`=f62/f164/f174 |
+| `fund_estimate_api.php` | 基金实时估值 | `code`=6位基金代码 |
+| `fund_info_api.php` | 基金详细信息 | `codes`=基金代码(逗号分隔) |
+| `fund_search_api.php` | 基金搜索 | `key`=搜索关键词 |
+
+### 股票代码格式
+
+支持多种格式自动识别：
+- 上证：`sh000001` 或 `000001.XSHG`
+- 深证：`sz399001` 或 `000001.XSHE`
+- 纯数字：`600519`（6开头自动识别为沪市）
 
 ## 常见问题
 
-1. **股票代码格式**
-   - 上证：sh + 6位代码，如sh000001
-   - 深证：sz + 6位代码，如sz399001
-   - 也支持聚宽格式：000001.XSHG
+1. **K线图不显示**
+   - 确认网络可访问 CDN（lightweight-charts 库）
+   - 检查数据条数是否足够（建议 ≥ 20）
 
-2. **查询失败排查**
-   - 检查网络连接是否正常
-   - 确认股票代码格式是否正确
-   - 查看服务器错误日志
+2. **技术指标显示异常**
+   - MACD/RSI/KDJ 需要足够的数据量（建议 ≥ 30条）
+   - BOLL 需要至少 20 条数据
 
-## 更新计划
+3. **实时行情无数据**
+   - 非交易时间可能无实时数据
+   - 检查东方财富API是否可访问
 
-- [ ] 添加股票K线图表展示
-- [ ] 增加技术指标计算功能
-- [ ] 支持自定义AI分析模型
-- [ ] 添加用户账户系统
-- [ ] 增加股票数据导出功能
+4. **基金估值不更新**
+   - 仅在交易时间（9:30-15:00）提供实时估值
+   - 基金代码需为6位数字
+
+## 更新日志
+
+### v2.0 (2026-04) - 大规模重构
+- 🎨 全新深色交易主题UI
+- 📊 集成 Lightweight Charts 专业K线图
+- 📈 新增 MA/BOLL/MACD/RSI/KDJ 技术指标
+- 💹 新增实时行情看板（多股票监控 + 自动刷新）
+- 🏦 新增板块资金流向（行业/概念/主题/地域）
+- 💳 新增基金分析模块（搜索/估值/自选）
+- ⭐ 新增自选股管理（本地持久化）
+- 📥 新增CSV数据导出
+- 🔌 新增6个东方财富数据代理API
+- 📚 新增API接口文档
+
+### v1.0 - 初始版本
+- 股票数据查询
+- AI智能分析
+- 热门股票排行
+- 超级查询功能
 
 ## 贡献指南
 
-欢迎提交Issues和Pull Requests来帮助改进这个项目！
+欢迎提交 Issues 和 Pull Requests！
 
 1. Fork 本仓库
 2. 创建新分支 (`git checkout -b feature/amazing-feature`)
 3. 提交更改 (`git commit -m 'Add some amazing feature'`)
 4. 推送到分支 (`git push origin feature/amazing-feature`)
-5. 创建Pull Request
+5. 创建 Pull Request
 
 ## 许可证
 
-本项目采用MIT许可证 - 详情见 [LICENSE](LICENSE) 文件
+本项目采用 MIT 许可证 - 详情见 [LICENSE](LICENSE) 文件
 
 ## 致谢
 
-- [Ashare](https://github.com/mpquant/Ashare) - 提供股票数据获取功能
-- [DeepSeek](https://www.deepseek.com/) - 提供AI分析能力
+- [Ashare](https://github.com/mpquant/Ashare) - 股票数据获取核心库
+- [Lightweight Charts](https://github.com/tradingview/lightweight-charts) - 专业K线图表库
+- [DeepSeek](https://www.deepseek.com/) - AI分析引擎
+- [东方财富](https://www.eastmoney.com/) - 实时行情/资金流向/基金数据
 - 所有开源贡献者和使用者
 
 ---
