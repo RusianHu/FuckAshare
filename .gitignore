@@ -5,3 +5,28 @@ ai_api.php
 /doc
 .ace-tool/
 *.png
+
+# ── 敏感凭证 / 密钥文件 ──
+.env
+.env.*
+*.key
+*.pem
+*.secret
+*.credentials
+config.php
+config.local.php
+
+# ── IDE / 编辑器 ──
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── 操作系统生成文件 ──
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── 日志文件 ──
+*.log
