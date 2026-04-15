@@ -11,8 +11,14 @@
     <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
     <!-- Lightweight Charts K线图 -->
     <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+    <!-- GSAP 动画库 + ScrollTrigger -->
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/ScrollTrigger.min.js"></script>
 </head>
 <body>
+    <!-- 主题切换过渡遮罩 -->
+    <div class="theme-transition-overlay" id="theme-transition-overlay"></div>
+
     <!-- 顶部导航栏 -->
     <nav class="top-nav">
         <div class="nav-brand">
@@ -28,6 +34,12 @@
             <button class="nav-tab" data-tab="ai">AI顾问</button>
         </div>
         <div class="nav-actions">
+            <!-- 主题切换 -->
+            <div class="theme-switcher" id="theme-switcher" title="切换主题">
+                <button class="theme-btn theme-btn-light" data-theme="light" title="浅色护眼">☀️</button>
+                <button class="theme-btn theme-btn-dark" data-theme="dark" title="深色">🌙</button>
+                <button class="theme-btn theme-btn-system" data-theme="system" title="跟随系统">💻</button>
+            </div>
             <button id="watchlist-toggle" class="btn-icon" title="自选股">
                 <span>⭐</span>
                 <span class="watchlist-count" id="watchlist-count">0</span>
@@ -137,36 +149,38 @@
                             <p class="placeholder-text">输入股票代码查询后显示</p>
                         </div>
                     </div>
-                    <!-- 热门股票排行 -->
-                    <div class="card hot-card">
-                        <div class="card-header">
-                            <h3>🔥 牢A净流入排名</h3>
-                            <div class="hot-actions">
-                                <button id="super-query-btn" class="btn-sm btn-accent">⚡超级查询(60d)</button>
-                                <button id="ask-ai-btn" class="btn-sm btn-ai" style="display:none;">🤖 AI选股</button>
-                                <button id="download-query-btn" class="btn-sm" style="display:none;">📥 下载</button>
-                            </div>
-                        </div>
-                        <div id="loading-api" style="display:none;" class="loading-spinner"><div class="spinner"></div><span>获取资金流向数据...</span></div>
-                        <div id="error-api" class="error-msg" style="display: none;"></div>
-                        <div id="super-query-loading" style="display: none;" class="query-progress-bar"></div>
-                        <div id="hot-stocks-container" class="hot-table-wrapper">
-                            <table id="hot-stocks-table" style="display: none;">
-                                <thead>
-                                    <tr>
-                                        <th>代码</th>
-                                        <th>名称</th>
-                                        <th>最新价</th>
-                                        <th>涨跌幅</th>
-                                        <th>换手率</th>
-                                        <th>净流入</th>
-                                        <th>操作</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="hot-stocks-data"></tbody>
-                            </table>
-                        </div>
+                </div>
+            </div>
+            <!-- 牢A净流入排名：全宽展示 -->
+            <div class="card hot-card">
+                <div class="card-header">
+                    <h3>🔥 牢A净流入排名</h3>
+                    <div class="hot-actions">
+                        <button id="super-query-btn" class="btn-sm btn-accent">⚡超级查询(60d)</button>
+                        <button id="ask-ai-btn" class="btn-sm btn-ai" style="display:none;">🤖 AI选股</button>
+                        <button id="download-query-btn" class="btn-sm" style="display:none;">📥 下载</button>
                     </div>
+                </div>
+                <div id="loading-api" style="display:none;" class="loading-spinner"><div class="spinner"></div><span>获取资金流向数据...</span></div>
+                <div id="error-api" class="error-msg" style="display: none;"></div>
+                <div id="super-query-loading" style="display: none;" class="query-progress-bar"></div>
+                <div id="hot-stocks-container" class="hot-table-wrapper">
+                    <table id="hot-stocks-table" style="display: none;">
+                        <thead>
+                            <tr>
+                                <th>代码</th>
+                                <th>名称</th>
+                                <th>最新价</th>
+                                <th>涨跌幅</th>
+                                <th>换手率</th>
+                                <th>主力净流入</th>
+                                <th>超大单</th>
+                                <th>大单</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="hot-stocks-data"></tbody>
+                    </table>
                 </div>
             </div>
         </div>

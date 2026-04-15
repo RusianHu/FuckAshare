@@ -13,6 +13,391 @@ if (typeof window !== 'undefined') {
 }
 
 // ============================================================
+// 主题管理模块
+// ============================================================
+const ThemeManager = {
+    STORAGE_KEY: 'fa_theme',
+    currentTheme: 'system',
+    systemDarkQuery: null,
+
+    init() {
+        // 从 localStorage 读取保存的主题
+        const saved = localStorage.getItem(this.STORAGE_KEY);
+        if (saved && ['light', 'dark', 'system'].includes(saved)) {
+            this.currentTheme = saved;
+        }
+
+        // 监听系统主题变化
+        this.systemDarkQuery = window.matchMedia('(prefers-color-scheme: dark)');
+        this.systemDarkQuery.addEventListener('change', () => {
+            if (this.currentTheme === 'system') {
+                this.applyTheme('system');
+            }
+        });
+
+        // 应用主题
+        this.applyTheme(this.currentTheme, false);
+
+        // 绑定按钮
+        document.querySelectorAll('.theme-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const theme = btn.dataset.theme;
+                if (theme && theme !== this.currentTheme) {
+                    this.switchWithAnimation(theme, e);
+                }
+            });
+        });
+    },
+
+    applyTheme(theme, animate = true) {
+        this.currentTheme = theme;
+        localStorage.setItem(this.STORAGE_KEY, theme);
+        document.documentElement.setAttribute('data-theme', theme);
+
+        // 更新按钮激活状态
+        document.querySelectorAll('.theme-btn').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.theme === theme);
+        });
+
+        // 更新图表主题
+        if (typeof ChartModule !== 'undefined' && ChartModule.chart) {
+            ChartModule.updateChartTheme();
+        }
+
+        // GSAP 入场动画
+        if (animate && typeof gsap !== 'undefined') {
+            gsap.fromTo('body', 
+                { opacity: 0.92 },
+                { opacity: 1, duration: 0.4, ease: 'power2.out' }
+            );
+        }
+    },
+
+    switchWithAnimation(theme, event) {
+        const overlay = document.getElementById('theme-transition-overlay');
+        if (!overlay || typeof gsap === 'undefined') {
+            this.applyTheme(theme);
+            return;
+        }
+
+        // 从点击位置扩散的圆形遮罩
+        const x = event?.clientX || window.innerWidth / 2;
+        const y = event?.clientY || window.innerHeight / 2;
+        overlay.style.setProperty('--transition-x', x + 'px');
+        overlay.style.setProperty('--transition-y', y + 'px');
+
+        // 判断目标主题是否为浅色
+        const isLight = theme === 'light' || 
+            (theme === 'system' && window.matchMedia('(prefers-color-scheme: light)').matches);
+
+        const color = isLight 
+            ? 'radial-gradient(circle at ' + x + 'px ' + y + 'px, rgba(232,240,228,0.6) 0%, transparent 70%)'
+            : 'radial-gradient(circle at ' + x + 'px ' + y + 'px, rgba(13,17,23,0.6) 0%, transparent 70%)';
+
+        gsap.set(overlay, { background: color });
+        
+        const tl = gsap.timeline();
+        tl.to(overlay, {
+            opacity: 1,
+            duration: 0.3,
+            ease: 'power2.inOut'
+        });
+        tl.call(() => {
+            this.applyTheme(theme);
+        });
+        tl.to(overlay, {
+            opacity: 0,
+            duration: 0.4,
+            ease: 'power2.out'
+        });
+    },
+
+    // 获取当前实际生效的主题（解析 system）
+    getEffectiveTheme() {
+        if (this.currentTheme !== 'system') return this.currentTheme;
+        return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    },
+
+    // 获取当前主题下的 CSS 变量值
+    getCSSVar(name) {
+        return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    }
+};
+
+// ============================================================
+// GSAP 动画模块 — 深度集成 Timeline / ScrollTrigger / matchMedia / quickTo
+// ============================================================
+const AnimationManager = {
+    // gsap.matchMedia() 实例——响应式 + prefers-reduced-motion
+    mm: null,
+    // gsap.quickTo() 缓存——高频更新复用同一 tween
+    _quickTos: {},
+
+    init() {
+        if (typeof gsap === 'undefined') return;
+
+        // 注册 ScrollTrigger 插件
+        if (typeof ScrollTrigger !== 'undefined') {
+            gsap.registerPlugin(ScrollTrigger);
+        }
+
+        // 全局默认值
+        gsap.defaults({ ease: 'power2.out', duration: 0.4 });
+
+        // 创建 matchMedia 实例
+        this.mm = gsap.matchMedia();
+
+        // 1) Timeline 编排入场
+        this.entranceAnimations();
+
+        // 2) ScrollTrigger 滚动触发
+        this.scrollAnimations();
+
+        // 3) 按钮点击波纹
+        this.bindRippleEffect();
+    },
+
+    // ════════════════════════════════════════════
+    //  1. 页面入场 — Timeline 编排 + matchMedia 无障碍
+    // ════════════════════════════════════════════
+    entranceAnimations() {
+        this.mm.add({
+            reduceMotion: '(prefers-reduced-motion: reduce)'
+        }, (context) => {
+            const { reduceMotion } = context.conditions;
+            // 用户偏好减少动效时，duration 全部归零
+            const d = reduceMotion ? 0 : 0.35;
+
+            // 用 Timeline + labels 编排入场序列，避免散落 delay
+            const tl = gsap.timeline({
+                defaults: { autoAlpha: 0, duration: d, ease: 'power2.out' }
+            });
+
+            tl.from('.top-nav', { clearProps: 'autoAlpha' })
+              .addLabel('brand')
+              .from('.nav-brand', { clearProps: 'autoAlpha' }, 'brand')
+              .addLabel('tabs', '-=0.15')
+              .from('.nav-tab', { stagger: 0.04, clearProps: 'autoAlpha' }, 'tabs')
+              .addLabel('actions', 'tabs+=0.08')
+              .from('.theme-switcher', { clearProps: 'autoAlpha' }, 'actions')
+              .from('#watchlist-toggle', { clearProps: 'autoAlpha' }, 'actions')
+              .addLabel('footer', '-=0.1')
+              .from('.site-footer', { clearProps: 'autoAlpha' }, 'footer');
+
+            // 兜底恢复——极端情况下也不会停留不可见
+            window.setTimeout(() => {
+                document.querySelectorAll(
+                    '.nav-tab, .theme-switcher, #watchlist-toggle, .site-footer, .top-nav, .nav-brand'
+                ).forEach(el => { el.style.opacity = '1'; el.style.visibility = 'visible'; });
+            }, 1500);
+        });
+    },
+
+    // ════════════════════════════════════════════
+    //  2. ScrollTrigger — 滚动触发卡片/页脚淡入
+    // ════════════════════════════════════════════
+    scrollAnimations() {
+        if (typeof ScrollTrigger === 'undefined') return;
+
+        this.mm.add({
+            reduceMotion: '(prefers-reduced-motion: reduce)',
+            isDesktop: '(min-width: 800px)'
+        }, (context) => {
+            const { reduceMotion } = context.conditions;
+
+            // 当前可见 Tab 面板中的卡片——批量淡入
+            ScrollTrigger.batch('.tab-panel.active .card', {
+                interval: 0.1,
+                batchMax: 6,
+                onEnter: (batch) => {
+                    gsap.to(batch, {
+                        autoAlpha: 1, duration: reduceMotion ? 0 : 0.35,
+                        stagger: 0.05, ease: 'power2.out', overwrite: true
+                    });
+                },
+                start: 'top 92%',
+                once: true
+            });
+
+            // 页脚滚动触发
+            gsap.from('.site-footer', {
+                autoAlpha: 0,
+                scrollTrigger: {
+                    trigger: '.site-footer',
+                    start: 'top 95%',
+                    once: true
+                },
+                duration: reduceMotion ? 0 : 0.4,
+                clearProps: 'autoAlpha'
+            });
+        });
+    },
+
+    // Tab 切换后刷新 ScrollTrigger 位置计算
+    refreshAfterTabSwitch() {
+        if (typeof ScrollTrigger !== 'undefined') {
+            ScrollTrigger.refresh();
+        }
+    },
+
+    // ════════════════════════════════════════════
+    //  3. 按钮点击波纹
+    // ════════════════════════════════════════════
+    bindRippleEffect() {
+        document.addEventListener('click', (e) => {
+            const btn = e.target.closest('.btn-primary, .btn-sm, .btn-accent, .btn-ai, .nav-tab, .theme-btn');
+            if (!btn) return;
+
+            const ripple = document.createElement('span');
+            ripple.classList.add('ripple');
+            const rect = btn.getBoundingClientRect();
+            const size = Math.max(rect.width, rect.height);
+            ripple.style.width = ripple.style.height = size + 'px';
+            ripple.style.left = (e.clientX - rect.left - size / 2) + 'px';
+            ripple.style.top = (e.clientY - rect.top - size / 2) + 'px';
+
+            btn.style.position = btn.style.position || 'relative';
+            btn.style.overflow = 'hidden';
+            btn.appendChild(ripple);
+
+            if (typeof gsap !== 'undefined') {
+                gsap.to(ripple, {
+                    scale: 4, autoAlpha: 0, duration: 0.5, ease: 'power2.out',
+                    onComplete: () => ripple.remove()
+                });
+            } else {
+                setTimeout(() => ripple.remove(), 500);
+            }
+        });
+    },
+
+    // ════════════════════════════════════════════
+    //  quickTo —— 高频价格追踪，复用同一 tween
+    // ════════════════════════════════════════════
+    getQuickTo(el, prop, vars = {}) {
+        const key = el.dataset.qtId || (el.dataset.qtId = 'qt_' + Math.random().toString(36).slice(2, 8));
+        if (!this._quickTos[key]) {
+            this._quickTos[key] = gsap.quickTo(el, prop, { duration: 0.35, ease: 'power2.out', ...vars });
+        }
+        return this._quickTos[key];
+    },
+
+    // ════════════════════════════════════════════
+    //  实用型动效 API —— 供业务模块按需调用
+    // ════════════════════════════════════════════
+
+    /**
+     * 价格闪烁 —— 股价/涨跌更新时短暂高亮背景
+     * @param {HTMLElement} el    目标元素
+     * @param {'up'|'down'|'flat'} direction  涨跌方向
+     */
+    flashPrice(el, direction) {
+        if (!el || typeof gsap === 'undefined') return;
+        const isUp = direction === 'up';
+        const isDown = direction === 'down';
+        const flashColor = isUp ? 'rgba(199, 58, 24, 0.18)' : isDown ? 'rgba(46, 139, 87, 0.18)' : 'rgba(95, 117, 95, 0.1)';
+        gsap.fromTo(el,
+            { backgroundColor: flashColor },
+            { backgroundColor: 'transparent', duration: 0.8, ease: 'power2.out' }
+        );
+    },
+
+    /**
+     * 条形图增长 —— 用 scaleX（GPU 合成层）替代 width（触发 layout）
+     * @param {string} selector 条形 fill 元素选择器
+     */
+    animateBars(selector) {
+        if (typeof gsap === 'undefined') return;
+        document.querySelectorAll(selector).forEach(bar => {
+            // 如果已经可见则跳过
+            const currentWidth = bar.style.width;
+            if (!currentWidth || currentWidth === '0px' || currentWidth === '0%') return;
+            gsap.fromTo(bar,
+                { scaleX: 0, transformOrigin: 'left center' },
+                { scaleX: 1, transformOrigin: 'left center', duration: 0.6, ease: 'power2.out', clearProps: 'scaleX' }
+            );
+        });
+    },
+
+    /**
+     * 数字递增动画 —— 从 0 递增到目标值
+     * @param {HTMLElement} el   目标元素
+     * @param {number} end       目标数值
+     * @param {number} duration  动画时长（秒）
+     * @param {number} decimals  小数位数
+     */
+    countUp(el, end, duration = 0.5, decimals = 2) {
+        if (!el || typeof gsap === 'undefined') { if (el) el.textContent = end.toFixed(decimals); return; }
+        const obj = { val: 0 };
+        gsap.to(obj, {
+            val: end, duration, ease: 'power2.out',
+            onUpdate: () => { el.textContent = obj.val.toFixed(decimals); }
+        });
+    },
+
+    /**
+     * 卡片数据刷新高亮 —— 边框短暂亮绿
+     * @param {HTMLElement} card  目标 .card 元素
+     */
+    pulseCard(card) {
+        if (!card || typeof gsap === 'undefined') return;
+        const orig = getComputedStyle(card).borderColor;
+        gsap.fromTo(card,
+            { borderColor: 'var(--accent-green)' },
+            { borderColor: orig, duration: 0.8, ease: 'power2.out' }
+        );
+    },
+
+    /**
+     * 行交错淡入——使用 autoAlpha（不可见时自动 visibility:hidden）
+     * @param {string} selector 目标行选择器
+     */
+    animateRows(selector) {
+        if (typeof gsap === 'undefined') return;
+        gsap.from(selector, {
+            autoAlpha: 0, duration: 0.2, stagger: 0.015, ease: 'power2.out', clearProps: 'autoAlpha'
+        });
+    },
+
+    // ── 实时看板卡片交错淡入 ──
+    animateRealtimeCards() {
+        if (typeof gsap === 'undefined') return;
+        gsap.from('.realtime-card', {
+            autoAlpha: 0, duration: 0.3, stagger: 0.04, ease: 'power2.out', clearProps: 'autoAlpha'
+        });
+    },
+
+    // ── 基金卡片交错淡入 ──
+    animateFundCards() {
+        if (typeof gsap === 'undefined') return;
+        gsap.from('.fund-card', {
+            autoAlpha: 0, duration: 0.3, stagger: 0.03, ease: 'power2.out', clearProps: 'autoAlpha'
+        });
+    },
+
+    // ── 热门股票行交错淡入 ──
+    animateHotRows() {
+        this.animateRows('#hot-stocks-data tr');
+    },
+
+    // ── 侧边栏自选股条目交错淡入 ──
+    animateSidebarOpen() {
+        if (typeof gsap === 'undefined') return;
+        gsap.from('.wl-item', {
+            autoAlpha: 0, duration: 0.25, stagger: 0.04, ease: 'power2.out', delay: 0.1, clearProps: 'autoAlpha'
+        });
+    },
+
+    // ── 弹窗淡入 ──
+    animateModalIn() {
+        if (typeof gsap === 'undefined') return;
+        gsap.from('.modal-dialog', {
+            autoAlpha: 0, duration: 0.3, ease: 'power2.out', clearProps: 'autoAlpha'
+        });
+    }
+};
+
+// ============================================================
 // 全局状态
 // ============================================================
 const APP = {
@@ -207,36 +592,119 @@ const Indicators = {
 // ============================================================
 const ChartModule = {
     indicatorSeries: {},
+
+    // 获取当前主题的图表配色
+    getChartColors() {
+        const style = getComputedStyle(document.documentElement);
+        const isLight = ThemeManager.getEffectiveTheme() === 'light';
+        
+        if (isLight) {
+            return {
+                layout: {
+                    background: { type: 'solid', color: '#f2f7ef' },
+                    textColor: '#4a6348',
+                    fontSize: 12,
+                },
+                grid: {
+                    vertLines: { color: '#dce8d6' },
+                    horzLines: { color: '#dce8d6' },
+                },
+                crosshair: {
+                    mode: 0, // Normal
+                    vertLine: { color: '#b8ccb0', width: 1, style: 2 },
+                    horzLine: { color: '#b8ccb0', width: 1, style: 2 },
+                },
+                rightPriceScale: { borderColor: '#b8ccb0' },
+                timeScale: { borderColor: '#b8ccb0', timeVisible: true },
+                candle: {
+                    upColor: '#d4380d', downColor: '#389e0f',
+                    borderUpColor: '#d4380d', borderDownColor: '#389e0f',
+                    wickUpColor: '#d4380d', wickDownColor: '#389e0f',
+                },
+                volume: {
+                    up: 'rgba(212, 56, 13, 0.35)',
+                    down: 'rgba(56, 158, 15, 0.35)',
+                },
+                macd: {
+                    up: 'rgba(212, 56, 13, 0.5)',
+                    down: 'rgba(56, 158, 15, 0.5)',
+                }
+            };
+        } else {
+            return {
+                layout: {
+                    background: { type: 'solid', color: '#0d1117' },
+                    textColor: '#8b949e',
+                    fontSize: 12,
+                },
+                grid: {
+                    vertLines: { color: '#1c2128' },
+                    horzLines: { color: '#1c2128' },
+                },
+                crosshair: {
+                    mode: 0,
+                    vertLine: { color: '#30363d', width: 1, style: 2 },
+                    horzLine: { color: '#30363d', width: 1, style: 2 },
+                },
+                rightPriceScale: { borderColor: '#30363d' },
+                timeScale: { borderColor: '#30363d', timeVisible: true },
+                candle: {
+                    upColor: '#f85149', downColor: '#3fb950',
+                    borderUpColor: '#f85149', borderDownColor: '#3fb950',
+                    wickUpColor: '#f85149', wickDownColor: '#3fb950',
+                },
+                volume: {
+                    up: 'rgba(248, 81, 73, 0.4)',
+                    down: 'rgba(63, 185, 80, 0.4)',
+                },
+                macd: {
+                    up: 'rgba(248, 81, 73, 0.6)',
+                    down: 'rgba(63, 185, 80, 0.6)',
+                }
+            };
+        }
+    },
+
+    normalizeChartTime(rawTime) {
+        if (rawTime === null || rawTime === undefined) return rawTime;
+        if (typeof rawTime !== 'string') return rawTime;
+
+        const value = rawTime.trim();
+        if (!value) return value;
+
+        const dateTimeMatch = value.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/);
+        if (dateTimeMatch) {
+            const [, year, month, day, hour, minute, second = '00'] = dateTimeMatch;
+            return Math.floor(Date.UTC(
+                Number(year),
+                Number(month) - 1,
+                Number(day),
+                Number(hour),
+                Number(minute),
+                Number(second)
+            ) / 1000);
+        }
+
+        return value;
+    },
+ 
     init() {
         const container = document.getElementById('chart-container');
         if (!container || typeof LightweightCharts === 'undefined') return;
 
+        const colors = this.getChartColors();
+
         this.chart = LightweightCharts.createChart(container, {
             width: container.clientWidth,
             height: container.clientHeight,
-            layout: {
-                background: { type: 'solid', color: '#0d1117' },
-                textColor: '#8b949e',
-                fontSize: 12,
-            },
-            grid: {
-                vertLines: { color: '#1c2128' },
-                horzLines: { color: '#1c2128' },
-            },
-            crosshair: {
-                mode: LightweightCharts.CrosshairMode.Normal,
-                vertLine: { color: '#30363d', width: 1, style: 2 },
-                horzLine: { color: '#30363d', width: 1, style: 2 },
-            },
-            rightPriceScale: { borderColor: '#30363d' },
-            timeScale: { borderColor: '#30363d', timeVisible: true },
+            layout: colors.layout,
+            grid: colors.grid,
+            crosshair: colors.crosshair,
+            rightPriceScale: colors.rightPriceScale,
+            timeScale: colors.timeScale,
         });
 
-        this.candleSeries = this.chart.addCandlestickSeries({
-            upColor: '#f85149', downColor: '#3fb950',
-            borderUpColor: '#f85149', borderDownColor: '#3fb950',
-            wickUpColor: '#f85149', wickDownColor: '#3fb950',
-        });
+        this.candleSeries = this.chart.addCandlestickSeries(colors.candle);
 
         // 成交量
         this.volumeSeries = this.chart.addHistogramSeries({
@@ -254,30 +722,61 @@ const ChartModule = {
         ro.observe(container);
     },
 
+    // 主题切换时更新图表配色
+    updateChartTheme() {
+        if (!this.chart) return;
+        const colors = this.getChartColors();
+
+        this.chart.applyOptions({
+            layout: colors.layout,
+            grid: colors.grid,
+            crosshair: colors.crosshair,
+            rightPriceScale: colors.rightPriceScale,
+            timeScale: colors.timeScale,
+        });
+
+        // 更新K线配色
+        if (this.candleSeries) {
+            this.candleSeries.applyOptions(colors.candle);
+        }
+
+        // 如果有数据，重新渲染以更新颜色
+        if (APP.currentStockData.length > 0) {
+            this.updateData(APP.currentStockData);
+        }
+    },
+
     // 更新K线数据
     updateData(data) {
         if (!this.candleSeries) return;
         APP.currentStockData = data;
-
-        const candleData = data.map(row => ({
-            time: row.time,
+ 
+        const colors = this.getChartColors();
+ 
+        const normalizedData = data.map(row => ({
+            ...row,
+            chartTime: this.normalizeChartTime(row.time),
+        }));
+ 
+        const candleData = normalizedData.map(row => ({
+            time: row.chartTime,
             open: parseFloat(row.open),
             high: parseFloat(row.high),
             low: parseFloat(row.low),
             close: parseFloat(row.close),
         }));
-
-        const volumeData = data.map(row => ({
-            time: row.time,
+ 
+        const volumeData = normalizedData.map(row => ({
+            time: row.chartTime,
             value: parseFloat(row.volume),
-            color: parseFloat(row.close) >= parseFloat(row.open) ? 'rgba(248,81,73,0.4)' : 'rgba(63,185,80,0.4)',
+            color: parseFloat(row.close) >= parseFloat(row.open) ? colors.volume.up : colors.volume.down,
         }));
-
+ 
         this.candleSeries.setData(candleData);
         this.volumeSeries.setData(volumeData);
-
+ 
         // 计算并显示技术指标
-        this.updateIndicators(data);
+        this.updateIndicators(normalizedData);
         this.chart.timeScale().fitContent();
     },
 
@@ -285,20 +784,21 @@ const ChartModule = {
         // 清除旧的指标线
         Object.values(this.indicatorSeries).forEach(s => { try { this.chart.removeSeries(s); } catch(e){} });
         this.indicatorSeries = {};
-
+ 
         const closes = data.map(r => parseFloat(r.close));
         const highs = data.map(r => parseFloat(r.high));
         const lows = data.map(r => parseFloat(r.low));
-        const times = data.map(r => r.time);
+        const times = data.map(r => r.chartTime ?? this.normalizeChartTime(r.time));
+        const colors = this.getChartColors();
 
         // MA均线
         if (document.getElementById('ind-ma')?.checked) {
             [5, 10, 20, 60].forEach((period, idx) => {
                 const ma = Indicators.MA(closes, period);
-                const colors = ['#f0883e', '#58a6ff', '#bc8cff', '#3fb950'];
+                const lineColors = ['#f0883e', '#58a6ff', '#bc8cff', '#3fb950'];
                 const series = this.chart.addLineSeries({
                     priceLineVisible: false, lastValueVisible: false,
-                    color: colors[idx], lineWidth: 1,
+                    color: lineColors[idx], lineWidth: 1,
                 });
                 series.setData(ma.map((v, i) => v !== null ? { time: times[i], value: v } : null).filter(Boolean));
                 this.indicatorSeries['ma' + period] = series;
@@ -309,10 +809,10 @@ const ChartModule = {
         if (document.getElementById('ind-boll')?.checked) {
             const boll = Indicators.BOLL(closes);
             ['upper', 'mid', 'lower'].forEach((key, idx) => {
-                const colors = ['rgba(248,81,73,0.5)', 'rgba(210,153,34,0.8)', 'rgba(63,185,80,0.5)'];
+                const lineColors = ['rgba(248,81,73,0.5)', 'rgba(210,153,34,0.8)', 'rgba(63,185,80,0.5)'];
                 const series = this.chart.addLineSeries({
                     priceLineVisible: false, lastValueVisible: false,
-                    color: colors[idx], lineWidth: 1, lineStyle: idx === 1 ? 0 : 2,
+                    color: lineColors[idx], lineWidth: 1, lineStyle: idx === 1 ? 0 : 2,
                 });
                 series.setData(boll[key].map((v, i) => v !== null ? { time: times[i], value: v } : null).filter(Boolean));
                 this.indicatorSeries['boll_' + key] = series;
@@ -332,7 +832,7 @@ const ChartModule = {
             macdSeries.setData(macd.macd.map((v, i) => ({
                 time: times[i],
                 value: v,
-                color: v >= 0 ? 'rgba(248,81,73,0.6)' : 'rgba(63,185,80,0.6)',
+                color: v >= 0 ? colors.macd.up : colors.macd.down,
             })));
             this.indicatorSeries['macd_hist'] = macdSeries;
 
@@ -370,10 +870,10 @@ const ChartModule = {
             const kdj = Indicators.KDJ(highs, lows, closes);
             const kdjScale = 'kdj';
             ['k', 'd', 'j'].forEach((key, idx) => {
-                const colors = ['#f0883e', '#58a6ff', '#bc8cff'];
+                const lineColors = ['#f0883e', '#58a6ff', '#bc8cff'];
                 const series = this.chart.addLineSeries({
                     priceLineVisible: false, lastValueVisible: false,
-                    color: colors[idx], lineWidth: 1, priceScaleId: kdjScale,
+                    color: lineColors[idx], lineWidth: 1, priceScaleId: kdjScale,
                 });
                 series.setData(kdj[key].map((v, i) => v !== null ? { time: times[i], value: v } : null).filter(Boolean));
                 this.indicatorSeries['kdj_' + key] = series;
@@ -434,6 +934,13 @@ const QuoteModule = {
                 <span class="q-label">总市值</span><span class="q-value">${formatAmount(quote.total_mv)}</span>
             </div>
         `;
+
+        // 价格更新闪烁 + 卡片边框脉冲
+        const priceEl = el.querySelector('.quote-price-big');
+        const pct = quote.change_pct || 0;
+        AnimationManager.flashPrice(priceEl, pct > 0 ? 'up' : pct < 0 ? 'down' : 'flat');
+        const card = el.closest('.card');
+        if (card) AnimationManager.pulseCard(card);
     }
 };
 
@@ -485,6 +992,9 @@ const FlowModule = {
         });
         html += '</div>';
         el.innerHTML = html;
+
+        // 资金流向柱增长动画
+        AnimationManager.animateBars('.flow-content .flow-bar-fill');
     }
 };
 
@@ -641,6 +1151,9 @@ const RealtimeModule = {
             `;
         });
         grid.innerHTML = html || '<p class="placeholder-text">暂无数据</p>';
+
+        // 入场动画
+        AnimationManager.animateRealtimeCards();
     },
 
     startAutoRefresh() {
@@ -706,6 +1219,9 @@ const SectorModule = {
             `;
         });
         container.innerHTML = html;
+
+        // 板块柱增长动画
+        AnimationManager.animateBars('#sector-bar-chart .sector-bar-fill');
     },
 
     renderTable(sectors) {
@@ -778,6 +1294,9 @@ const FundModule = {
             `;
         });
         container.innerHTML = html;
+
+        // 基金卡片入场动画
+        AnimationManager.animateFundCards();
     },
 
     addToWatchlist(code, name) {
@@ -876,6 +1395,17 @@ const AIModule = {
         }
         APP.chatContainer.appendChild(div);
         APP.chatContainer.scrollTop = APP.chatContainer.scrollHeight;
+
+        // 消息气泡 GSAP 入场——autoAlpha 淡入
+        if (typeof gsap !== 'undefined') {
+            gsap.from(div, {
+                autoAlpha: 0,
+                duration: 0.3,
+                ease: 'power2.out',
+                clearProps: 'autoAlpha'
+            });
+        }
+
         return div;
     },
 
@@ -1082,6 +1612,19 @@ function autoResizeTextarea() {
 function switchTab(tabName) {
     document.querySelectorAll('.nav-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tabName));
     document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + tabName));
+
+    // Tab 切换面板入场——autoAlpha 淡入，零位移
+    const activePanel = document.getElementById('panel-' + tabName);
+    if (activePanel && typeof gsap !== 'undefined') {
+        const cards = activePanel.querySelectorAll('.card');
+        gsap.fromTo(cards,
+            { autoAlpha: 0 },
+            { autoAlpha: 1, duration: 0.35, stagger: 0.05, ease: 'power2.out', clearProps: 'autoAlpha' }
+        );
+    }
+
+    // 刷新 ScrollTrigger 位置计算
+    AnimationManager.refreshAfterTabSwitch();
 }
 
 // ============================================================
@@ -1094,6 +1637,12 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // 配置marked
     marked.setOptions({ gfm: true, breaks: false });
+
+    // 初始化主题（在 GSAP 之前，以尽早应用主题）
+    ThemeManager.init();
+
+    // 初始化动画
+    AnimationManager.init();
 
     // 初始化聊天
     APP.chatContainer = document.getElementById('chat-container');
@@ -1118,6 +1667,7 @@ document.addEventListener('DOMContentLoaded', function() {
         document.getElementById('watchlist-sidebar').classList.toggle('open');
         document.getElementById('watchlist-overlay').classList.toggle('open');
         WatchlistModule.render();
+        AnimationManager.animateSidebarOpen();
     });
     document.getElementById('watchlist-close')?.addEventListener('click', () => {
         document.getElementById('watchlist-sidebar').classList.remove('open');
@@ -1287,7 +1837,8 @@ document.addEventListener('DOMContentLoaded', function() {
                     data.forEach(stock => {
                         const tr = document.createElement('tr');
                         const netInflow = parseFloat(stock.jlr);
-                        const netInflowRate = parseFloat(stock.jlrl);
+                        const superInflow = parseFloat(stock.cjlr_super || 0);
+                        const bigInflow = parseFloat(stock.cjlr_big || 0);
                         tr.innerHTML = `
                             <td>${stock.dm}</td>
                             <td>${stock.mc}</td>
@@ -1295,12 +1846,17 @@ document.addEventListener('DOMContentLoaded', function() {
                             <td class="${colorClass(stock.zdf)}">${formatPct(stock.zdf)}</td>
                             <td>${parseFloat(stock.hsl).toFixed(2)}</td>
                             <td class="${colorClass(netInflow)}">${formatAmount(netInflow)}</td>
+                            <td class="${colorClass(superInflow)}">${formatAmount(superInflow)}</td>
+                            <td class="${colorClass(bigInflow)}">${formatAmount(bigInflow)}</td>
                             <td><button class="btn-quick-query" data-code="${stock.dm}">AI快询</button></td>
                         `;
                         hotStocksData.appendChild(tr);
                     });
 
                     hotStocksTable.style.display = 'table';
+
+                    // 热门股票行入场动画
+                    AnimationManager.animateHotRows();
 
                     document.querySelectorAll('.btn-quick-query').forEach(btn => {
                         btn.addEventListener('click', function() {
@@ -1407,6 +1963,9 @@ document.addEventListener('DOMContentLoaded', function() {
         html += '</tbody></table>';
         body.innerHTML = html;
         overlay.style.display = 'flex';
+
+        // 弹窗入场动画
+        AnimationManager.animateModalIn();
     }
 
     document.getElementById('modal-close-btn')?.addEventListener('click', () => {
@@ -1430,6 +1989,8 @@ document.addEventListener('DOMContentLoaded', function() {
                     change: cells[3].textContent.trim(),
                     turnover: cells[4].textContent.trim(),
                     netInflow: cells[5].textContent.trim(),
+                    superInflow: cells[6]?.textContent?.trim() || '-',
+                    bigInflow: cells[7]?.textContent?.trim() || '-',
                 };
             }
         });
@@ -1437,7 +1998,7 @@ document.addEventListener('DOMContentLoaded', function() {
             const stock = allData[code];
             result += `## ${stock.name} (${code})\n\n`;
             if (hotInfo[code]) {
-                result += `当前价: ${hotInfo[code].price} | 涨跌: ${hotInfo[code].change}% | 净流入: ${hotInfo[code].netInflow}\n\n`;
+                result += `当前价: ${hotInfo[code].price} | 涨跌: ${hotInfo[code].change}% | 主力净流入: ${hotInfo[code].netInflow} | 超大单: ${hotInfo[code].superInflow} | 大单: ${hotInfo[code].bigInflow}\n\n`;
             }
             result += `日期,开盘,收盘,最高,最低,成交量\n`;
             stock.data.forEach(item => {
@@ -1475,4 +2036,12 @@ document.addEventListener('DOMContentLoaded', function() {
         APP.chatContainer.innerHTML = '';
         APP.messageHistory = [{ role: 'system', content: '你是一位专业的股票分析师，擅长解读股票数据并给出建议。' }];
     });
+
+    // === 入场数据：自动查询上证指数（仅查询，不触发AI） ===
+    const codeInput = document.getElementById('code');
+    if (codeInput && !codeInput.value.trim()) {
+        codeInput.value = 'sh000001';
+        APP.queryWithAI = false;
+        stockForm.dispatchEvent(new Event('submit'));
+    }
 });

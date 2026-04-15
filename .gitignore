@@ -3,3 +3,4 @@
 ai_api.php
 /.playwright-mcp
 /doc
+.ace-tool/
