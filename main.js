@@ -1397,13 +1397,12 @@ const AIModule = {
         APP.chatContainer.scrollTop = APP.chatContainer.scrollHeight;
 
         // 消息气泡 GSAP 入场——autoAlpha 淡入
+        // 使用 fromTo 显式指定目标状态，避免父元素动画干扰计算
         if (typeof gsap !== 'undefined') {
-            gsap.from(div, {
-                autoAlpha: 0,
-                duration: 0.3,
-                ease: 'power2.out',
-                clearProps: 'autoAlpha'
-            });
+            gsap.fromTo(div,
+                { autoAlpha: 0 },
+                { autoAlpha: 1, duration: 0.3, ease: 'power2.out', clearProps: 'autoAlpha' }
+            );
         }
 
         return div;
@@ -1775,17 +1774,39 @@ document.addEventListener('DOMContentLoaded', function() {
                     stockTable.style.display = 'table';
                     document.getElementById('export-data-btn').style.display = 'inline-block';
 
+                    // 获取实时行情
+                    QuoteModule.fetch(code).then(q => QuoteModule.render(q));
+
                     // 根据标志决定是否触发AI分析
                     if (APP.queryWithAI) {
                         APP.queryWithAI = false;
-                        aiStr += "\n请评估这些数据，考虑成交量、历史趋势、MACD指标、RSI、支撑位和阻力位等，给出投资建议。\n今天是：" + new Date().toISOString().split('T')[0];
-                        switchTab('ai');
-                        AIModule.autoSend(aiStr);
-                    }
+                        // 先获取资金流向数据，再拼接AI提示词
+                        FlowModule.fetch(code).then(flowData => {
+                            FlowModule.render(flowData);
+                            return flowData;
+                        }).catch(e => {
+                            console.warn('获取资金流向失败，AI分析将不含资金数据:', e);
+                            return null;
+                        }).then(flowData => {
+                            // 将资金流向数据拼接到AI分析提示词
+                            if (flowData && flowData.length > 0) {
+                                const recentFlow = flowData.slice(-10);
+                                aiStr += "\n\n💰 资金流向数据（近" + recentFlow.length + "日）：\n";
+                                aiStr += "日期,主力净流入,超大单净流入,大单净流入,中单净流入,小单净流入\n";
+                                recentFlow.forEach(f => {
+                                    aiStr += `${f.time},${formatAmount(f.main_net_inflow)},${formatAmount(f.super_net_inflow)},${formatAmount(f.big_net_inflow)},${formatAmount(f.mid_net_inflow)},${formatAmount(f.small_net_inflow)}\n`;
+                                });
+                                aiStr += "请同时分析资金流向数据，关注主力资金动向、大单与散户资金的博弈关系，判断资金面是否支撑股价走势。\n";
+                            }
 
-                    // 获取实时行情和资金流向
-                    QuoteModule.fetch(code).then(q => QuoteModule.render(q));
-                    FlowModule.fetch(code).then(f => FlowModule.render(f));
+                            aiStr += "\n请评估这些数据，考虑成交量、历史趋势、MACD指标、RSI、支撑位和阻力位等，给出投资建议。\n今天是：" + new Date().toISOString().split('T')[0];
+                            switchTab('ai');
+                            AIModule.autoSend(aiStr);
+                        });
+                    } else {
+                        // 非AI分析模式，直接获取资金流向渲染面板
+                        FlowModule.fetch(code).then(f => FlowModule.render(f)).catch(e => console.warn('获取资金流向失败:', e));
+                    }
                 } else {
                     errorDiv.textContent = '没有查询到数据';
                     errorDiv.style.display = 'block';
