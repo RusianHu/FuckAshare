@@ -3,7 +3,7 @@
  * A股净流入排名代理API
  * 数据源：东方财富 clist 接口
  * 返回字段：dm, mc, zxj, zdf, hsl, jlr, jlrl
- * 
+ *
  * 排序字段说明：
  *   f62  = 主力净流入（默认，超大单+大单）
  *   f184 = 主力净流入占比
@@ -14,21 +14,15 @@
  */
 header('Content-Type: application/json; charset=utf-8');
 
+require_once __DIR__ . '/SecurityAudit.php';
+SecurityAudit::init(['endpoint' => 'hot_stocks']);
+
 // 参数
-$page     = isset($_GET['page'])     ? intval($_GET['page'])     : 1;
-$pageSize = isset($_GET['pagesize']) ? intval($_GET['pagesize']) : 50;
-$sortField = isset($_GET['sort'])    ? $_GET['sort']             : 'f62';
-$sortOrder = isset($_GET['order'])   ? intval($_GET['order'])    : 1; // 1=降序, 0=升序
+$page      = SecurityAudit::getParam('page', 1, ['int' => true, 'min' => 1, 'max' => 100]);
+$pageSize  = SecurityAudit::getParam('pagesize', 50, ['int' => true, 'min' => 1, 'max' => 200]);
+$sortField = SecurityAudit::getParam('sort', 'f62', ['whitelist' => SecurityAudit::ALLOWED_SORT_FIELDS]);
+$sortOrder = SecurityAudit::getParam('order', 1, ['int' => true]);
 
-// 限制参数范围
-if ($page < 1) $page = 1;
-if ($pageSize < 1) $pageSize = 50;
-if ($pageSize > 200) $pageSize = 200;
-
-$allowedSortFields = ['f62', 'f184', 'f66', 'f72', 'f6', 'f3'];
-if (!in_array($sortField, $allowedSortFields)) {
-    $sortField = 'f62';
-}
 $sortOrder = ($sortOrder === 0) ? 0 : 1;
 
 // A股股票筛选条件（排除ETF、债券、基金等非股票品种）

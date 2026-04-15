@@ -1,42 +1,39 @@
 <?php
+/**
+ * 股票K线数据API
+ * 通过调用 Python 脚本获取行情数据
+ */
 header('Content-Type: application/json');
 
-// 设置错误处理
+require_once __DIR__ . '/SecurityAudit.php';
+SecurityAudit::init(['endpoint' => 'api']);
+
+// 错误处理函数
 function returnError($message) {
     echo json_encode(['success' => false, 'message' => $message]);
     exit;
 }
 
-// 获取参数
-$code = isset($_GET['code']) ? $_GET['code'] : '';
-$frequency = isset($_GET['frequency']) ? $_GET['frequency'] : '1d';
-$count = isset($_GET['count']) ? intval($_GET['count']) : 10;
-$end_date = isset($_GET['end_date']) && !empty($_GET['end_date']) ? $_GET['end_date'] : '';
+// 获取并验证参数
+$code = SecurityAudit::getParam('code', '', [
+    'required'  => true,
+    'pattern'   => SecurityAudit::STOCK_CODE_PATTERN,
+    'maxLength' => SecurityAudit::MAX_CODE_LENGTH,
+]);
 
-// 股票代码只允许字母、数字和.符号
-if (!preg_match('/^[A-Za-z0-9.]+$/', $code)) {
-    returnError('股票代码格式不正确，只允许字母、数字和点号');
-}
+$frequency = SecurityAudit::getParam('frequency', '1d', [
+    'whitelist' => SecurityAudit::ALLOWED_FREQUENCIES,
+]);
 
-// 验证参数
-if (empty($code)) {
-    returnError('股票代码不能为空');
-}
+$count = SecurityAudit::getParam('count', 10, [
+    'int' => true,
+    'min' => 1,
+    'max' => 500,
+]);
 
-if ($count < 1 || $count > 500) {
-    returnError('数据条数必须在1-500之间');
-}
-
-// 验证频率参数
-$allowed_frequencies = ['1m', '5m', '15m', '30m', '60m', '1d', '1w', '1M'];
-if (!in_array($frequency, $allowed_frequencies)) {
-    returnError('频率参数不正确，允许的值为: ' . implode(', ', $allowed_frequencies));
-}
-
-// 验证日期格式
-if (!empty($end_date) && !preg_match('/^\d{4}-\d{2}-\d{2}$/', $end_date)) {
-    returnError('日期格式不正确，请使用YYYY-MM-DD格式');
-}
+$end_date = SecurityAudit::getParam('end_date', '', [
+    'pattern' => SecurityAudit::DATE_PATTERN,
+]);
 
 // 构建Python命令（根据系统选择 python3 或 python），并正确转义所有参数
 // 使用 __DIR__ 构造 get_stock_data.py 的绝对路径，避免不同工作目录下找不到脚本

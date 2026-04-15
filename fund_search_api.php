@@ -5,12 +5,14 @@
  */
 header('Content-Type: application/json; charset=utf-8');
 
-$keyword = isset($_GET['key']) ? $_GET['key'] : '';
+require_once __DIR__ . '/SecurityAudit.php';
+SecurityAudit::init(['endpoint' => 'fund_search']);
 
-if (empty($keyword)) {
-    echo json_encode(['success' => false, 'message' => '搜索关键词不能为空']);
-    exit;
-}
+$keyword = SecurityAudit::getParam('key', '', [
+    'required'  => true,
+    'maxLength' => SecurityAudit::MAX_KEYWORD_LENGTH,
+    'sanitize'  => 'keyword',
+]);
 
 $encodedKey = urlencode($keyword);
 $url = "https://fundsuggest.eastmoney.com/FundSearch/api/FundSearchAPI.ashx?m=9&key={$encodedKey}";

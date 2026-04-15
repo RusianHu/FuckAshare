@@ -5,17 +5,18 @@
  */
 header('Content-Type: application/json; charset=utf-8');
 
-$code = isset($_GET['code']) ? $_GET['code'] : '';
-$market = isset($_GET['market']) ? $_GET['market'] : '';
-$lmt = isset($_GET['lmt']) ? intval($_GET['lmt']) : 0;
+require_once __DIR__ . '/SecurityAudit.php';
+SecurityAudit::init(['endpoint' => 'stock_flow']);
 
-if (empty($code)) {
-    echo json_encode(['success' => false, 'message' => '股票代码不能为空']);
-    exit;
-}
+$code   = SecurityAudit::getParam('code', '', [
+    'required'  => true,
+    'pattern'   => SecurityAudit::STOCK_CODE_PATTERN,
+    'maxLength' => SecurityAudit::MAX_CODE_LENGTH,
+]);
+$market = SecurityAudit::getParam('market', '', ['sanitize' => 'digits']);
+$lmt    = SecurityAudit::getParam('lmt', 0, ['int' => true, 'min' => 0, 'max' => 1000]);
 
 // 构造secid参数
-$code = preg_replace('/[^A-Za-z0-9.]/', '', $code);
 
 if (!empty($market) && is_numeric($market)) {
     $secid = $market . '.' . $code;

@@ -5,15 +5,11 @@
  */
 header('Content-Type: application/json; charset=utf-8');
 
-$key = isset($_GET['key']) ? $_GET['key'] : 'f62';
-$type = isset($_GET['type']) ? $_GET['type'] : 'industry';
+require_once __DIR__ . '/SecurityAudit.php';
+SecurityAudit::init(['endpoint' => 'sector_flow']);
 
-// 验证key参数
-$allowedKeys = ['f62', 'f164', 'f174'];
-if (!in_array($key, $allowedKeys)) {
-    echo json_encode(['success' => false, 'message' => 'key参数无效，允许: f62(今日), f164(5日), f174(10日)']);
-    exit;
-}
+$key  = SecurityAudit::getParam('key', 'f62', ['whitelist' => SecurityAudit::ALLOWED_SECTOR_KEYS]);
+$type = SecurityAudit::getParam('type', 'industry', ['whitelist' => SecurityAudit::ALLOWED_SECTOR_TYPES]);
 
 // 映射板块类型
 $typeMap = [
@@ -22,11 +18,6 @@ $typeMap = [
     'theme'    => 'm:90+t:3',    // 主题
     'region'   => 'm:90+t:1',    // 地域
 ];
-
-if (!isset($typeMap[$type])) {
-    echo json_encode(['success' => false, 'message' => 'type参数无效，允许: industry, concept, theme, region']);
-    exit;
-}
 
 $codeParam = $typeMap[$type];
 $url = "https://data.eastmoney.com/dataapi/bkzj/getbkzj?key={$key}&code={$codeParam}";

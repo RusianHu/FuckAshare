@@ -5,26 +5,15 @@
  */
 header('Content-Type: application/json; charset=utf-8');
 
-$codes = isset($_GET['codes']) ? $_GET['codes'] : '';
+require_once __DIR__ . '/SecurityAudit.php';
+SecurityAudit::init(['endpoint' => 'fund_info']);
 
-if (empty($codes)) {
-    echo json_encode(['success' => false, 'message' => '基金代码不能为空']);
-    exit;
-}
+$codes = SecurityAudit::getParam('codes', '', [
+    'required' => true,
+]);
 
-// 验证基金代码格式
-$codeList = array_map('trim', explode(',', $codes));
-$validCodes = [];
-foreach ($codeList as $c) {
-    if (preg_match('/^\d{6}$/', $c)) {
-        $validCodes[] = $c;
-    }
-}
-
-if (empty($validCodes)) {
-    echo json_encode(['success' => false, 'message' => '没有有效的基金代码']);
-    exit;
-}
+// 验证基金代码列表
+$validCodes = SecurityAudit::validateCodeList($codes, SecurityAudit::FUND_CODE_PATTERN, SecurityAudit::MAX_CODES_COUNT);
 
 $codeStr = implode(',', $validCodes);
 $url = "https://fundmobapi.eastmoney.com/FundMNewApi/FundMNFInfo?Fcodes={$codeStr}&pageSize=20";

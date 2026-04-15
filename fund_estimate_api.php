@@ -5,12 +5,14 @@
  */
 header('Content-Type: application/json; charset=utf-8');
 
-$code = isset($_GET['code']) ? $_GET['code'] : '';
+require_once __DIR__ . '/SecurityAudit.php';
+SecurityAudit::init(['endpoint' => 'fund_estimate']);
 
-if (empty($code) || !preg_match('/^\d{6}$/', $code)) {
-    echo json_encode(['success' => false, 'message' => '基金代码格式不正确，需6位数字']);
-    exit;
-}
+$code = SecurityAudit::getParam('code', '', [
+    'required'  => true,
+    'pattern'   => SecurityAudit::FUND_CODE_PATTERN,
+    'maxLength' => 6,
+]);
 
 $url = "https://fundgz.1234567.com.cn/js/{$code}.js?rt=" . time();
 

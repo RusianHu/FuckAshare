@@ -5,22 +5,17 @@
  */
 header('Content-Type: application/json; charset=utf-8');
 
-// 获取参数
-$codes = isset($_GET['codes']) ? $_GET['codes'] : '';
+require_once __DIR__ . '/SecurityAudit.php';
+SecurityAudit::init(['endpoint' => 'stock_quote']);
 
-if (empty($codes)) {
-    echo json_encode(['success' => false, 'message' => '股票代码不能为空']);
-    exit;
-}
+// 获取参数并用统一方法验证代码列表格式
+$codes = SecurityAudit::getParam('codes', '', ['required' => true]);
+$validCodes = SecurityAudit::validateCodeList($codes, SecurityAudit::STOCK_CODE_PATTERN, SecurityAudit::MAX_CODES_COUNT);
 
-// 解析股票代码，支持多种格式: sh000001, sz399001, 000001.XSHG
-$codeList = array_map('trim', explode(',', $codes));
+// 将已验证的代码转换为东方财富 secid 格式
 $secids = [];
 
-foreach ($codeList as $code) {
-    $code = preg_replace('/[^A-Za-z0-9.]/', '', $code);
-    if (empty($code)) continue;
-
+foreach ($validCodes as $code) {
     if (strpos($code, '.XSHG') !== false) {
         $num = str_replace('.XSHG', '', $code);
         $secids[] = '1.' . $num;
@@ -40,7 +35,8 @@ foreach ($codeList as $code) {
         // 0/3开头默认深市
         $secids[] = '0.' . $code;
     } else {
-        $secids[] = '1.' . $code;
+        // 未知格式代码：无法确定市场，跳过而非默认沪市
+        continue;
     }
 }
 
