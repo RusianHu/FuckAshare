@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>FuckAshare - A股智能分析平台</title>
     <link rel="stylesheet" href="style.css">
     <!-- marked.js Markdown解析 -->
@@ -60,10 +60,10 @@
                         </div>
                         <form id="stockForm" class="query-form-inline">
                             <div class="form-row">
-                                <div class="form-group flex-1">
+                                <div class="form-group form-group-code flex-1">
                                     <input type="text" id="code" name="code" placeholder="股票代码 如: sh000001" required>
                                 </div>
-                                <div class="form-group">
+                                <div class="form-group form-group-frequency">
                                     <select id="frequency" name="frequency">
                                         <option value="1m">1分钟</option>
                                         <option value="5m">5分钟</option>
@@ -75,14 +75,14 @@
                                         <option value="1M">月线</option>
                                     </select>
                                 </div>
-                                <div class="form-group">
+                                <div class="form-group form-group-count">
                                     <input type="number" id="count" name="count" min="1" max="500" value="120" placeholder="条数">
                                 </div>
-                                <div class="form-group">
+                                <div class="form-group form-group-date">
                                     <input type="date" id="end_date" name="end_date" title="结束日期(可选)">
                                 </div>
-                                <button type="submit" class="btn-primary">查询</button>
-                                <button type="button" id="ai-analyze-btn" class="btn-primary btn-ai">🤖 AI分析</button>
+                                <button type="submit" class="btn-primary form-submit-btn">查询</button>
+                                <button type="button" id="ai-analyze-btn" class="btn-primary btn-ai form-ai-btn">🤖 AI分析</button>
                             </div>
                         </form>
                     </div>

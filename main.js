@@ -717,9 +717,26 @@ const ChartModule = {
 
         // 响应式
         const ro = new ResizeObserver(() => {
-            this.chart.applyOptions({ width: container.clientWidth, height: container.clientHeight });
+            this.resize();
         });
         ro.observe(container);
+
+        window.addEventListener('orientationchange', () => {
+            window.setTimeout(() => this.resize(), 120);
+        });
+    },
+
+    resize() {
+        if (!this.chart) return;
+        const container = document.getElementById('chart-container');
+        if (!container) return;
+
+        const width = Math.max(0, container.clientWidth);
+        const height = Math.max(280, container.clientHeight || 0);
+        if (!width) return;
+
+        this.chart.applyOptions({ width, height });
+        this.chart.timeScale().fitContent();
     },
 
     // 主题切换时更新图表配色
@@ -1609,8 +1626,17 @@ function autoResizeTextarea() {
 }
 
 function switchTab(tabName) {
-    document.querySelectorAll('.nav-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tabName));
+    let activeTab = null;
+    document.querySelectorAll('.nav-tab').forEach(t => {
+        const isActive = t.dataset.tab === tabName;
+        t.classList.toggle('active', isActive);
+        if (isActive) activeTab = t;
+    });
     document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + tabName));
+
+    if (activeTab && typeof activeTab.scrollIntoView === 'function') {
+        activeTab.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+    }
 
     // Tab 切换面板入场——autoAlpha 淡入，零位移
     const activePanel = document.getElementById('panel-' + tabName);
@@ -1621,6 +1647,17 @@ function switchTab(tabName) {
             { autoAlpha: 1, duration: 0.35, stagger: 0.05, ease: 'power2.out', clearProps: 'autoAlpha' }
         );
     }
+
+    window.requestAnimationFrame(() => {
+        if (typeof ChartModule !== 'undefined' && typeof ChartModule.resize === 'function') {
+            ChartModule.resize();
+        }
+        window.setTimeout(() => {
+            if (typeof ChartModule !== 'undefined' && typeof ChartModule.resize === 'function') {
+                ChartModule.resize();
+            }
+        }, 180);
+    });
 
     // 刷新 ScrollTrigger 位置计算
     AnimationManager.refreshAfterTabSwitch();

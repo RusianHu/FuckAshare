@@ -211,7 +211,11 @@
 
 /* ===== 全局重置 ===== */
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
-html { font-size: 14px; scroll-behavior: smooth; }
+html {
+    font-size: clamp(13px, 0.24vw + 12px, 15px);
+    scroll-behavior: smooth;
+    -webkit-text-size-adjust: 100%;
+}
 body {
     font-family: var(--font-sans);
     background: var(--bg-primary);
@@ -243,12 +247,14 @@ body {
 /* ===== 顶部导航 ===== */
 .top-nav {
     position: sticky; top: 0; z-index: 100;
-    display: flex; align-items: center;
+    display: flex; align-items: center; flex-wrap: wrap;
+    gap: 12px 16px;
     background: var(--nav-bg);
     backdrop-filter: blur(16px) saturate(180%);
     -webkit-backdrop-filter: blur(16px) saturate(180%);
     border-bottom: 1px solid var(--border-color);
-    padding: 0 20px; height: 58px;
+    padding: 10px 20px;
+    min-height: 58px;
     box-shadow: var(--shadow-sm);
     transition: background 0.4s ease, border-color 0.3s ease;
 }
@@ -267,6 +273,8 @@ body {
 
 .nav-tabs {
     display: flex; gap: 6px; flex: 1; align-items: center;
+    min-width: 0;
+    flex-wrap: wrap;
 }
 .nav-tab {
     padding: 8px 18px; border: 1px solid transparent; background: transparent;
@@ -291,7 +299,11 @@ body {
     border-radius: 999px;
 }
 
-.nav-actions { display: flex; align-items: center; gap: 10px; }
+.nav-actions {
+    display: flex; align-items: center; gap: 10px;
+    margin-left: auto;
+    flex-shrink: 0;
+}
 .btn-icon {
     position: relative; border: none; background: transparent;
     font-size: 1.3rem; cursor: pointer; padding: 6px;
@@ -338,7 +350,12 @@ body {
 .theme-btn-system { font-size: 0.75rem; }
 
 /* ===== Tab面板 ===== */
-.tab-panel { display: none; padding: 20px; max-width: 1600px; margin: 0 auto; }
+.main-wrapper {
+    width: min(100%, 1720px);
+    margin: 0 auto;
+    padding: 0 clamp(10px, 1.6vw, 24px) clamp(24px, 3vw, 40px);
+}
+.tab-panel { display: none; padding: 20px 0 0; max-width: none; margin: 0 auto; }
 .tab-panel.active { display: block; }
 
 /* ===== 卡片 ===== */
@@ -374,7 +391,10 @@ body {
 }
 .card-header h3 {
     font-size: 1rem; font-weight: 600;
-    color: var(--text-primary); white-space: nowrap;
+    color: var(--text-primary);
+    white-space: normal;
+    overflow-wrap: anywhere;
+    text-wrap: balance;
     transition: color 0.3s ease;
 }
 
@@ -427,7 +447,8 @@ body {
 .query-form-inline .form-row {
     display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
 }
-.form-group { display: flex; align-items: center; gap: 6px; }
+.query-form-inline .form-row > * { min-width: 0; }
+.form-group { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .form-group.flex-1 { flex: 1; min-width: 140px; }
 
 input[type="text"], input[type="number"], input[type="date"], select, textarea {
@@ -454,8 +475,15 @@ input[type="text"]::placeholder, input[type="number"]::placeholder, textarea::pl
 /* ===== 股票行情页布局 ===== */
 .stock-layout {
     display: grid;
-    grid-template-columns: 1fr 380px;
+    grid-template-columns: minmax(0, 1fr) minmax(300px, 380px);
     gap: 16px;
+    align-items: start;
+}
+.stock-left, .stock-right { min-width: 0; }
+.stock-right {
+    display: grid;
+    gap: 16px;
+    align-content: start;
 }
 @media (max-width: 1200px) {
     .stock-layout { grid-template-columns: 1fr; }
@@ -492,6 +520,12 @@ input[type="text"]::placeholder, input[type="number"]::placeholder, textarea::pl
 table {
     width: 100%; border-collapse: collapse;
 }
+#stock-table,
+#hot-stocks-table,
+#sector-table,
+.stock-details-table {
+    min-width: 720px;
+}
 th, td {
     padding: 8px 12px; text-align: right;
     border-bottom: 1px solid var(--border-light);
@@ -521,25 +555,36 @@ tr:hover td { background: var(--bg-hover); }
 }
 
 .quote-stock-name {
-    font-size: 1.1rem; font-weight: 700; margin-bottom: 12px;
-    display: flex; align-items: center; gap: 8px;
+    font-size: 1.1rem; font-weight: 700; margin-bottom: 10px;
+    display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+    flex-wrap: wrap;
 }
 .quote-price-big {
     font-size: 2rem; font-weight: 700;
     font-family: var(--font-mono);
-    line-height: 1.2;
+    line-height: 1.15;
     transition: color 0.3s ease;
 }
 .quote-change {
     font-size: 0.95rem; font-family: var(--font-mono);
-    margin-bottom: 12px;
+    margin-bottom: 10px;
 }
 .quote-grid {
-    display: grid; grid-template-columns: 1fr 1fr;
-    gap: 6px 16px; font-size: 0.82rem;
+    display: grid;
+    grid-template-columns: minmax(64px, auto) minmax(0, 1fr);
+    gap: 6px 14px;
+    font-size: 0.82rem;
+    align-items: center;
 }
-.quote-grid .q-label { color: var(--text-muted); }
-.quote-grid .q-value { text-align: right; font-family: var(--font-mono); }
+.quote-grid .q-label {
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+.quote-grid .q-value {
+    text-align: right;
+    font-family: var(--font-mono);
+    min-width: 0;
+}
 
 /* 资金流向柱状图 */
 .flow-bars { margin-top: 10px; }
@@ -595,6 +640,7 @@ tr:hover td { background: var(--bg-hover); }
 .realtime-layout .card-header { flex-wrap: wrap; }
 .realtime-controls {
     display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    min-width: 0;
 }
 .auto-refresh-hint { color: var(--text-muted); font-size: 0.8rem; white-space: nowrap; }
 
@@ -635,7 +681,7 @@ tr:hover td { background: var(--bg-hover); }
 
 /* ===== 板块资金 ===== */
 .sector-layout .card-header { flex-wrap: wrap; }
-.sector-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.sector-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; min-width: 0; }
 .sector-bar-chart {
     display: flex; flex-direction: column; gap: 6px;
     padding: 16px; max-height: 400px; overflow-y: auto;
@@ -675,7 +721,7 @@ tr:hover td { background: var(--bg-hover); }
     display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
 }
 @media (max-width: 900px) { .fund-layout { grid-template-columns: 1fr; } }
-.fund-controls { display: flex; gap: 8px; flex-wrap: wrap; }
+.fund-controls { display: flex; gap: 8px; flex-wrap: wrap; min-width: 0; }
 
 .fund-search-results {
     display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
@@ -769,6 +815,7 @@ tr:hover td { background: var(--bg-hover); }
     border-top: 1px solid var(--border-color);
     background: var(--bg-secondary);
     transition: background 0.4s ease, border-color 0.3s ease;
+    min-width: 0;
 }
 #user-input {
     flex: 1; resize: none; height: 44px; max-height: 100px;
@@ -828,6 +875,7 @@ tr:hover td { background: var(--bg-hover); }
 .watchlist-add {
     display: flex; gap: 6px; padding: 12px 16px;
     border-bottom: 1px solid var(--border-light);
+    min-width: 0;
 }
 .watchlist-add input { flex: 1; }
 .watchlist-items {
@@ -950,20 +998,232 @@ tr:hover td { background: var(--bg-hover); }
 }
 
 /* ===== 响应式 ===== */
+@media (max-width: 1100px) {
+    .top-nav {
+        align-items: flex-start;
+        padding: 10px 16px 12px;
+    }
+    .nav-brand { margin-right: 0; }
+    .nav-tabs {
+        order: 3;
+        width: 100%;
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        scrollbar-width: none;
+        padding-bottom: 2px;
+    }
+    .nav-tabs::-webkit-scrollbar { display: none; }
+    .nav-tab {
+        flex: 0 0 auto;
+        scroll-snap-align: start;
+    }
+    .stock-layout,
+    .fund-layout {
+        grid-template-columns: 1fr;
+    }
+}
+
 @media (max-width: 768px) {
-    .top-nav { padding: 0 10px; height: 52px; }
-    .nav-brand { margin-right: 12px; }
+    .top-nav {
+        gap: 10px;
+        padding: 10px 12px 12px;
+    }
+    .nav-brand {
+        min-width: 0;
+        max-width: calc(100% - 110px);
+    }
+    .brand-text { font-size: 1.08rem; }
     .brand-sub { display: none; }
-    .nav-tab { padding: 6px 10px; font-size: 0.85rem; }
-    .tab-panel { padding: 10px; }
-    .chart-wrapper { height: 350px; }
-    .query-form-inline .form-row { gap: 6px; }
-    .query-form-inline input, .query-form-inline select { font-size: 0.82rem; padding: 6px 8px; }
-    .realtime-grid { grid-template-columns: 1fr; }
-    .sector-controls { flex-direction: column; align-items: stretch; }
-    .ai-card { height: calc(100vh - 100px); }
-    .watchlist-sidebar { width: 100%; right: -100%; }
-    .theme-switcher { transform: scale(0.9); }
+    .nav-tabs {
+        gap: 8px;
+        scroll-snap-type: x proximity;
+    }
+    .nav-tab {
+        padding: 8px 12px;
+        font-size: 0.85rem;
+    }
+    .nav-actions {
+        width: 100%;
+        justify-content: space-between;
+        margin-left: 0;
+    }
+    .theme-switcher { transform: none; }
+    .tab-panel { padding-top: 12px; }
+    .card { margin-bottom: 12px; }
+    .card-header,
+    .quote-content,
+    .flow-content,
+    .chat-messages,
+    .chat-input-area,
+    .watchlist-header,
+    .watchlist-add,
+    .modal-header-bar,
+    .modal-body-content {
+        padding-left: 14px;
+        padding-right: 14px;
+    }
+    .chart-wrapper { height: 320px; }
+    .query-form-inline .form-row {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        align-items: stretch;
+    }
+    .query-form-inline .form-row .form-group {
+        display: block;
+        min-width: 0;
+    }
+    .query-form-inline .form-row .form-group-code,
+    .query-form-inline .form-row .form-group-date {
+        grid-column: 1 / -1;
+    }
+    .query-form-inline .form-row .form-group-frequency,
+    .query-form-inline .form-row .form-group-count,
+    .query-form-inline .form-row .form-submit-btn,
+    .query-form-inline .form-row .form-ai-btn {
+        grid-column: auto;
+    }
+    .query-form-inline .form-row .form-group,
+    .query-form-inline .form-row > button,
+    .realtime-controls > *,
+    .sector-controls > *,
+    .fund-controls > *,
+    .watchlist-add > * {
+        width: 100%;
+    }
+    .query-form-inline input,
+    .query-form-inline select,
+    .query-form-inline button,
+    .realtime-controls input,
+    .sector-controls select,
+    .sector-controls button,
+    .fund-controls input,
+    .fund-controls button,
+    .watchlist-add input,
+    .watchlist-add button {
+        min-width: 0;
+    }
+    .query-form-inline .form-row input,
+    .query-form-inline .form-row select,
+    .query-form-inline .form-row button {
+        width: 100%;
+        height: 42px;
+    }
+    .chart-controls,
+    .realtime-controls,
+    .sector-controls,
+    .fund-controls,
+    .watchlist-add,
+    .chat-input-area {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    .indicator-toggles {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px 10px;
+        width: 100%;
+    }
+    .toggle-label { min-width: 0; }
+    .quote-content {
+        padding-top: 12px;
+        padding-bottom: 12px;
+    }
+    .quote-stock-name {
+        margin-bottom: 8px;
+        font-size: 1rem;
+        gap: 4px 8px;
+    }
+    .quote-price-big {
+        font-size: 1.72rem;
+        line-height: 1.08;
+    }
+    .quote-change {
+        font-size: 0.88rem;
+        margin-bottom: 8px;
+    }
+    .quote-grid {
+        grid-template-columns: minmax(56px, auto) minmax(0, 1fr);
+        gap: 4px 10px;
+        font-size: 0.78rem;
+    }
+    .quote-grid .q-label {
+        font-size: 0.76rem;
+    }
+    .quote-grid .q-value {
+        font-size: 0.8rem;
+    }
+    .flow-bar-label,
+    .flow-bar-value,
+    .sector-bar-rank,
+    .sector-bar-name,
+    .sector-bar-value {
+        width: auto;
+    }
+    .realtime-grid,
+    .fund-search-results {
+        grid-template-columns: 1fr;
+    }
+    .realtime-grid { padding: 14px; }
+    .fund-wl-item {
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+    .ai-card {
+        height: clamp(440px, calc(100dvh - 132px), 760px);
+    }
+    .watchlist-sidebar {
+        width: 100%;
+        right: -100%;
+    }
+    .modal-dialog {
+        width: calc(100vw - 20px);
+        max-height: 88dvh;
+    }
+}
+
+@media (max-width: 560px) {
+    .main-wrapper {
+        padding-left: 8px;
+        padding-right: 8px;
+    }
+    .top-nav {
+        padding-left: 10px;
+        padding-right: 10px;
+    }
+    .brand-text { font-size: 1rem; }
+    .nav-actions {
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+    .query-form-inline .form-row {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 7px;
+    }
+    .query-form-inline .form-row .form-group-code,
+    .query-form-inline .form-row .form-group-date {
+        grid-column: 1 / -1;
+    }
+    .query-form-inline .form-row .form-group-frequency,
+    .query-form-inline .form-row .form-group-count,
+    .query-form-inline .form-row .form-submit-btn,
+    .query-form-inline .form-row .form-ai-btn {
+        grid-column: auto;
+    }
+    .query-form-inline .form-row input,
+    .query-form-inline .form-row select,
+    .query-form-inline .form-row button {
+        height: 40px;
+    }
+    .indicator-toggles {
+        grid-template-columns: 1fr;
+    }
+    .quote-price-big,
+    .fund-card .fc-nav {
+        font-size: 1.5rem;
+    }
+    .realtime-card .rc-price { font-size: 1.3rem; }
+    .message { max-width: 100%; }
 }
 
 /* ===== 打印样式 ===== */
