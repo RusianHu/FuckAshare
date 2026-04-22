@@ -216,6 +216,14 @@ html {
     scroll-behavior: smooth;
     -webkit-text-size-adjust: 100%;
 }
+/* 主题加载期间禁止过渡动画，防止深色→浅色的闪烁过渡 */
+html.theme-loading,
+html.theme-loading *,
+html.theme-loading *::before,
+html.theme-loading *::after {
+    transition: none !important;
+    animation-duration: 0s !important;
+}
 body {
     font-family: var(--font-sans);
     background: var(--bg-primary);

@@ -4,6 +4,20 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>FuckAshare - A股智能分析平台</title>
+    <!-- 主题防闪烁：在CSS渲染前尽早设置data-theme，避免深色默认→用户主题的闪烁 -->
+    <script>
+        (function() {
+            var theme = 'system';
+            try {
+                var saved = localStorage.getItem('fa_theme');
+                if (saved && ['light', 'dark', 'system'].indexOf(saved) !== -1) {
+                    theme = saved;
+                }
+            } catch (e) { /* 隐私模式/存储禁用时保持默认 system */ }
+            document.documentElement.setAttribute('data-theme', theme);
+            document.documentElement.classList.add('theme-loading');
+        })();
+    </script>
     <link rel="stylesheet" href="style.css">
     <!-- marked.js Markdown解析 -->
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>

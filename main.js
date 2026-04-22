@@ -21,19 +21,26 @@ const ThemeManager = {
     systemDarkQuery: null,
 
     init() {
-        // 从 localStorage 读取保存的主题
-        const saved = localStorage.getItem(this.STORAGE_KEY);
-        if (saved && ['light', 'dark', 'system'].includes(saved)) {
-            this.currentTheme = saved;
-        }
+        // 从 localStorage 读取保存的主题（try/catch 防止隐私模式/存储禁用抛异常）
+        try {
+            const saved = localStorage.getItem(this.STORAGE_KEY);
+            if (saved && ['light', 'dark', 'system'].includes(saved)) {
+                this.currentTheme = saved;
+            }
+        } catch (e) { /* 存储不可用时保持默认 system */ }
 
-        // 监听系统主题变化
+        // 监听系统主题变化（兼容旧版 Safari 的 addListener 降级）
         this.systemDarkQuery = window.matchMedia('(prefers-color-scheme: dark)');
-        this.systemDarkQuery.addEventListener('change', () => {
+        const handler = () => {
             if (this.currentTheme === 'system') {
                 this.applyTheme('system');
             }
-        });
+        };
+        if (this.systemDarkQuery.addEventListener) {
+            this.systemDarkQuery.addEventListener('change', handler);
+        } else if (this.systemDarkQuery.addListener) {
+            this.systemDarkQuery.addListener(handler);
+        }
 
         // 应用主题
         this.applyTheme(this.currentTheme, false);
@@ -51,7 +58,7 @@ const ThemeManager = {
 
     applyTheme(theme, animate = true) {
         this.currentTheme = theme;
-        localStorage.setItem(this.STORAGE_KEY, theme);
+        try { localStorage.setItem(this.STORAGE_KEY, theme); } catch (e) { /* 存储不可用时静默忽略 */ }
         document.documentElement.setAttribute('data-theme', theme);
 
         // 更新按钮激活状态
@@ -1677,6 +1684,13 @@ document.addEventListener('DOMContentLoaded', function() {
     // 初始化主题（在 GSAP 之前，以尽早应用主题）
     ThemeManager.init();
 
+    // 移除主题加载锁，恢复过渡动画（延迟一帧确保首次渲染无闪烁）
+    requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+            document.documentElement.classList.remove('theme-loading');
+        });
+    });
+
     // 初始化动画
     AnimationManager.init();
 
@@ -1906,7 +1920,7 @@ document.addEventListener('DOMContentLoaded', function() {
                             <td class="${colorClass(netInflow)}">${formatAmount(netInflow)}</td>
                             <td class="${colorClass(superInflow)}">${formatAmount(superInflow)}</td>
                             <td class="${colorClass(bigInflow)}">${formatAmount(bigInflow)}</td>
-                            <td><button class="btn-quick-query" data-code="${stock.dm}">AI快询</button></td>
+                            <td><button class="btn-quick-query" data-code="${stock.dm}">查询</button></td>
                         `;
                         hotStocksData.appendChild(tr);
                     });
