@@ -2,6 +2,26 @@
 // FuckAshare - A股智能分析平台 主脚本
 // ============================================================
 
+// 统一 SVG 图标辅助（供动态渲染使用）
+const Icons = {
+    star: '<span class="ui-icon" aria-hidden="true"><svg><use href="#icon-star"></use></svg></span>',
+    close: '<span class="ui-icon" aria-hidden="true"><svg><use href="#icon-close"></use></svg></span>',
+    chart: '<span class="ui-icon" aria-hidden="true"><svg><use href="#icon-chart"></use></svg></span>',
+    table: '<span class="ui-icon" aria-hidden="true"><svg><use href="#icon-table"></use></svg></span>',
+    flow: '<span class="ui-icon" aria-hidden="true"><svg><use href="#icon-flow"></use></svg></span>',
+    warning: '<span class="ui-icon" aria-hidden="true"><svg><use href="#icon-warning"></use></svg></span>'
+};
+
+function escapeHTML(value) {
+    return String(value).replace(/[&<>"']/g, ch => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+    }[ch]));
+}
+
 // 安全降级
 if (typeof window !== 'undefined') {
     if (typeof window.marked === 'undefined') {
@@ -1079,7 +1099,7 @@ const WatchlistModule = {
                         <div class="wl-item-code">${w.code}</div>
                     </div>
                     <div class="wl-item-price" id="wl-price-${w.code.replace('.', '')}">-</div>
-                    <button class="wl-item-remove" onclick="WatchlistModule.remove('${w.code}')">✕</button>
+                    <button class="wl-item-remove" onclick="WatchlistModule.remove('${w.code}')" title="删除" aria-label="删除">${Icons.close}</button>
                 </div>
             `;
         });
@@ -1174,7 +1194,7 @@ const RealtimeModule = {
             const cls = colorClass(s.change_pct);
             html += `
                 <div class="realtime-card" onclick="document.getElementById('code').value='${s.code}';switchTab('stock');document.getElementById('stockForm').dispatchEvent(new Event('submit'));">
-                    <button class="rc-remove" onclick="event.stopPropagation();RealtimeModule.removeCode('${s.code}')">✕</button>
+                    <button class="rc-remove" onclick="event.stopPropagation();RealtimeModule.removeCode('${s.code}')" title="删除" aria-label="删除">${Icons.close}</button>
                     <div class="rc-name">${s.name}</div>
                     <div class="rc-code">${s.code}</div>
                     <div class="rc-price ${cls}">${s.price > 0 ? s.price.toFixed(2) : '-'}</div>
@@ -1327,7 +1347,7 @@ const FundModule = {
                     <div class="fc-meta">${f.company || ''} · ${f.manager || ''}</div>
                     <div class="fc-actions">
                         <button class="btn-sm ${inWl ? '' : 'btn-star'}" onclick="FundModule.addToWatchlist('${f.code}','${f.name}')">
-                            ${inWl ? '已添加' : '⭐ 加自选'}
+                            ${inWl ? '已添加' : `${Icons.star} 加自选`}
                         </button>
                     </div>
                 </div>
@@ -1386,7 +1406,7 @@ const FundModule = {
                             <div class="fund-wl-time">${estimate.gztime}</div>
                         ` : '<span style="color:var(--text-muted)">暂无估值</span>'}
                     </div>
-                    <button class="fund-wl-remove" onclick="FundModule.removeFromWatchlist('${f.code}')">✕</button>
+                    <button class="fund-wl-remove" onclick="FundModule.removeFromWatchlist('${f.code}')" title="删除" aria-label="删除">${Icons.close}</button>
                 </div>
             `;
         }
@@ -1716,7 +1736,7 @@ const AdvisorModule = {
         if (APP.currentStockCode) {
             ctx.stock = APP.currentStockCode;
             if (el.contextStock) {
-                el.contextStock.textContent = '📈 ' + ctx.stock;
+                el.contextStock.textContent = '股票 ' + ctx.stock;
                 el.contextStock.style.display = '';
             }
             show = true;
@@ -1730,7 +1750,7 @@ const AdvisorModule = {
             const tabNames = { stock: '股票行情', realtime: '实时看板', sector: '板块资金', fund: '基金分析', ai: 'AI顾问' };
             ctx.tab = activeTab.dataset.tab || 'stock';
             if (el.contextTab) {
-                el.contextTab.textContent = '📋 ' + (tabNames[ctx.tab] || ctx.tab);
+                el.contextTab.textContent = '模块 ' + (tabNames[ctx.tab] || ctx.tab);
                 el.contextTab.style.display = '';
             }
             show = true;
@@ -2126,7 +2146,7 @@ const AIModule = {
                 // 推理模型可能因超时只输出了推理过程而没有正式回复
                 // 将推理内容也记入历史，避免下次重发时丢失上下文
                 APP.messageHistory.push({ role: 'assistant', content: fullReasoning });
-                this._updateContent(botDiv, '> ⚠️ 模型思考超时，仅返回了推理过程，请重新发送以获取完整回复。');
+                this._updateContent(botDiv, '> 模型思考超时，仅返回了推理过程，请重新发送以获取完整回复。');
             } else {
                 this._updateContent(botDiv, '**提示:** 服务器返回空响应，请检查网络或稍后重试。');
             }
@@ -2365,12 +2385,12 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (data.data && data.data.length > 0) {
                     // 更新图表
                     ChartModule.updateData(data.data);
-                    document.getElementById('chart-title').textContent = `📊 ${code} K线图表`;
+                    document.getElementById('chart-title').innerHTML = `${Icons.chart} ${escapeHTML(code)} K线图表`;
 
                     // 更新加自选按钮
                     const starBtn = document.getElementById('add-watchlist-btn');
                     if (starBtn) {
-                        starBtn.textContent = WatchlistModule.has(code) ? '⭐ 已自选' : '⭐ 加自选';
+                        starBtn.innerHTML = WatchlistModule.has(code) ? `${Icons.star} 已自选` : `${Icons.star} 加自选`;
                     }
 
                     // 更新表格
@@ -2419,7 +2439,7 @@ document.addEventListener('DOMContentLoaded', function() {
                             // 将资金流向数据拼接到AI分析提示词
                             if (flowData && flowData.length > 0) {
                                 const recentFlow = flowData.slice(-10);
-                                aiStr += "\n\n💰 资金流向数据（近" + recentFlow.length + "日）：\n";
+                                aiStr += "\n\n资金流向数据（近" + recentFlow.length + "日）：\n";
                                 aiStr += "日期,主力净流入,超大单净流入,大单净流入,中单净流入,小单净流入\n";
                                 recentFlow.forEach(f => {
                                     aiStr += `${f.time},${formatAmount(f.main_net_inflow)},${formatAmount(f.super_net_inflow)},${formatAmount(f.big_net_inflow)},${formatAmount(f.mid_net_inflow)},${formatAmount(f.small_net_inflow)}\n`;
