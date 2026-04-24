@@ -2,6 +2,14 @@
 /**
  * 股票实时行情代理API
  * 代理东方财富实时行情接口，解决跨域问题
+ *
+ * 新增可选参数：source / fallback / raw
+ *   source=auto       默认，东方财富主，失败时尝试雪球兜底
+ *   source=eastmoney  强制东方财富（原有行为）
+ *   source=xueqiu     强制雪球
+ *   fallback=1        允许兜底（默认）
+ *   fallback=0        禁用兜底
+ *   raw=1             返回上游原始结构
  */
 header('Content-Type: application/json; charset=utf-8');
 
@@ -11,6 +19,22 @@ SecurityAudit::init(['endpoint' => 'stock_quote']);
 // 获取参数并用统一方法验证代码列表格式
 $codes = SecurityAudit::getParam('codes', '', ['required' => true]);
 $validCodes = SecurityAudit::validateCodeList($codes, SecurityAudit::STOCK_CODE_PATTERN, SecurityAudit::MAX_CODES_COUNT);
+
+// 新增可选参数
+$source   = SecurityAudit::getParam('source', 'auto', ['whitelist' => SecurityAudit::ALLOWED_DATA_SOURCES]);
+$fallback = SecurityAudit::getParam('fallback', 1, ['int' => true]) === 1;
+$raw      = SecurityAudit::getParam('raw', 0, ['int' => true]) === 1;
+
+// 如果指定了雪球数据源或 auto+fallback，使用 MarketDataService
+if ($source === 'xueqiu' || ($source === 'auto' && $fallback)) {
+    require_once __DIR__ . '/lib/MarketDataService.php';
+    $service = new MarketDataService();
+    $result = $service->quote($codes, $source, $fallback, $raw);
+    echo $result->toJson($raw);
+    exit;
+}
+
+// 以下为原有东方财富逻辑（source=eastmoney 或 source=auto 且无 fallback）
 
 // 将已验证的代码转换为东方财富 secid 格式
 $secids = [];

@@ -69,9 +69,10 @@
             <span class="brand-sub">智能分析</span>
         </div>
         <div class="nav-tabs">
-            <button class="nav-tab active" data-tab="stock">股票行情</button>
+            <button class="nav-tab active" data-tab="stock">行情工作台</button>
             <button class="nav-tab" data-tab="realtime">实时看板</button>
-            <button class="nav-tab" data-tab="sector">板块资金</button>
+            <button class="nav-tab" data-tab="sector">资金与板块</button>
+            <button class="nav-tab" data-tab="xueqiu">雪球洞察</button>
             <button class="nav-tab" data-tab="fund">基金分析</button>
             <button class="nav-tab" data-tab="ai">AI顾问</button>
         </div>
@@ -122,6 +123,14 @@
                                 </div>
                                 <div class="form-group form-group-date">
                                     <input type="date" id="end_date" name="end_date" title="结束日期(可选)">
+                                </div>
+                                <div class="form-group form-group-source">
+                                    <select id="data-source" name="source" title="数据源">
+                                        <option value="auto">自动</option>
+                                        <option value="ashare">Ashare</option>
+                                        <option value="eastmoney">东方财富</option>
+                                        <option value="xueqiu">雪球</option>
+                                    </select>
                                 </div>
                                 <button type="submit" class="btn-primary form-submit-btn">查询</button>
                                 <button type="button" id="ai-analyze-btn" class="btn-primary btn-ai form-ai-btn"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-ai"></use></svg></span> AI分析</button>
@@ -293,6 +302,120 @@
             </div>
         </div>
 
+        <!-- 雪球洞察页 -->
+        <div class="tab-panel" id="panel-xueqiu">
+            <div class="xueqiu-layout">
+                <!-- 雪球热度榜 -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-hot"></use></svg></span> 雪球热度榜</h3>
+                        <div class="xueqiu-controls">
+                            <select id="xq-hot-type">
+                                <option value="12">A股热度</option>
+                                <option value="13">港股热度</option>
+                                <option value="11">美股热度</option>
+                            </select>
+                            <select id="xq-hot-size">
+                                <option value="10">10条</option>
+                                <option value="20" selected>20条</option>
+                                <option value="50">50条</option>
+                            </select>
+                            <button id="xq-hot-query-btn" class="btn-sm btn-accent">查询</button>
+                            <button id="xq-hot-super-btn" class="btn-sm btn-ai"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-ai"></use></svg></span> 热度AI分析</button>
+                        </div>
+                    </div>
+                    <div id="xq-hot-loading" style="display:none;" class="loading-spinner"><div class="spinner"></div><span>获取雪球热度数据...</span></div>
+                    <div id="xq-hot-error" class="error-msg" style="display:none;"></div>
+                    <div class="xueqiu-table-wrapper">
+                        <table id="xq-hot-table" style="display:none;">
+                            <thead>
+                                <tr>
+                                    <th>代码</th>
+                                    <th>名称</th>
+                                    <th>最新价</th>
+                                    <th>涨跌幅</th>
+                                    <th>热度值</th>
+                                    <th>热度变化</th>
+                                    <th>排名变化</th>
+                                    <th>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="xq-hot-data"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- 条件选股 -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-search"></use></svg></span> 雪球条件选股</h3>
+                        <div class="xueqiu-controls">
+                            <select id="xq-screener-order">
+                                <option value="percent">涨跌幅</option>
+                                <option value="amount">成交额</option>
+                                <option value="turnover_rate">换手率</option>
+                                <option value="volume_ratio">量比</option>
+                                <option value="pe_ttm">市盈率TTM</option>
+                                <option value="pb">市净率</option>
+                                <option value="roe_ttm">ROE</option>
+                                <option value="dividend_yield">股息率</option>
+                                <option value="followers">关注人数</option>
+                            </select>
+                            <select id="xq-screener-market">
+                                <option value="CN">A股</option>
+                                <option value="HK">港股</option>
+                                <option value="US">美股</option>
+                            </select>
+                            <select id="xq-screener-size">
+                                <option value="10">10条</option>
+                                <option value="20" selected>20条</option>
+                                <option value="50">50条</option>
+                            </select>
+                            <button id="xq-screener-btn" class="btn-sm btn-accent">查询</button>
+                            <button id="xq-screener-ai-btn" class="btn-sm btn-ai"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-ai"></use></svg></span> AI选股分析</button>
+                        </div>
+                    </div>
+                    <div id="xq-screener-loading" style="display:none;" class="loading-spinner"><div class="spinner"></div><span>获取条件选股数据...</span></div>
+                    <div id="xq-screener-error" class="error-msg" style="display:none;"></div>
+                    <div class="xueqiu-table-wrapper">
+                        <table id="xq-screener-table" style="display:none;">
+                            <thead>
+                                <tr>
+                                    <th>代码</th>
+                                    <th>名称</th>
+                                    <th>最新价</th>
+                                    <th>涨跌幅</th>
+                                    <th>换手率</th>
+                                    <th>量比</th>
+                                    <th>市盈率</th>
+                                    <th>市净率</th>
+                                    <th>ROE</th>
+                                    <th>股息率</th>
+                                    <th>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="xq-screener-data"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- 雪球动态 -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-quote"></use></svg></span> 雪球动态</h3>
+                        <div class="xueqiu-controls">
+                            <button id="xq-fundx-btn" class="btn-sm btn-accent">加载动态</button>
+                        </div>
+                    </div>
+                    <div id="xq-fundx-loading" style="display:none;" class="loading-spinner"><div class="spinner"></div><span>获取雪球动态...</span></div>
+                    <div id="xq-fundx-error" class="error-msg" style="display:none;"></div>
+                    <div class="xueqiu-fundx-list" id="xq-fundx-list">
+                        <p class="placeholder-text">点击"加载动态"获取雪球市场资讯</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- 基金分析页 -->
         <div class="tab-panel" id="panel-fund">
             <div class="fund-layout">
@@ -406,6 +529,11 @@
                 <button class="quick-action-btn" data-prompt="帮我从净流入热榜里筛选短期值得关注的标的">
                     <span class="qa-icon"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-hot"></use></svg></span></span>
                     <span class="qa-text">从热榜筛选候选标的</span>
+                    <span class="qa-arrow">→</span>
+                </button>
+                <button class="quick-action-btn" data-prompt="帮我结合雪球热度榜和条件选股数据，找出当前市场关注度与基本面共振的标的" data-source="xueqiu">
+                    <span class="qa-icon"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-search"></use></svg></span></span>
+                    <span class="qa-text">雪球热度+选股共振</span>
                     <span class="qa-arrow">→</span>
                 </button>
             </div>

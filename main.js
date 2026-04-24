@@ -22,6 +22,21 @@ function escapeHTML(value) {
     }[ch]));
 }
 
+function submitStockQuery(code, options = {}) {
+    const codeInput = document.getElementById('code');
+    const sourceInput = document.getElementById('data-source');
+    const frequencyInput = document.getElementById('frequency');
+    const countInput = document.getElementById('count');
+    const form = document.getElementById('stockForm');
+    if (!codeInput || !form || !code) return;
+    codeInput.value = code;
+    if (options.source && sourceInput) sourceInput.value = options.source;
+    if (options.frequency && frequencyInput) frequencyInput.value = options.frequency;
+    if (options.count && countInput) countInput.value = options.count;
+    switchTab('stock');
+    form.dispatchEvent(new Event('submit'));
+}
+
 // 安全降级
 if (typeof window !== 'undefined') {
     if (typeof window.marked === 'undefined') {
@@ -1506,7 +1521,34 @@ const AdvisorModule = {
         el.quickActions?.addEventListener('click', (e) => {
             const btn = e.target.closest('.quick-action-btn');
             if (btn && btn.dataset.prompt) {
-                this.sendQuickAction(btn.dataset.prompt);
+                if (btn.dataset.source === 'xueqiu') {
+                    // 雪球数据增强：先获取热度+选股，再拼接 prompt
+                    Promise.all([
+                        fetch('xueqiu_api.php?action=hot_stock&type=10&size=10').then(r => r.json()).catch(() => ({success: false, data: []})),
+                        fetch('xueqiu_api.php?action=screener&order_by=percent&market=CN&size=10&order=desc').then(r => r.json()).catch(() => ({success: false, data: []}))
+                    ]).then(([hotData, screenerData]) => {
+                        let enhancedPrompt = btn.dataset.prompt + '\n\n';
+                        if (hotData.success && hotData.data && hotData.data.length > 0) {
+                            enhancedPrompt += '【雪球热度榜 Top10】\n代码,名称,涨跌幅,热度值\n';
+                            hotData.data.forEach(item => {
+                                enhancedPrompt += `${item.code || item.symbol},${item.name},${item.change_pct}%,${item.hot_value}\n`;
+                            });
+                            enhancedPrompt += '\n';
+                        }
+                        if (screenerData.success && screenerData.data) {
+                            const items = screenerData.data.data || screenerData.data;
+                            if (items.length > 0) {
+                                enhancedPrompt += '【雪球条件选股 Top10】\n代码,名称,涨跌幅,换手率,PE_TTM,PB\n';
+                                items.forEach(item => {
+                                    enhancedPrompt += `${item.code || item.symbol},${item.name},${item.change_pct}%,${item.turnover_rate},${item.pe_ttm},${item.pb}\n`;
+                                });
+                            }
+                        }
+                        this.sendQuickAction(enhancedPrompt);
+                    });
+                } else {
+                    this.sendQuickAction(btn.dataset.prompt);
+                }
             }
         });
     },
@@ -2193,6 +2235,231 @@ function autoResizeTextarea() {
     APP.userInput.style.height = (sh <= max ? sh : max) + 'px';
 }
 
+// ============================================================
+// 雪球洞察模块
+// ============================================================
+const XueqiuModule = {
+    // ── 雪球热度榜 ──
+    fetchHotStock(type, size) {
+        const loading = document.getElementById('xq-hot-loading');
+        const errorDiv = document.getElementById('xq-hot-error');
+        const table = document.getElementById('xq-hot-table');
+        const tbody = document.getElementById('xq-hot-data');
+
+        if (loading) loading.style.display = 'flex';
+        if (errorDiv) errorDiv.style.display = 'none';
+        if (table) table.style.display = 'none';
+
+        return fetch(`xueqiu_api.php?action=hot_stock&type=${encodeURIComponent(type)}&size=${encodeURIComponent(size)}`)
+            .then(r => r.json())
+            .then(data => {
+                if (loading) loading.style.display = 'none';
+                if (!data.success) {
+                    if (errorDiv) {
+                        errorDiv.textContent = data.message || '获取雪球热度数据失败';
+                        errorDiv.style.display = 'block';
+                    }
+                    return [];
+                }
+                const items = data.data || [];
+                if (tbody) {
+                    tbody.innerHTML = '';
+                    items.forEach(item => {
+                        const tr = document.createElement('tr');
+                        const code = item.code || item.symbol || '';
+                        tr.innerHTML = `
+                            <td>${escapeHTML(code)}</td>
+                            <td>${escapeHTML(item.name || '')}</td>
+                            <td style="${colorStyle(item.price)}">${Number(item.price || 0).toFixed(2)}</td>
+                            <td class="${colorClass(item.change_pct)}">${formatPct(item.change_pct)}</td>
+                            <td>${escapeHTML(item.hot_value || '-')}</td>
+                            <td style="${colorStyle(item.hot_increment)}">${Number(item.hot_increment) > 0 ? '+' : ''}${escapeHTML(item.hot_increment || '-')}</td>
+                            <td>${escapeHTML(item.rank_change || '-')}</td>
+                            <td><button class="btn-sm xq-query-btn" data-code="${escapeHTML(code)}">查询</button></td>
+                        `;
+                        tbody.appendChild(tr);
+                    });
+                }
+                if (table) table.style.display = 'table';
+
+                // 绑定查询按钮
+                tbody?.querySelectorAll('.xq-query-btn').forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        submitStockQuery(btn.dataset.code, {source: 'xueqiu'});
+                    });
+                });
+
+                return items;
+            })
+            .catch(err => {
+                if (loading) loading.style.display = 'none';
+                if (errorDiv) {
+                    errorDiv.textContent = '网络错误: ' + err.message;
+                    errorDiv.style.display = 'block';
+                }
+                return [];
+            });
+    },
+
+    // ── 条件选股 ──
+    fetchScreener(orderBy, market, size) {
+        const loading = document.getElementById('xq-screener-loading');
+        const errorDiv = document.getElementById('xq-screener-error');
+        const table = document.getElementById('xq-screener-table');
+        const tbody = document.getElementById('xq-screener-data');
+
+        if (loading) loading.style.display = 'flex';
+        if (errorDiv) errorDiv.style.display = 'none';
+        if (table) table.style.display = 'none';
+
+        return fetch(`xueqiu_api.php?action=screener&order_by=${encodeURIComponent(orderBy)}&market=${encodeURIComponent(market)}&size=${encodeURIComponent(size)}&order=desc`)
+            .then(r => r.json())
+            .then(data => {
+                if (loading) loading.style.display = 'none';
+                if (!data.success) {
+                    if (errorDiv) {
+                        errorDiv.textContent = data.message || '获取条件选股数据失败';
+                        errorDiv.style.display = 'block';
+                    }
+                    return [];
+                }
+                const items = (data.data && data.data.data) || data.data || [];
+                if (tbody) {
+                    tbody.innerHTML = '';
+                    items.forEach(item => {
+                        const tr = document.createElement('tr');
+                        const code = item.code || item.symbol || '';
+                        tr.innerHTML = `
+                            <td>${escapeHTML(code)}</td>
+                            <td>${escapeHTML(item.name || '')}</td>
+                            <td style="${colorStyle(item.price)}">${Number(item.price || 0).toFixed(2)}</td>
+                            <td class="${colorClass(item.change_pct)}">${formatPct(item.change_pct)}</td>
+                            <td>${item.turnover_rate ? Number(item.turnover_rate).toFixed(2) + '%' : '-'}</td>
+                            <td>${escapeHTML(item.volume_ratio || '-')}</td>
+                            <td>${item.pe_ttm ? Number(item.pe_ttm).toFixed(1) : '-'}</td>
+                            <td>${item.pb ? Number(item.pb).toFixed(2) : '-'}</td>
+                            <td>${item.roe_ttm ? Number(item.roe_ttm).toFixed(2) + '%' : '-'}</td>
+                            <td>${item.dividend_yield ? Number(item.dividend_yield).toFixed(2) + '%' : '-'}</td>
+                            <td><button class="btn-sm xq-query-btn" data-code="${escapeHTML(code)}">查询</button></td>
+                        `;
+                        tbody.appendChild(tr);
+                    });
+                }
+                if (table) table.style.display = 'table';
+
+                tbody?.querySelectorAll('.xq-query-btn').forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        submitStockQuery(btn.dataset.code, {source: 'xueqiu'});
+                    });
+                });
+
+                return items;
+            })
+            .catch(err => {
+                if (loading) loading.style.display = 'none';
+                if (errorDiv) {
+                    errorDiv.textContent = '网络错误: ' + err.message;
+                    errorDiv.style.display = 'block';
+                }
+                return [];
+            });
+    },
+
+    // ── 雪球动态 ──
+    fetchFundx() {
+        const loading = document.getElementById('xq-fundx-loading');
+        const errorDiv = document.getElementById('xq-fundx-error');
+        const list = document.getElementById('xq-fundx-list');
+
+        if (loading) loading.style.display = 'flex';
+        if (errorDiv) errorDiv.style.display = 'none';
+
+        return fetch('xueqiu_api.php?action=fundx&page=1')
+            .then(r => r.json())
+            .then(data => {
+                if (loading) loading.style.display = 'none';
+                if (!data.success) {
+                    if (errorDiv) {
+                        errorDiv.textContent = data.message || '获取雪球动态失败';
+                        errorDiv.style.display = 'block';
+                    }
+                    return [];
+                }
+                const items = (data.data && data.data.data) || data.data || [];
+                if (list) {
+                    list.innerHTML = '';
+                    if (items.length === 0) {
+                        list.innerHTML = '<p class="placeholder-text">暂无动态数据</p>';
+                    }
+                    items.forEach(item => {
+                        const displayTitle = item.title || (item.description && item.description.substring(0, 60)) || '';
+                        const card = document.createElement('div');
+                        card.className = 'xq-fundx-item';
+                        card.innerHTML = `
+                            <div class="xq-fundx-header">
+                                <span class="xq-fundx-author">${escapeHTML(item.author_name || '')}</span>
+                                <span class="xq-fundx-time">${escapeHTML(item.created_at || '')}</span>
+                            </div>
+                            <div class="xq-fundx-title">${escapeHTML(displayTitle)}</div>
+                            ${item.description ? '<div class="xq-fundx-desc">' + escapeHTML(item.description).substring(0, 200) + '</div>' : ''}
+                            <div class="xq-fundx-stats">
+                                <span>点赞 ${Number(item.like_count || 0)}</span>
+                                <span>评论 ${Number(item.reply_count || 0)}</span>
+                                <span>转发 ${Number(item.retweet_count || 0)}</span>
+                                <span>收藏 ${Number(item.fav_count || 0)}</span>
+                                <span>浏览 ${Number(item.view_count || 0)}</span>
+                            </div>
+                        `;
+                        list.appendChild(card);
+                    });
+                }
+                return items;
+            })
+            .catch(err => {
+                if (loading) loading.style.display = 'none';
+                if (errorDiv) {
+                    errorDiv.textContent = '网络错误: ' + err.message;
+                    errorDiv.style.display = 'block';
+                }
+                return [];
+            });
+    },
+
+
+    // ── 热度AI分析 ──
+    hotSuperQuery() {
+        const type = document.getElementById('xq-hot-type')?.value || '10';
+        this.fetchHotStock(type, 20).then(items => {
+            if (!items || items.length === 0) return;
+            let prompt = '请分析以下雪球热度榜数据，从热度趋势、资金面情绪、市场关注度角度给出研判：\n\n';
+            prompt += '代码,名称,最新价,涨跌幅,热度值,热度变化\n';
+            items.forEach(item => {
+                prompt += `${item.code || item.symbol},${item.name},${item.price},${item.change_pct}%,${item.hot_value},${item.hot_increment}\n`;
+            });
+            prompt += '\n请关注：1) 热度值与涨跌幅的背离 2) 热度增量异常的个股 3) 整体市场情绪判断';
+            APP.advisorContext.source = '雪球热度AI分析';
+            AdvisorModule.send(prompt);
+        });
+    },
+
+    // ── 条件选股AI分析 ──
+    screenerAIQuery() {
+        const orderBy = document.getElementById('xq-screener-order')?.value || 'percent';
+        const market = document.getElementById('xq-screener-market')?.value || 'CN';
+        this.fetchScreener(orderBy, market, 20).then(items => {
+            if (!items || items.length === 0) return;
+            let prompt = '请分析以下雪球条件选股数据，从技术面、估值、热度等角度给出筛选建议：\n\n';
+            prompt += '代码,名称,最新价,涨跌幅,换手率,量比,PE_TTM,PB,ROE,股息率\n';
+            items.forEach(item => {
+                prompt += `${item.code || item.symbol},${item.name},${item.price},${item.change_pct}%,${item.turnover_rate},${item.volume_ratio},${item.pe_ttm},${item.pb},${item.roe_ttm},${item.dividend_yield}\n`;
+            });
+            prompt += '\n请关注：1) 估值与成长性匹配度 2) 技术面强势信号 3) 量价配合情况 4) 风险提示';
+            APP.advisorContext.source = '雪球选股AI分析';
+            AdvisorModule.send(prompt);
+        });
+    }
+};
+
 function switchTab(tabName) {
     let activeTab = null;
     document.querySelectorAll('.nav-tab').forEach(t => {
@@ -2373,7 +2640,8 @@ document.addEventListener('DOMContentLoaded', function() {
         stockTable.style.display = 'none';
         APP.currentStockCode = code;
 
-        const url = `api.php?code=${encodeURIComponent(code)}&frequency=${encodeURIComponent(frequency)}&count=${encodeURIComponent(count)}&end_date=${encodeURIComponent(end_date)}`;
+        const source = document.getElementById('data-source')?.value || 'auto';
+        const url = `api.php?code=${encodeURIComponent(code)}&frequency=${encodeURIComponent(frequency)}&count=${encodeURIComponent(count)}&end_date=${encodeURIComponent(end_date)}&source=${encodeURIComponent(source)}`;
 
         fetch(url)
             .then(r => r.json())
@@ -2691,6 +2959,22 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // === 板块资金 ===
     document.getElementById('sector-query-btn')?.addEventListener('click', () => SectorModule.query());
+
+    // === 雪球洞察 ===
+    document.getElementById('xq-hot-query-btn')?.addEventListener('click', () => {
+        const type = document.getElementById('xq-hot-type')?.value || '10';
+        const size = document.getElementById('xq-hot-size')?.value || 20;
+        XueqiuModule.fetchHotStock(type, parseInt(size));
+    });
+    document.getElementById('xq-hot-super-btn')?.addEventListener('click', () => XueqiuModule.hotSuperQuery());
+    document.getElementById('xq-screener-btn')?.addEventListener('click', () => {
+        const orderBy = document.getElementById('xq-screener-order')?.value || 'percent';
+        const market = document.getElementById('xq-screener-market')?.value || 'CN';
+        const size = document.getElementById('xq-screener-size')?.value || 20;
+        XueqiuModule.fetchScreener(orderBy, market, parseInt(size));
+    });
+    document.getElementById('xq-screener-ai-btn')?.addEventListener('click', () => XueqiuModule.screenerAIQuery());
+    document.getElementById('xq-fundx-btn')?.addEventListener('click', () => XueqiuModule.fetchFundx());
 
     // === 基金分析 ===
     document.getElementById('fund-search-btn')?.addEventListener('click', () => FundModule.search());

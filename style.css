@@ -851,6 +851,46 @@ tr:hover td { background: var(--bg-hover); }
 #sector-table td:nth-child(3), #sector-table td:nth-child(4) { font-weight: 600; }
 
 /* ===== 基金分析 ===== */
+
+/* ===== 雪球洞察 ===== */
+.xueqiu-layout {
+    display: flex; flex-direction: column; gap: 16px;
+}
+.xueqiu-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; min-width: 0; }
+.xueqiu-table-wrapper { overflow-x: auto; }
+#xq-hot-table, #xq-screener-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+#xq-hot-table th, #xq-hot-table td,
+#xq-screener-table th, #xq-screener-table td {
+    padding: 8px 10px; text-align: center; border-bottom: 1px solid var(--border-color);
+    white-space: nowrap;
+}
+#xq-hot-table th, #xq-screener-table th {
+    background: var(--bg-secondary); font-weight: 600; position: sticky; top: 0; z-index: 1;
+}
+
+/* 雪球动态卡片 */
+.xueqiu-fundx-list { display: flex; flex-direction: column; gap: 12px; padding: 8px 0; }
+.xq-fundx-item {
+    background: var(--bg-secondary); border: 1px solid var(--border-color);
+    border-radius: var(--radius-md); padding: 12px 16px;
+    transition: var(--transition);
+}
+.xq-fundx-item:hover { border-color: var(--accent-green); box-shadow: var(--shadow-sm); }
+.xq-fundx-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.xq-fundx-author { font-weight: 600; font-size: 0.85rem; }
+.xq-fundx-time { font-size: 0.75rem; color: var(--text-muted); }
+.xq-fundx-title { font-size: 0.9rem; font-weight: 500; margin-bottom: 4px; }
+.xq-fundx-desc { font-size: 0.8rem; color: var(--text-muted); line-height: 1.5; }
+.xq-fundx-stats { display: flex; gap: 12px; font-size: 0.75rem; color: var(--text-muted); margin-top: 6px; }
+
+
+/* 数据源选择器 */
+.form-group-source select {
+    padding: 6px 8px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);
+    background: var(--bg-primary); color: var(--text-primary); font-size: 0.85rem;
+    cursor: pointer;
+}
+
 .fund-layout {
     display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
 }

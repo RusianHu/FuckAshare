@@ -2,6 +2,14 @@
 /**
  * 股票K线数据API
  * 通过调用 Python 脚本获取行情数据
+ *
+ * 新增可选参数：source / fallback / raw
+ *   source=auto     默认，保留现有主数据源，失败时尝试雪球兜底
+ *   source=ashare   强制 Ashare（原有行为）
+ *   source=xueqiu   强制雪球
+ *   fallback=1      允许兜底（默认）
+ *   fallback=0      禁用兜底
+ *   raw=1           返回上游原始结构
  */
 header('Content-Type: application/json');
 
@@ -34,6 +42,22 @@ $count = SecurityAudit::getParam('count', 10, [
 $end_date = SecurityAudit::getParam('end_date', '', [
     'pattern' => SecurityAudit::DATE_PATTERN,
 ]);
+
+// 新增可选参数
+$source   = SecurityAudit::getParam('source', 'auto', ['whitelist' => SecurityAudit::ALLOWED_DATA_SOURCES]);
+$fallback = SecurityAudit::getParam('fallback', 1, ['int' => true]) === 1;
+$raw      = SecurityAudit::getParam('raw', 0, ['int' => true]) === 1;
+
+// 如果指定了雪球数据源或 auto+fallback，使用 MarketDataService
+if ($source === 'xueqiu' || ($source === 'auto' && $fallback)) {
+    require_once __DIR__ . '/lib/MarketDataService.php';
+    $service = new MarketDataService();
+    $result = $service->kline($code, $frequency, $count, $end_date, $source, $fallback, $raw);
+    echo $result->toJson($raw);
+    exit;
+}
+
+// 以下为原有 Ashare 逻辑（source=ashare 或 source=auto 且无 fallback）
 
 // 构建Python命令（根据系统选择 python3 或 python），并正确转义所有参数
 // 使用 __DIR__ 构造 get_stock_data.py 的绝对路径，避免不同工作目录下找不到脚本

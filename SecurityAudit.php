@@ -46,6 +46,27 @@ class SecurityAudit
     /** 板块类型白名单 */
     const ALLOWED_SECTOR_TYPES = ['industry', 'concept', 'theme', 'region'];
 
+    /** 数据源白名单 */
+    const ALLOWED_DATA_SOURCES = ['auto', 'eastmoney', 'ashare', 'xueqiu'];
+
+    /** 雪球 action 白名单 */
+    const ALLOWED_XUEQIU_ACTIONS = ['quote', 'kline', 'hot_stock', 'screener', 'fundx'];
+
+    /** 雪球 K 线 period 白名单 */
+    const ALLOWED_XUEQIU_PERIODS = ['1m', '5m', '15m', '30m', '60m', 'day', 'week', 'month'];
+
+    /** 雪球热度榜 type 白名单 */
+    const ALLOWED_XUEQIU_HOT_TYPES = ['10', '11', '12', '13', '14'];
+
+    /** 条件选股排序字段白名单 */
+    const ALLOWED_SCREENER_ORDER_FIELDS = ['percent', 'amount', 'volume', 'turnover_rate', 'volume_ratio', 'market_capital', 'float_market_capital', 'pe_ttm', 'pb', 'roe_ttm', 'dividend_yield', 'followers', 'limitup_days'];
+
+    /** 条件选股市场白名单 */
+    const ALLOWED_SCREENER_MARKETS = ['CN', 'HK', 'US'];
+
+    /** 条件选股类型白名单 */
+    const ALLOWED_SCREENER_TYPES = ['11', '82', '30', '', 'ashare', 'hk', 'us', 'sh_sz', 'sh', 'sz', 'bj', 'kcb', 'cyb'];
+
     /** 搜索关键词最大长度 */
     const MAX_KEYWORD_LENGTH = 100;
 
