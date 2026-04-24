@@ -390,6 +390,13 @@
         <div class="advisor-input-area">
             <div class="advisor-input-box">
                 <textarea id="advisor-user-input" placeholder="问我任何股票、板块、基金的问题…" rows="1" aria-label="AI 顾问输入框"></textarea>
+                <div class="advisor-context-meter" id="advisor-context-meter" role="meter" aria-label="上下文用量" aria-valuemin="0" aria-valuemax="255000" aria-valuenow="0" title="上下文: 0 / 255K">
+                    <svg class="advisor-context-ring" viewBox="0 0 20 20" aria-hidden="true">
+                        <circle class="context-ring-track" cx="10" cy="10" r="8" pathLength="100"></circle>
+                        <circle class="context-ring-value" id="advisor-context-ring" cx="10" cy="10" r="8" pathLength="100"></circle>
+                    </svg>
+                    <span class="advisor-context-size" id="advisor-context-size">0 / 255K</span>
+                </div>
                 <button class="advisor-send-btn" id="advisor-send-btn" title="发送" aria-label="发送消息" disabled>
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
                 </button>

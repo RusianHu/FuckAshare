@@ -407,12 +407,16 @@ const AnimationManager = {
 // ============================================================
 // 全局状态
 // ============================================================
+const AI_SYSTEM_PROMPT = '你是一位专业的股票分析师，擅长解读股票数据并给出建议。';
+const AI_CONTEXT_LIMIT = 255000;
+
 const APP = {
     // AI聊天
     chatContainer: null,
     userInput: null,
-    messageHistory: [{ role: 'system', content: '你是一位专业的股票分析师，擅长解读股票数据并给出建议。' }],
+    messageHistory: [{ role: 'system', content: AI_SYSTEM_PROMPT }],
     currentSessionId: null,
+    aiContextLimit: AI_CONTEXT_LIMIT,
     // 图表
     chart: null,
     candleSeries: null,
@@ -1413,7 +1417,10 @@ const AdvisorModule = {
             contextTab: document.getElementById('advisor-context-tab'),
             badge: document.getElementById('fab-badge'),
             status: document.getElementById('advisor-status'),
-            quickActions: document.getElementById('ai-advisor-quick-actions')
+            quickActions: document.getElementById('ai-advisor-quick-actions'),
+            contextMeter: document.getElementById('advisor-context-meter'),
+            contextRing: document.getElementById('advisor-context-ring'),
+            contextSize: document.getElementById('advisor-context-size')
         };
 
         // 缓存到 APP
@@ -1421,6 +1428,7 @@ const AdvisorModule = {
         APP.advisorUserInput = this._els.userInput;
 
         this._bindEvents();
+        this.updateContextMeter();
     },
 
     /** 绑定所有事件 */
@@ -1513,6 +1521,7 @@ const AdvisorModule = {
 
         // 更新上下文
         this.updateContext();
+        this.updateContextMeter();
 
         // 清除未读
         this.clearUnread();
@@ -1573,6 +1582,7 @@ const AdvisorModule = {
 
         // 通过 AIModule 发送，指定顾问面板容器
         APP.messageHistory.push({ role: 'user', content: msg });
+        this.updateContextMeter();
         AIModule.appendMessage(msg, null, 'user-message', this._els.chatContainer);
         const loadingMsg = AIModule.appendMessage('思考中...', null, 'loading-message', this._els.chatContainer);
         let seconds = 0;
@@ -1594,6 +1604,7 @@ const AdvisorModule = {
 
         // 通过 AIModule 发送
         APP.messageHistory.push({ role: 'user', content: prompt });
+        this.updateContextMeter();
         AIModule.appendMessage(prompt, null, 'user-message', this._els.chatContainer);
         const loadingMsg = AIModule.appendMessage('思考中...', null, 'loading-message', this._els.chatContainer);
         let seconds = 0;
@@ -1616,6 +1627,7 @@ const AdvisorModule = {
         setTimeout(() => {
             this._els.panel?.classList.add('has-messages');
             APP.messageHistory.push({ role: 'user', content: message });
+            this.updateContextMeter();
             AIModule.appendMessage(message, null, 'user-message', this._els.chatContainer);
             const loadingMsg = AIModule.appendMessage('思考中...', null, 'loading-message', this._els.chatContainer);
             let seconds = 0;
@@ -1731,6 +1743,31 @@ const AdvisorModule = {
         }
     },
 
+    /** 更新上下文用量环 */
+    updateContextMeter() {
+        const meter = this._els.contextMeter;
+        const ring = this._els.contextRing;
+        const size = this._els.contextSize;
+        if (!meter || !ring || typeof AIModule === 'undefined') return;
+
+        const stats = AIModule.getContextStats();
+        const percent = Math.min(Math.round(stats.sentSize / stats.limit * 1000) / 10, 100);
+        const dash = stats.sentSize > 0 ? Math.max(1, Math.min(percent, 100)) : 0;
+        const label = `${AIModule.formatContextSize(stats.sentSize)} / ${AIModule.formatContextSize(stats.limit)}`;
+        const title = stats.truncated
+            ? `上下文: ${label}，已发送最近 ${stats.sentMessages}/${stats.totalMessages} 条消息`
+            : `上下文: ${label}，共 ${stats.totalMessages} 条消息`;
+
+        ring.style.strokeDasharray = `${dash} 100`;
+        if (size) size.textContent = label;
+        meter.title = title;
+        meter.setAttribute('aria-valuemax', String(stats.limit));
+        meter.setAttribute('aria-valuenow', String(stats.sentSize));
+        meter.setAttribute('aria-valuetext', title);
+        meter.classList.toggle('warning', percent >= 80 && percent < 95);
+        meter.classList.toggle('danger', percent >= 95);
+    },
+
     /** 输入框自适应高度 */
     _autoResize() {
         const ta = this._els.userInput;
@@ -1810,8 +1847,69 @@ const AdvisorModule = {
 // AI聊天模块
 // ============================================================
 const AIModule = {
+    estimateContextSize(text) {
+        if (!text) return 0;
+        const value = String(text);
+        const cjkMatches = value.match(/[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/g);
+        const cjkCount = cjkMatches ? cjkMatches.length : 0;
+        const asciiLike = value.replace(/[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/g, '');
+        return Math.ceil(cjkCount + asciiLike.length / 4);
+    },
+
+    estimateMessageSize(message) {
+        return this.estimateContextSize(message?.content || '') + 4;
+    },
+
+    formatContextSize(size) {
+        const value = Number(size) || 0;
+        if (value >= 1000000) return (value / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+        if (value >= 1000) return Math.round(value / 1000) + 'K';
+        return String(value);
+    },
+
+    getContextMessages() {
+        const messages = Array.isArray(APP.messageHistory) ? APP.messageHistory : [];
+        const limit = APP.aiContextLimit || AI_CONTEXT_LIMIT;
+        const totalSize = messages.reduce((sum, msg) => sum + this.estimateMessageSize(msg), 0);
+        if (totalSize <= limit) return messages.slice();
+
+        const systemMessages = messages.filter(msg => msg.role === 'system');
+        const dialogueMessages = messages.filter(msg => msg.role !== 'system');
+        const selected = [];
+        let used = systemMessages.reduce((sum, msg) => sum + this.estimateMessageSize(msg), 0);
+
+        for (let i = dialogueMessages.length - 1; i >= 0; i--) {
+            const msg = dialogueMessages[i];
+            const size = this.estimateMessageSize(msg);
+            if (used + size <= limit || selected.length === 0) {
+                selected.unshift(msg);
+                used += size;
+            } else {
+                break;
+            }
+        }
+
+        return systemMessages.concat(selected);
+    },
+
+    getContextStats() {
+        const messages = Array.isArray(APP.messageHistory) ? APP.messageHistory : [];
+        const contextMessages = this.getContextMessages();
+        const totalMessages = messages.filter(msg => msg.role !== 'system').length;
+        const sentMessages = contextMessages.filter(msg => msg.role !== 'system').length;
+        return {
+            limit: APP.aiContextLimit || AI_CONTEXT_LIMIT,
+            totalSize: messages.reduce((sum, msg) => sum + this.estimateMessageSize(msg), 0),
+            sentSize: contextMessages.reduce((sum, msg) => sum + this.estimateMessageSize(msg), 0),
+            totalMessages,
+            sentMessages,
+            truncated: sentMessages < totalMessages
+        };
+    },
+
     autoSend(message) {
         APP.messageHistory.push({ role: 'user', content: message });
+        if (typeof AdvisorModule !== 'undefined') AdvisorModule.updateContextMeter();
         this.appendMessage(message, null, 'user-message');
         const loadingMsg = this.appendMessage('思考中...', null, 'loading-message');
         let seconds = 0;
@@ -1894,13 +1992,14 @@ const AIModule = {
     async sendToAI(loadingMessage, timer, targetContainer) {
         const requestVersion = APP.advisorRequestVersion;
         try {
+            const requestMessages = this.getContextMessages();
             // 渠道和模型由后端 ai_api.php 的 $defaultChannel 统一控制
             const response = await fetch('ai_api.php', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     session_id: APP.currentSessionId,
-                    messages: APP.messageHistory,
+                    messages: requestMessages,
                     stream: true
                 })
             });
@@ -2031,6 +2130,7 @@ const AIModule = {
             } else {
                 this._updateContent(botDiv, '**提示:** 服务器返回空响应，请检查网络或稍后重试。');
             }
+            if (typeof AdvisorModule !== 'undefined') AdvisorModule.updateContextMeter();
 
         } catch(error) {
             clearInterval(timer);
@@ -2039,6 +2139,7 @@ const AIModule = {
                 this.appendMessage(`**错误:** ${error.message}`, null, 'bot-message', targetContainer);
             }
             if (typeof AdvisorModule !== 'undefined') AdvisorModule.setThinking(false);
+            if (typeof AdvisorModule !== 'undefined') AdvisorModule.updateContextMeter();
         }
     }
 };
@@ -2051,6 +2152,7 @@ function sendMessage() {
     APP.userInput.value = '';
     APP.userInput.style.height = '44px';
     APP.messageHistory.push({ role: 'user', content: msg });
+    if (typeof AdvisorModule !== 'undefined') AdvisorModule.updateContextMeter();
     AIModule.appendMessage(msg, null, 'user-message');
     const loadingMsg = AIModule.appendMessage('思考中...', null, 'loading-message');
     let seconds = 0;
@@ -2583,7 +2685,7 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('clear-chat-btn')?.addEventListener('click', () => {
         APP.advisorRequestVersion++;
         APP.chatContainer.innerHTML = '';
-        APP.messageHistory = [{ role: 'system', content: '你是一位专业的股票分析师，擅长解读股票数据并给出建议。' }];
+        APP.messageHistory = [{ role: 'system', content: AI_SYSTEM_PROMPT }];
         // 同步清空顾问面板消息
         if (APP.advisorChatContainer) APP.advisorChatContainer.innerHTML = '';
         const advisorPanel = document.getElementById('ai-advisor-panel');
@@ -2591,6 +2693,7 @@ document.addEventListener('DOMContentLoaded', function() {
         if (typeof AdvisorModule !== 'undefined') {
             AdvisorModule.setThinking(false);
             AdvisorModule.clearUnread();
+            AdvisorModule.updateContextMeter();
         }
     });
 

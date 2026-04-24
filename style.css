@@ -1045,7 +1045,8 @@ body.watchlist-open .ai-advisor-fab {
     bottom: 92px;
     right: 24px;
     width: 400px;
-    height: 620px;
+    height: auto;
+    min-height: 520px;
     max-height: calc(100dvh - 120px);
     background: var(--advisor-panel-bg);
     border: 1px solid var(--advisor-panel-border);
@@ -1063,6 +1064,9 @@ body.watchlist-open .ai-advisor-fab {
                 transform 0.3s cubic-bezier(0.4, 0, 0.2, 1),
                 visibility 0.3s;
     pointer-events: none;
+}
+.ai-advisor-panel.has-messages {
+    height: 720px;
 }
 .ai-advisor-panel.open {
     opacity: 1;
@@ -1084,7 +1088,7 @@ body.watchlist-open .ai-advisor-panel {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 14px 16px;
+    padding: 10px 16px;
     background: var(--advisor-header-bg);
     border-bottom: 1px solid var(--advisor-panel-border);
     flex-shrink: 0;
@@ -1099,10 +1103,10 @@ body.watchlist-open .ai-advisor-panel {
     gap: 10px;
 }
 .advisor-avatar {
-    font-size: 28px;
+    font-size: 24px;
     line-height: 1;
-    width: 36px;
-    height: 36px;
+    width: 32px;
+    height: 32px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -1131,8 +1135,8 @@ body.watchlist-open .ai-advisor-panel {
     gap: 4px;
 }
 .advisor-header-btn {
-    width: 32px;
-    height: 32px;
+    width: 30px;
+    height: 30px;
     border: none;
     background: transparent;
     color: var(--text-muted);
@@ -1154,7 +1158,7 @@ body.watchlist-open .ai-advisor-panel {
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 6px 16px;
+    padding: 5px 16px;
     background: var(--advisor-context-bg);
     border-bottom: 1px solid var(--advisor-panel-border);
     flex-shrink: 0;
@@ -1172,7 +1176,7 @@ body.watchlist-open .ai-advisor-panel {
 
 /* 欢迎区 */
 .advisor-welcome {
-    padding: 20px 16px 12px;
+    padding: 16px 16px 10px;
     flex-shrink: 0;
     overflow: hidden;
 }
@@ -1180,7 +1184,7 @@ body.watchlist-open .ai-advisor-panel {
     display: none;
 }
 .welcome-text {
-    margin-bottom: 16px;
+    margin-bottom: 12px;
 }
 .welcome-title {
     font-size: 0.92rem;
@@ -1204,7 +1208,7 @@ body.watchlist-open .ai-advisor-panel {
     align-items: center;
     gap: 10px;
     width: 100%;
-    padding: 10px 14px;
+    padding: 8px 14px;
     background: var(--advisor-qa-bg);
     border: 1px solid var(--advisor-qa-border);
     border-radius: var(--radius-md);
@@ -1260,6 +1264,7 @@ body.watchlist-open .ai-advisor-panel {
 }
 .ai-advisor-panel.has-messages .advisor-messages {
     display: block;
+    min-height: 180px;
 }
 /* 顾问面板内的消息复用全局 .message 样式，仅微调 */
 .advisor-messages .message {
@@ -1270,19 +1275,20 @@ body.watchlist-open .ai-advisor-panel {
 
 /* 顾问输入区 */
 .advisor-input-area {
-    padding: 10px 12px 10px;
+    padding: 8px 12px 8px;
     border-top: 1px solid var(--advisor-panel-border);
     background: var(--advisor-panel-bg);
     flex-shrink: 0;
+    margin-top: auto;
 }
 .advisor-input-box {
     display: flex;
-    align-items: flex-end;
+    align-items: center;
     gap: 8px;
     background: var(--advisor-input-bg);
     border: 1.5px solid var(--advisor-input-border);
     border-radius: var(--radius-md);
-    padding: 6px 8px 6px 12px;
+    padding: 4px 8px 4px 12px;
     transition: border-color 0.25s ease, box-shadow 0.25s ease;
 }
 .advisor-input-box:focus-within {
@@ -1291,6 +1297,7 @@ body.watchlist-open .ai-advisor-panel {
 }
 .advisor-input-box textarea {
     flex: 1;
+    min-width: 0;
     border: none;
     background: transparent;
     color: var(--text-primary);
@@ -1306,9 +1313,56 @@ body.watchlist-open .ai-advisor-panel {
 .advisor-input-box textarea::placeholder {
     color: var(--text-muted);
 }
-.advisor-send-btn {
-    width: 34px;
+.advisor-context-meter {
+    --context-meter-color: var(--advisor-input-focus);
+    display: flex;
+    align-items: center;
+    gap: 5px;
     height: 34px;
+    padding: 0 3px 0 2px;
+    color: var(--text-muted);
+    border-radius: 999px;
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+.advisor-context-ring {
+    width: 20px;
+    height: 20px;
+    transform: rotate(-90deg);
+    flex-shrink: 0;
+}
+.context-ring-track,
+.context-ring-value {
+    fill: none;
+    stroke-width: 2.4;
+}
+.context-ring-track {
+    stroke: var(--advisor-input-border);
+    opacity: 0.75;
+}
+.context-ring-value {
+    stroke: var(--context-meter-color);
+    stroke-linecap: round;
+    stroke-dasharray: 0 100;
+    transition: stroke-dasharray 0.25s ease, stroke 0.25s ease;
+}
+.advisor-context-meter.warning {
+    --context-meter-color: var(--accent-orange);
+}
+.advisor-context-meter.danger {
+    --context-meter-color: var(--accent-red);
+}
+.advisor-context-size {
+    min-width: 52px;
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    line-height: 1;
+    color: var(--text-muted);
+    letter-spacing: 0;
+}
+.advisor-send-btn {
+    width: 32px;
+    height: 32px;
     border-radius: 50%;
     background: var(--advisor-send-bg);
     color: #fff;
@@ -1367,15 +1421,26 @@ body.watchlist-open .ai-advisor-panel {
         font-size: 24px;
     }
     .ai-advisor-panel {
+        bottom: 14px;
+        right: 8px;
+        left: 8px;
+        width: auto;
+        height: auto;
+        min-height: min(540px, calc(100dvh - 28px));
+        max-height: calc(100dvh - 28px);
+        border-radius: 24px;
+        transform: translateY(100%);
+        transform-origin: bottom center;
+    }
+    .ai-advisor-panel.has-messages {
         bottom: 0;
         right: 0;
         left: 0;
         width: 100%;
         height: 85dvh;
+        min-height: 0;
         max-height: 85dvh;
         border-radius: 24px 24px 0 0;
-        transform: translateY(100%);
-        transform-origin: bottom center;
     }
     .ai-advisor-panel.open {
         transform: translateY(0);
@@ -1386,20 +1451,33 @@ body.watchlist-open .ai-advisor-panel {
     }
     /* 输入区安全区 */
     .advisor-input-area {
-        padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+        padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
     }
 }
 @media (max-width: 480px) {
     .ai-advisor-panel {
+        max-height: calc(100dvh - 20px);
+        min-height: min(520px, calc(100dvh - 20px));
+        border-radius: 20px;
+    }
+    .ai-advisor-panel.has-messages {
         height: 92dvh;
+        min-height: 0;
         max-height: 92dvh;
         border-radius: 20px 20px 0 0;
     }
     .advisor-header {
-        padding: 12px 14px;
+        padding: 9px 14px;
     }
     .advisor-welcome {
-        padding: 14px 14px 10px;
+        padding: 12px 14px 8px;
+    }
+    .advisor-input-box {
+        gap: 6px;
+        padding-left: 10px;
+    }
+    .advisor-context-size {
+        display: none;
     }
 }
 

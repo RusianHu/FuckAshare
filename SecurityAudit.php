@@ -61,8 +61,8 @@ class SecurityAudit
     /** 单个代码最大长度 */
     const MAX_CODE_LENGTH = 20;
 
-    /** JSON 请求体最大字节数 (1 MB) */
-    const MAX_JSON_BODY_SIZE = 1048576;
+    /** JSON 请求体最大字节数 (4 MB)，用于支持较长的多轮 AI 上下文 */
+    const MAX_JSON_BODY_SIZE = 4194304;
 
     /** 默认速率限制：窗口时间内最大请求数 */
     const DEFAULT_RATE_LIMIT = 60;
@@ -200,7 +200,7 @@ class SecurityAudit
         $raw = file_get_contents('php://input');
 
         if (strlen($raw) > self::MAX_JSON_BODY_SIZE) {
-            self::reject('请求体过大，最大允许 1 MB');
+            self::reject('请求体过大，最大允许 4 MB');
         }
 
         $data = json_decode($raw, true);
