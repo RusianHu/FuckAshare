@@ -305,7 +305,7 @@
                     <div id="chat-container" class="chat-messages"></div>
                     <div class="chat-input-area">
                         <textarea id="user-input" placeholder="输入您的问题... (Enter发送, Shift+Enter换行)" onkeydown="handleKeyDown(event)" oninput="autoResizeTextarea()"></textarea>
-                        <button id="send-button" onclick="sendMessage()">发送</button>
+                        <button id="send-button">发送</button>
                     </div>
                 </div>
             </div>
@@ -327,6 +327,79 @@
         </div>
     </div>
     <div class="watchlist-overlay" id="watchlist-overlay"></div>
+
+    <!-- AI 顾问 FAB 悬浮按钮 -->
+    <button class="ai-advisor-fab" id="ai-advisor-fab" aria-label="打开 AI 顾问" aria-controls="ai-advisor-panel" aria-expanded="false" title="AI 顾问">
+        <span class="fab-icon">🤖</span>
+        <span class="fab-badge" id="fab-badge" style="display:none;">0</span>
+        <span class="fab-glow"></span>
+    </button>
+
+    <!-- AI 顾问弹出面板 -->
+    <div class="ai-advisor-panel" id="ai-advisor-panel" role="dialog" aria-label="AI 顾问面板" aria-modal="false" aria-hidden="true">
+        <!-- 头部栏 -->
+        <div class="advisor-header">
+            <div class="advisor-header-left">
+                <span class="advisor-avatar">🤖</span>
+                <div class="advisor-identity">
+                    <span class="advisor-name">AI 顾问</span>
+                    <span class="advisor-status" id="advisor-status">在线 · Beta</span>
+                </div>
+            </div>
+            <div class="advisor-header-right">
+                <button class="advisor-header-btn" id="advisor-expand-btn" title="展开到完整页" aria-label="展开到完整 AI 顾问页">📋</button>
+                <button class="advisor-header-btn" id="advisor-close-btn" title="关闭面板" aria-label="关闭 AI 顾问面板">✕</button>
+            </div>
+        </div>
+
+        <!-- 上下文提示区 -->
+        <div class="advisor-context" id="ai-advisor-context" style="display:none;">
+            <span class="context-tag" id="advisor-context-stock"></span>
+            <span class="context-tag" id="advisor-context-tab"></span>
+        </div>
+
+        <!-- 欢迎区 / 空状态区 -->
+        <div class="advisor-welcome" id="ai-advisor-welcome">
+            <div class="welcome-text">
+                <p class="welcome-title">你好，我可以结合行情、资金流和板块数据帮你快速研判。</p>
+                <p class="welcome-sub">我已接入当前页面数据，可以直接问我股票趋势、主力意图或板块机会。</p>
+            </div>
+            <div class="advisor-quick-actions" id="ai-advisor-quick-actions">
+                <button class="quick-action-btn" data-prompt="帮我分析当前股票的趋势与支撑压力位">
+                    <span class="qa-icon">📊</span>
+                    <span class="qa-text">分析当前股票趋势</span>
+                    <span class="qa-arrow">→</span>
+                </button>
+                <button class="quick-action-btn" data-prompt="帮我结合资金流向判断主力在吸筹还是出货">
+                    <span class="qa-icon">💰</span>
+                    <span class="qa-text">判断主力资金意图</span>
+                    <span class="qa-arrow">→</span>
+                </button>
+                <button class="quick-action-btn" data-prompt="帮我从净流入热榜里筛选短期值得关注的标的">
+                    <span class="qa-icon">🔥</span>
+                    <span class="qa-text">从热榜筛选候选标的</span>
+                    <span class="qa-arrow">→</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- 消息滚动区 -->
+        <div class="advisor-messages" id="advisor-chat-container"></div>
+
+        <!-- 底部输入区 -->
+        <div class="advisor-input-area">
+            <div class="advisor-input-box">
+                <textarea id="advisor-user-input" placeholder="问我任何股票、板块、基金的问题…" rows="1" aria-label="AI 顾问输入框"></textarea>
+                <button class="advisor-send-btn" id="advisor-send-btn" title="发送" aria-label="发送消息" disabled>
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                </button>
+            </div>
+            <div class="advisor-disclaimer">AI 生成内容仅供参考，不构成投资建议</div>
+        </div>
+    </div>
+
+    <!-- AI 顾问移动端遮罩 -->
+    <div class="ai-advisor-backdrop" id="ai-advisor-backdrop" aria-hidden="true"></div>
 
     <!-- 股票详情弹窗 -->
     <div class="modal-overlay" id="stock-modal-overlay" style="display:none;">
