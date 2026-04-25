@@ -3,8 +3,13 @@
  * CircuitBreaker — 熔断器 + 结构化日志
  *
  * 雪球接口连续失败时自动熔断，避免雪球故障拖垮整体响应时间
+ * Phase 2: 支持 Redis backend，独立数据源熔断器
+ *
  * 日志写入系统临时目录，不提交到版本库
  */
+
+require_once __DIR__ . '/CacheStoreFactory.php';
+require_once __DIR__ . '/AppConfig.php';
 
 class CircuitBreaker
 {
@@ -21,7 +26,7 @@ class CircuitBreaker
     /** @var int 熔断冷却时间（秒） */
     private $cooldown;
 
-    /** @var string 状态文件路径 */
+    /** @var string 状态文件路径（文件 fallback） */
     private $stateFile;
 
     /** @var array 当前状态 */
@@ -30,17 +35,49 @@ class CircuitBreaker
     /** @var string 日志目录 */
     private static $logDir;
 
-    public function __construct(string $source, int $failureThreshold = 3, int $cooldown = 60)
-    {
-        $this->source           = $source;
-        $this->failureThreshold = $failureThreshold;
-        $this->cooldown         = $cooldown;
+    /** @var bool 是否使用 Redis */
+    private $useRedis = false;
 
+    // ── 数据源默认熔断配置 ──
+
+    /** @var array 各数据源的默认配置 */
+    const SOURCE_DEFAULTS = [
+        'xueqiu'     => ['failureThreshold' => 3,  'cooldown' => 60],
+        'eastmoney'  => ['failureThreshold' => 5,  'cooldown' => 30],
+        'ashare'     => ['failureThreshold' => 3,  'cooldown' => 60],
+        'fund'       => ['failureThreshold' => 5,  'cooldown' => 30],
+    ];
+
+    public function __construct(string $source, int $failureThreshold = 0, int $cooldown = 0)
+    {
+        $this->source = $source;
+
+        // 使用数据源默认配置（如果未显式指定）
+        $defaults = self::SOURCE_DEFAULTS[$source] ?? ['failureThreshold' => 3, 'cooldown' => 60];
+        $configured = AppConfig::get("circuit_breaker.{$source}", []);
+        if (is_array($configured)) {
+            $defaults['failureThreshold'] = $configured['failure_threshold'] ?? $defaults['failureThreshold'];
+            $defaults['cooldown'] = $configured['cooldown'] ?? $defaults['cooldown'];
+        }
+        $this->failureThreshold = $failureThreshold > 0 ? $failureThreshold : (int)$defaults['failureThreshold'];
+        $this->cooldown         = $cooldown > 0 ? $cooldown : (int)$defaults['cooldown'];
+
+        // 检测 Redis 可用性
+        $store = CacheStoreFactory::getInstance();
+        if ($store instanceof RedisCacheStore) {
+            $redis = $store->redis();
+            if ($redis !== null) {
+                $this->useRedis = true;
+            }
+        }
+
+        // 文件 fallback 路径
         $dir = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'fuckashare_circuit';
         if (!is_dir($dir)) {
             @mkdir($dir, 0700, true);
         }
         $this->stateFile = $dir . DIRECTORY_SEPARATOR . md5($source) . '.json';
+
         $this->loadState();
     }
 
@@ -54,7 +91,6 @@ class CircuitBreaker
         }
 
         if ($this->state['state'] === self::STATE_OPEN) {
-            // 检查冷却时间
             if (time() - $this->state['opened_at'] >= $this->cooldown) {
                 $this->state['state'] = self::STATE_HALF_OPEN;
                 $this->saveState();
@@ -64,7 +100,6 @@ class CircuitBreaker
             return false;
         }
 
-        // HALF_OPEN: 允许一次试探
         return true;
     }
 
@@ -92,7 +127,6 @@ class CircuitBreaker
         $this->state['last_reason']  = $reason;
 
         if ($this->state['state'] === self::STATE_HALF_OPEN) {
-            // 半开状态下失败 → 重新熔断
             $this->state['state']     = self::STATE_OPEN;
             $this->state['opened_at'] = time();
             self::log($this->source, 'open', "半开试探失败，重新熔断: {$reason}");
@@ -113,10 +147,34 @@ class CircuitBreaker
         return $this->state;
     }
 
+    /**
+     * 熔断器是否处于熔断状态
+     */
+    public function isOpen(): bool
+    {
+        return $this->state['state'] === self::STATE_OPEN;
+    }
+
     // ── 内部 ──
 
     private function loadState(): void
     {
+        // 优先从 Redis 加载
+        if ($this->useRedis) {
+            try {
+                $store = CacheStoreFactory::getInstance();
+                $redis = $store->redis();
+                $data = $redis->get('cb:' . $this->source);
+                if (is_array($data)) {
+                    $this->state = $data;
+                    return;
+                }
+            } catch (\Exception $e) {
+                // Redis 读取失败，降级到文件
+            }
+        }
+
+        // 文件 fallback
         if (file_exists($this->stateFile)) {
             $data = @json_decode(file_get_contents($this->stateFile), true);
             if (is_array($data)) {
@@ -124,6 +182,7 @@ class CircuitBreaker
                 return;
             }
         }
+
         $this->state = [
             'source'        => $this->source,
             'state'         => self::STATE_CLOSED,
@@ -137,6 +196,18 @@ class CircuitBreaker
 
     private function saveState(): void
     {
+        // 优先写 Redis
+        if ($this->useRedis) {
+            try {
+                $store = CacheStoreFactory::getInstance();
+                $redis = $store->redis();
+                $redis->setex('cb:' . $this->source, $this->cooldown + 300, $this->state);
+            } catch (\Exception $e) {
+                // Redis 写入失败，降级到文件
+            }
+        }
+
+        // 文件 fallback（始终写入，确保双写一致性）
         @file_put_contents($this->stateFile, json_encode($this->state, JSON_UNESCAPED_UNICODE), LOCK_EX);
     }
 

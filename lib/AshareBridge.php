@@ -2,11 +2,12 @@
 /**
  * AshareBridge — 现有 Python Ashare 调用封装
  *
- * 封装 api.php 中的 Python 脚本调用逻辑
+ * Phase 2: 增加独立熔断器，每次调用经过熔断检查
  */
 
 require_once __DIR__ . '/DataSourceResult.php';
 require_once __DIR__ . '/HttpClient.php';
+require_once __DIR__ . '/CircuitBreaker.php';
 
 class AshareBridge
 {
@@ -18,8 +19,13 @@ class AshareBridge
     /** @var string get_stock_data.py 脚本路径 */
     private $scriptPath;
 
+    /** @var CircuitBreaker 熔断器 */
+    private $breaker;
+
     public function __construct()
     {
+        $this->breaker = new CircuitBreaker('ashare');
+
         if (stripos(PHP_OS_FAMILY, 'Windows') !== false) {
             $this->pythonBinary = 'python';
         } else {
@@ -39,6 +45,10 @@ class AshareBridge
      */
     public function kline(string $code, string $frequency = '1d', int $count = 10, string $endDate = ''): DataSourceResult
     {
+        if (!$this->breaker->allow()) {
+            return DataSourceResult::error(self::SOURCE_NAME, 'kline', 'circuit_open', 'Ashare 接口熔断中，暂停请求');
+        }
+
         $escapedScript   = escapeshellarg($this->scriptPath);
         $escapedCode     = escapeshellarg($code);
         $escapedFreq     = escapeshellarg($frequency);
@@ -52,14 +62,18 @@ class AshareBridge
         exec($command, $output, $returnCode);
 
         if ($returnCode !== 0) {
+            $this->breaker->failure('script_error: return code ' . $returnCode);
             return DataSourceResult::error(self::SOURCE_NAME, 'kline', 'script_error', 'Python脚本执行失败: ' . implode("\n", $output));
         }
 
         $jsonData = implode('', $output);
         $parsed = HttpClient::parseJson($jsonData);
         if (!$parsed['ok']) {
+            $this->breaker->failure('parse_error');
             return DataSourceResult::error(self::SOURCE_NAME, 'kline', 'parse_error', '解析JSON数据失败: ' . $parsed['error']);
         }
+
+        $this->breaker->success();
 
         return DataSourceResult::success(self::SOURCE_NAME, 'kline', $parsed['data'], [
             'provider_status' => 200,

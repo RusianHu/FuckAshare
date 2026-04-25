@@ -1,11 +1,16 @@
 <?php
 /**
  * FundService — 基金数据统一服务层
- * 封装基金估值、基金详情、基金搜索，复用 HttpClient 与文件缓存
+ * 封装基金估值、基金详情、基金搜索，复用 HttpClient 与 CacheStore
+ *
+ * Phase 2: 缓存层重构 → CacheStore 抽象 + 防击穿 + negative cache + stale-while-revalidate
  */
 
 require_once __DIR__ . '/HttpClient.php';
 require_once __DIR__ . '/DataSourceResult.php';
+require_once __DIR__ . '/CacheStoreFactory.php';
+require_once __DIR__ . '/CircuitBreaker.php';
+require_once __DIR__ . '/AppConfig.php';
 
 class FundService
 {
@@ -14,8 +19,23 @@ class FundService
     /** @var HttpClient */
     private $http;
 
-    /** @var string 缓存目录 */
-    private $cacheDir;
+    /** @var CacheStore */
+    private $cache;
+
+    /** @var CircuitBreaker */
+    private $breaker;
+
+    /** @var array */
+    private $cacheTtl;
+
+    /** @var int */
+    private $negativeCacheTtl;
+
+    /** @var int */
+    private $stampedeWaitMs;
+
+    /** @var int */
+    private $stampedeLockTtl;
 
     /** @var array 缓存 TTL 配置 (秒) */
     const CACHE_TTL = [
@@ -24,6 +44,9 @@ class FundService
         'info'        => 300,    // 基金详情：5 分钟
         'search'      => 600,   // 基金搜索：10 分钟
     ];
+
+    /** @var int negative cache TTL (秒) */
+    const NEGATIVE_CACHE_TTL = 10;
 
     public function __construct()
     {
@@ -34,10 +57,13 @@ class FundService
                 'Referer: https://fund.eastmoney.com/',
             ],
         ]);
-        $this->cacheDir = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'fuckashare_cache';
-        if (!is_dir($this->cacheDir)) {
-            @mkdir($this->cacheDir, 0700, true);
-        }
+        $this->cache = CacheStoreFactory::getInstance();
+        $this->breaker = new CircuitBreaker('fund');
+        $configuredTtl = AppConfig::get('cache_ttl', []);
+        $this->cacheTtl = array_merge(self::CACHE_TTL, is_array($configuredTtl) ? $configuredTtl : []);
+        $this->negativeCacheTtl = (int)AppConfig::get('cache_degradation.negative_cache_ttl', self::NEGATIVE_CACHE_TTL);
+        $this->stampedeWaitMs = (int)AppConfig::get('cache_degradation.stampede_wait_ms', 500);
+        $this->stampedeLockTtl = (int)AppConfig::get('cache_degradation.stampede_lock_ttl', 5);
     }
 
     /**
@@ -45,7 +71,10 @@ class FundService
      */
     public function estimate(string $code): DataSourceResult
     {
-        return $this->useCache('estimate', $code, function() use ($code) {
+        $key = $this->cacheKey('estimate', $code);
+
+        return $this->useCache('estimate', $key, function() use ($code) {
+            return $this->withBreaker('estimate', function() use ($code) {
             $url = "https://fundgz.1234567.com.cn/js/{$code}.js?rt=" . time();
             $resp = $this->http->get($url, [
                 'Referer: https://fund.eastmoney.com/',
@@ -72,6 +101,7 @@ class FundService
             }
 
             return DataSourceResult::error(self::SOURCE_NAME, 'estimate', 'parse_error', '解析基金估值数据失败，可能非交易时间或基金代码不存在');
+            });
         });
     }
 
@@ -83,87 +113,36 @@ class FundService
      */
     public function batchEstimate(array $codes): DataSourceResult
     {
-        $validCodes = array_filter($codes, function($c) {
+        $validCodes = array_values(array_unique(array_filter($codes, function($c) {
             return preg_match('/^\d{6}$/', $c);
-        });
+        })));
 
         if (empty($validCodes)) {
             return DataSourceResult::error(self::SOURCE_NAME, 'batch_estimate', 'invalid_code', '没有有效的基金代码');
         }
 
-        // 先检查缓存
         $results = [];
-        $missCodes = [];
+        $cachedCount = 0;
+        $fetchedCount = 0;
         foreach ($validCodes as $code) {
-            $cached = $this->getCache('estimate', $code);
-            if ($cached !== null && $cached->hasData()) {
-                $results[$code] = $cached->data;
+            $result = $this->estimate($code);
+            if ($result->hasData()) {
+                $results[$code] = $result->data;
+                $cacheState = $result->meta['cache'] ?? '';
+                if (in_array($cacheState, ['hit', 'hit_after_wait', 'stale', 'stale_fallback'], true)) {
+                    $cachedCount++;
+                } else {
+                    $fetchedCount++;
+                }
             } else {
-                $missCodes[] = $code;
-            }
-        }
-
-        // 并发请求未命中缓存的基金（使用 curl_multi）
-        if (!empty($missCodes)) {
-            $mh = curl_multi_init();
-            $handles = [];
-
-            foreach ($missCodes as $code) {
-                $url = "https://fundgz.1234567.com.cn/js/{$code}.js?rt=" . time();
-                $ch = curl_init($url);
-                curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-                curl_setopt($ch, CURLOPT_TIMEOUT, 10);
-                curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 5);
-                curl_setopt($ch, CURLOPT_HTTPHEADER, [
-                    'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                    'Referer: https://fund.eastmoney.com/',
-                ]);
-                curl_multi_add_handle($mh, $ch);
-                $handles[$code] = $ch;
-            }
-
-            do {
-                $status = curl_multi_exec($mh, $active);
-                if ($active) {
-                    curl_multi_select($mh, 1);
-                }
-            } while ($active && $status === CURLM_OK);
-
-            foreach ($handles as $code => $ch) {
-                $body = curl_multi_getcontent($ch);
-                $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-                curl_multi_remove_handle($mh, $ch);
-                curl_close($ch);
-
-                if ($httpCode === 200 && preg_match('/jsonpgz\((.+)\);?/s', $body, $matches)) {
-                    $data = json_decode($matches[1], true);
-                    if ($data) {
-                        $item = [
-                            'fundcode' => $data['fundcode'] ?? $code,
-                            'name'     => $data['name'] ?? '',
-                            'jzrq'     => $data['jzrq'] ?? '',
-                            'dwjz'     => $data['dwjz'] ?? '',
-                            'gsz'      => $data['gsz'] ?? '',
-                            'gszzl'    => $data['gszzl'] ?? '',
-                            'gztime'   => $data['gztime'] ?? '',
-                        ];
-                        $results[$code] = $item;
-                        // 回填缓存
-                        $dsr = DataSourceResult::success(self::SOURCE_NAME, 'estimate', $item);
-                        $this->setCache('estimate', $code, $dsr);
-                        continue;
-                    }
-                }
                 $results[$code] = null;
             }
-
-            curl_multi_close($mh);
         }
 
         return DataSourceResult::success(self::SOURCE_NAME, 'batch_estimate', $results, [
             'total'    => count($validCodes),
-            'cached'   => count($validCodes) - count($missCodes),
-            'fetched'  => count($missCodes),
+            'cached'   => $cachedCount,
+            'fetched'  => $fetchedCount,
         ]);
     }
 
@@ -175,7 +154,10 @@ class FundService
     public function info(array $codes): DataSourceResult
     {
         $codeStr = implode(',', $codes);
-        return $this->useCache('info', $codeStr, function() use ($codes) {
+        $key = $this->cacheKey('info', $codeStr);
+
+        return $this->useCache('info', $key, function() use ($codes) {
+            return $this->withBreaker('info', function() use ($codes) {
             $codeStr = implode(',', $codes);
             $url = "https://fundmobapi.eastmoney.com/FundMNewApi/FundMNFInfo?Fcodes={$codeStr}&pageSize=20";
 
@@ -213,6 +195,7 @@ class FundService
             return DataSourceResult::success(self::SOURCE_NAME, 'info', $funds, [
                 'total' => count($funds),
             ]);
+            });
         });
     }
 
@@ -221,7 +204,10 @@ class FundService
      */
     public function search(string $keyword): DataSourceResult
     {
-        return $this->useCache('search', md5($keyword), function() use ($keyword) {
+        $key = $this->cacheKey('search', md5($keyword));
+
+        return $this->useCache('search', $key, function() use ($keyword) {
+            return $this->withBreaker('search', function() use ($keyword) {
             $encodedKey = urlencode($keyword);
             $url = "https://fundsuggest.eastmoney.com/FundSearch/api/FundSearchAPI.ashx?m=9&key={$encodedKey}";
 
@@ -259,68 +245,188 @@ class FundService
                 'keyword' => $keyword,
                 'total'   => count($results),
             ]);
+            });
         });
     }
 
-    // ── 缓存 ──
+    // ── 缓存层 (Phase 2 重构) ──
 
+    /**
+     * 统一缓存入口：防击穿 + negative cache + stale-while-revalidate
+     */
     private function useCache(string $action, string $key, callable $fetcher): DataSourceResult
     {
-        $cached = $this->getCache($action, $key);
+        $ttl = $this->cacheTtl[$action] ?? 60;
+
+        // 1. 检查缓存命中
+        $cached = $this->getFromCache($key);
         if ($cached !== null) {
             $cached->meta['cache'] = 'hit';
+            $cached->meta['cache_backend'] = $this->cache->backendName();
             return $cached;
         }
 
-        $result = $fetcher();
-        if ($result->hasData()) {
-            $this->setCache($action, $key, $result);
-            $result->meta['cache'] = 'miss';
+        // 2. 检查 negative cache
+        $negCached = $this->cache->get($key . ':neg');
+        if ($negCached !== null) {
+            $result = DataSourceResult::error(
+                $negCached['source'] ?? self::SOURCE_NAME,
+                $negCached['action'] ?? $action,
+                $negCached['error_code'] ?? 'negative_cache',
+                $negCached['error_message'] ?? '上游近期失败，短暂缓存降级'
+            );
+            $result->meta['cache'] = 'negative';
+            $result->meta['cache_backend'] = $this->cache->backendName();
+            return $result;
         }
-        return $result;
+
+        // 3. 防击穿：尝试获取 per-key mutex
+        $lockKey = "stampede:{$key}";
+        $gotLock = $this->cache->acquireLock($lockKey, $this->stampedeLockTtl);
+
+        if (!$gotLock) {
+            usleep($this->stampedeWaitMs * 1000);
+            $cached = $this->getFromCache($key);
+            if ($cached !== null) {
+                $cached->meta['cache'] = 'hit_after_wait';
+                $cached->meta['cache_backend'] = $this->cache->backendName();
+                return $cached;
+            }
+
+            $stale = $this->getStaleFromCache($key);
+            if ($stale !== null) {
+                $stale->meta['cache'] = 'stale';
+                $stale->meta['cache_backend'] = $this->cache->backendName();
+                return $stale;
+            }
+
+            return $this->stampedeTimeoutResult($action);
+        }
+
+        try {
+            // 4. 执行上游请求
+            $result = $fetcher();
+
+            if ($result->hasData()) {
+                $this->setToCache($key, $result, $ttl);
+                $result->meta['cache'] = $gotLock ? 'miss' : 'miss_after_wait';
+                $result->meta['cache_backend'] = $this->cache->backendName();
+            } else {
+                $this->setNegativeCache($key, $result);
+
+                $stale = $this->getStaleFromCache($key);
+                if ($stale !== null) {
+                    $stale->meta['cache'] = 'stale_fallback';
+                    $stale->meta['cache_backend'] = $this->cache->backendName();
+                    $stale->meta['stale_fallback_reason'] = $result->errorMessage ?: '上游请求失败';
+                    return $stale;
+                }
+
+                $result->meta['cache'] = 'miss';
+                $result->meta['cache_backend'] = $this->cache->backendName();
+            }
+
+            return $result;
+        } finally {
+            if ($gotLock) {
+                $this->cache->releaseLock($lockKey);
+            }
+        }
     }
 
-    private function getCache(string $action, string $key): ?DataSourceResult
+    private function getFromCache(string $key): ?DataSourceResult
     {
-        $file = $this->cacheFile($action, $key);
-        $content = @file_get_contents($file);
-        if ($content === false) return null;
+        $data = $this->cache->get($key);
+        if ($data === null) return null;
 
-        $data = json_decode($content, true);
-        if (!is_array($data)) return null;
-
-        $ttl = self::CACHE_TTL[$action] ?? 60;
-        if (time() - ($data['cached_at'] ?? 0) > $ttl) {
-            @unlink($file);
-            return null;
-        }
-
-        if ($data['success']) {
-            return DataSourceResult::success($data['source'], $data['result_action'] ?? $data['action'], $data['data'], $data['meta'] ?? []);
+        if ($data['success'] ?? false) {
+            return DataSourceResult::success(
+                $data['source'] ?? self::SOURCE_NAME,
+                $data['result_action'] ?? $data['action'] ?? '',
+                $data['data'],
+                $data['meta'] ?? []
+            );
         }
         return null;
     }
 
-    private function setCache(string $action, string $key, DataSourceResult $result): void
+    private function getStaleFromCache(string $key): ?DataSourceResult
     {
-        $file = $this->cacheFile($action, $key);
-        $tmp = $file . '.' . getmypid() . '.tmp';
-        $data = [
-            'success'       => $result->success,
+        $data = $this->cache->getStale($key);
+        if ($data === null) return null;
+
+        if ($data['success'] ?? false) {
+            return DataSourceResult::success(
+                $data['source'] ?? self::SOURCE_NAME,
+                $data['result_action'] ?? $data['action'] ?? '',
+                $data['data'],
+                $data['meta'] ?? []
+            );
+        }
+        return null;
+    }
+
+    private function setToCache(string $key, DataSourceResult $result, int $ttl): void
+    {
+        $this->cache->set($key, [
+            'success'       => true,
             'source'        => $result->source,
-            'action'        => $action,
+            'action'        => $result->action,
             'result_action' => $result->action,
             'data'          => $result->data,
             'meta'          => $result->meta,
-            'cached_at'     => time(),
-        ];
-        if (@file_put_contents($tmp, json_encode($data, JSON_UNESCAPED_UNICODE), LOCK_EX) !== false) {
-            @rename($tmp, $file);
-        }
+        ], $ttl);
     }
 
-    private function cacheFile(string $action, string $key): string
+    private function setNegativeCache(string $key, DataSourceResult $result): void
     {
-        return $this->cacheDir . DIRECTORY_SEPARATOR . md5("fund_{$action}_{$key}") . '.json';
+        $this->cache->set($key . ':neg', [
+            'success'       => false,
+            'source'        => $result->source,
+            'action'        => $result->action,
+            'error_code'    => $result->errorCode ?? 'unknown',
+            'error_message' => $result->errorMessage ?? '请求失败',
+        ], $this->negativeCacheTtl);
+    }
+
+    private function withBreaker(string $action, callable $fetcher): DataSourceResult
+    {
+        if (!$this->breaker->allow()) {
+            $state = $this->breaker->getState();
+            return DataSourceResult::error(self::SOURCE_NAME, $action, 'circuit_open', '基金接口熔断中，暂停请求', [
+                'circuit_state' => $state['state'],
+                'failures'      => $state['failures'],
+                'last_reason'   => $state['last_reason'] ?? '',
+            ]);
+        }
+
+        $result = $fetcher();
+        if ($result->hasData()) {
+            $this->breaker->success();
+        } elseif ($result->errorCode !== 'invalid_code') {
+            $this->breaker->failure($result->errorCode . ': ' . $result->errorMessage);
+        }
+        return $result;
+    }
+
+    private function stampedeTimeoutResult(string $action): DataSourceResult
+    {
+        $result = DataSourceResult::error(
+            'cache',
+            $action,
+            'cache_wait_timeout',
+            '缓存正在刷新，请稍后重试'
+        );
+        $result->meta['cache'] = 'stampede_wait_timeout';
+        $result->meta['cache_backend'] = $this->cache->backendName();
+        return $result;
+    }
+
+    /**
+     * 统一缓存 key 生成
+     */
+    private function cacheKey(string $action, string $params): string
+    {
+        return "fund:{$action}:{$params}";
     }
 }

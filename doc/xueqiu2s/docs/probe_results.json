@@ -1,0 +1,95 @@
+[
+  {
+    "name": "fundx_public_list",
+    "url": "https://xueqiu.com/statuses/fundx/public/list.json?source=fund_public&page=5&last_id=374664516",
+    "status": 200,
+    "content_type": "application/json;charset=UTF-8",
+    "prefix": "{\"list\":[{\"id\":380204178,\"user_id\":5711188037,\"source\":\"雪球\",\"title\":\"狂跌！加仓的都被埋了！\",\"created_at\":1773918974000,\"retweet_count\":0,\"fav_count\":0,\"truncated\":false,\"commentId\":0,\"retweet_status_id\":0,\"symb",
+    "is_json": true,
+    "keys": [
+      "list",
+      "has_next_page"
+    ],
+    "error_code": null,
+    "error_description": null,
+    "sample_file": "samples/fundx_public_list.json",
+    "result": "success"
+  },
+  {
+    "name": "quote_detail_sh600519",
+    "url": "https://stock.xueqiu.com/v5/stock/quote.json?symbol=SH600519&extend=detail",
+    "status": 200,
+    "content_type": "application/json;charset=UTF-8",
+    "prefix": "{\"data\":{\"market\":{\"status_id\":8,\"region\":\"CN\",\"status\":\"休市\",\"time_zone\":\"Asia/Shanghai\",\"time_zone_desc\":null,\"delay_tag\":0,\"downgrade_night_session\":false,\"daylight_savings\":true},\"quote\":{\"current_",
+    "is_json": true,
+    "keys": [
+      "data",
+      "error_code",
+      "error_description"
+    ],
+    "error_code": 0,
+    "error_description": "",
+    "sample_file": "samples/quote_detail_sh600519.json",
+    "result": "success"
+  },
+  {
+    "name": "kline_sh600519_day",
+    "url": "https://stock.xueqiu.com/v5/stock/chart/kline.json?symbol=SH600519&begin=1710950400000&period=day&type=before&count=-5&indicator=kline",
+    "status": 200,
+    "content_type": "application/json;charset=UTF-8",
+    "prefix": "{\"data\":{\"symbol\":\"SH600519\",\"column\":[\"timestamp\",\"volume\",\"open\",\"high\",\"low\",\"close\",\"chg\",\"percent\",\"turnoverrate\",\"amount\",\"volume_post\",\"amount_post\"],\"item\":[[1710432000000,1783358,1593.0376,16",
+    "is_json": true,
+    "keys": [
+      "data",
+      "error_code",
+      "error_description"
+    ],
+    "error_code": 0,
+    "error_description": "",
+    "sample_file": "samples/kline_sh600519_day.json",
+    "result": "success"
+  },
+  {
+    "name": "hot_stock_cn",
+    "url": "https://stock.xueqiu.com/v5/stock/hot_stock/list.json?size=3&_type=10&type=10",
+    "status": 200,
+    "content_type": "application/json;charset=UTF-8",
+    "prefix": "{\"data\":{\"items\":[{\"type\":10,\"code\":\"SH601899\",\"name\":\"紫金矿业\",\"value\":2929.0,\"increment\":-32,\"rank_change\":0,\"has_exist\":null,\"symbol\":\"SH601899\",\"percent\":-2.07,\"current\":31.65,\"chg\":-0.67,\"exchange\":",
+    "is_json": true,
+    "keys": [
+      "data",
+      "error_code",
+      "error_description"
+    ],
+    "error_code": 0,
+    "error_description": "",
+    "sample_file": "samples/hot_stock_cn.json",
+    "result": "success"
+  },
+  {
+    "name": "search_status_tencent",
+    "url": "https://xueqiu.com/query/v1/search/status.json?q=%E8%85%BE%E8%AE%AF&count=3&page=1",
+    "status": 200,
+    "content_type": "text/html",
+    "prefix": "<textarea id=\"renderData\" style=\"display:none\">{\"_waf_bd8ce2ce37\":\"kuG9MIjrpu1SKhvb/SoocYVNonjgTKH7mB/Ayd+mSX0=\"}</textarea><!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"aliyun_waf_aa\" ",
+    "is_json": false,
+    "result": "challenge_html"
+  },
+  {
+    "name": "screener_quote_list",
+    "url": "https://stock.xueqiu.com/v5/stock/screener/quote/list.json?page=1&size=3&order=desc&order_by=percent&market=CN&type=sh_sz",
+    "status": 200,
+    "content_type": "application/json;charset=UTF-8",
+    "prefix": "{\"data\":{\"count\":5000,\"list\":[{\"symbol\":\"SZ300827\",\"net_profit_cagr\":74.21852530170744,\"north_net_inflow\":0.0,\"ps\":4.747,\"type\":11,\"percent\":20.01,\"has_follow\":false,\"tick_size\":0.01,\"pb_ttm\":10.37,\"f",
+    "is_json": true,
+    "keys": [
+      "data",
+      "error_code",
+      "error_description"
+    ],
+    "error_code": 0,
+    "error_description": "",
+    "sample_file": "samples/screener_quote_list.json",
+    "result": "success"
+  }
+]

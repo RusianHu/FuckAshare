@@ -3,6 +3,8 @@
  * SecurityAudit — 统一安全审查类
  * 覆盖所有输入接口的参数验证、清洗、速率限制和安全响应头
  *
+ * Phase 2: 限流支持 Redis backend，维度扩展为 IP/endpoint/全局
+ *
  * 使用方式：
  *   require_once __DIR__ . '/SecurityAudit.php';
  *   SecurityAudit::init();                          // 设置安全头 + CORS + 速率限制
@@ -11,6 +13,8 @@
  *       'pattern'  => SecurityAudit::STOCK_CODE_PATTERN,
  *   ]);
  */
+
+require_once __DIR__ . '/lib/CacheStoreFactory.php';
 
 class SecurityAudit
 {
@@ -91,8 +95,17 @@ class SecurityAudit
     /** 默认速率限制：窗口时间（秒） */
     const DEFAULT_RATE_WINDOW = 60;
 
+    /** 全局速率限制：窗口时间内最大请求数 */
+    const GLOBAL_RATE_LIMIT = 500;
+
+    /** 全局速率限制：窗口时间（秒） */
+    const GLOBAL_RATE_WINDOW = 60;
+
     /** 是否信任反向代理传递的 IP 头（仅在确认部署了可信代理时设为 true） */
     const TRUST_PROXY = false;
+
+    /** @var string|null 全局限流 key 前缀 */
+    private static $globalRatePrefix = 'fa:rl:global';
 
     // ============================================================
     // 初始化
@@ -106,14 +119,18 @@ class SecurityAudit
      *   'rate_limit'  => 60,            // 0 = 不限速
      *   'rate_window' => 60,
      *   'endpoint'    => 'default',     // 速率限制键名
+     *   'global_limit'  => 500,         // 全局限流（0 = 不限）
+     *   'global_window' => 60,
      * ]
      */
     public static function init(array $opts = [])
     {
-        $cors       = $opts['cors']       ?? true;
-        $rateLimit  = $opts['rate_limit'] ?? self::DEFAULT_RATE_LIMIT;
-        $rateWindow = $opts['rate_window'] ?? self::DEFAULT_RATE_WINDOW;
-        $endpoint   = $opts['endpoint']   ?? 'default';
+        $cors          = $opts['cors']          ?? true;
+        $rateLimit     = $opts['rate_limit']    ?? self::DEFAULT_RATE_LIMIT;
+        $rateWindow    = $opts['rate_window']   ?? self::DEFAULT_RATE_WINDOW;
+        $endpoint      = $opts['endpoint']      ?? 'default';
+        $globalLimit   = $opts['global_limit']  ?? self::GLOBAL_RATE_LIMIT;
+        $globalWindow  = $opts['global_window'] ?? self::GLOBAL_RATE_WINDOW;
 
         // 设置 SSE 模式标记
         self::$sseMode = !empty($opts['sse']);
@@ -124,6 +141,12 @@ class SecurityAudit
             self::validateOrigin();
         }
 
+        // 全局限流优先检查
+        if ($globalLimit > 0) {
+            self::checkGlobalRateLimit($globalLimit, $globalWindow);
+        }
+
+        // IP + endpoint 限流
         if ($rateLimit > 0) {
             self::checkRateLimit($endpoint, $rateLimit, $rateWindow);
         }
@@ -354,8 +377,6 @@ class SecurityAudit
             case 'text':
                 return htmlspecialchars($value, ENT_QUOTES, 'UTF-8');
             case 'keyword':
-                // 用于搜索关键词：去除控制字符，保留 Unicode 字母/数字/常见标点
-                // 不做 HTML 转义，因为关键词将作为上游 API 的查询参数（通过 urlencode）
                 return preg_replace('/[\x00-\x1F\x7F]/', '', trim($value));
             case 'stock_code':
                 return preg_replace('/[^A-Za-z0-9.]/', '', $value);
@@ -365,11 +386,11 @@ class SecurityAudit
     }
 
     // ============================================================
-    // 速率限制（文件锁实现，零依赖）
+    // 速率限制（Phase 2: Redis 优先 + 文件 fallback + 全局限流）
     // ============================================================
 
     /**
-     * 检查速率限制
+     * 检查速率限制（IP + endpoint 维度）
      *
      * @param string $key          限制键（如接口名）
      * @param int    $maxRequests  窗口内最大请求数
@@ -378,22 +399,107 @@ class SecurityAudit
     public static function checkRateLimit(string $key = 'default', int $maxRequests = self::DEFAULT_RATE_LIMIT, int $windowSeconds = self::DEFAULT_RATE_WINDOW): void
     {
         $ip  = self::getClientIP();
+        $rlKey = "ip:{$ip}:{$key}";
+        $now  = time();
+
+        // 尝试 Redis 限流
+        $store = CacheStoreFactory::getInstance();
+        if ($store instanceof RedisCacheStore) {
+            $redis = $store->redis();
+            if ($redis !== null) {
+                self::checkRateLimitRedis($redis, $rlKey, $maxRequests, $windowSeconds, $now);
+                return;
+            }
+        }
+
+        // Fallback: 文件限流
+        self::checkRateLimitFile($ip, $key, $maxRequests, $windowSeconds, $now);
+    }
+
+    /**
+     * 全局速率限制（不分 IP，全站总并发）
+     */
+    public static function checkGlobalRateLimit(int $maxRequests = self::GLOBAL_RATE_LIMIT, int $windowSeconds = self::GLOBAL_RATE_WINDOW): void
+    {
+        $now = time();
+        $gKey = 'global';
+
+        $store = CacheStoreFactory::getInstance();
+        if ($store instanceof RedisCacheStore) {
+            $redis = $store->redis();
+            if ($redis !== null) {
+                self::checkRateLimitRedis($redis, $gKey, $maxRequests, $windowSeconds, $now);
+                return;
+            }
+        }
+
+        self::checkRateLimitFile('__global__', $gKey, $maxRequests, $windowSeconds, $now);
+    }
+
+    /**
+     * Redis 限流实现（滑动窗口计数器）
+     */
+    private static function checkRateLimitRedis(\Redis $redis, string $key, int $maxRequests, int $windowSeconds, int $now): void
+    {
+        try {
+            $redisKey = self::$globalRatePrefix . ':' . $key;
+            $allowed = false;
+            $remaining = 0;
+
+            for ($attempt = 0; $attempt < 3; $attempt++) {
+                $redis->zRemRangeByScore($redisKey, '-inf', $now - $windowSeconds);
+                $redis->watch($redisKey);
+                $count = (int)$redis->zCard($redisKey);
+                $remaining = max(0, $maxRequests - $count);
+
+                if ($count >= $maxRequests) {
+                    $redis->unwatch();
+                    break;
+                }
+
+                $member = $now . ':' . uniqid('', true);
+                $redis->multi();
+                $redis->zAdd($redisKey, $now, $member);
+                $redis->expire($redisKey, $windowSeconds + 10);
+                $exec = $redis->exec();
+                if ($exec !== false) {
+                    $allowed = true;
+                    $remaining = max(0, $maxRequests - $count - 1);
+                    break;
+                }
+            }
+
+            header('X-RateLimit-Limit: ' . $maxRequests);
+            header('X-RateLimit-Remaining: ' . $remaining);
+
+            if (!$allowed) {
+                self::rejectRateLimit($maxRequests, $windowSeconds);
+            }
+        } catch (\Exception $e) {
+            // Redis 故障放行但记录日志
+            error_log("[SecurityAudit] Redis 限流异常: " . $e->getMessage());
+        }
+    }
+
+    /**
+     * 文件限流实现（原有逻辑，作为 fallback）
+     */
+    private static function checkRateLimitFile(string $ip, string $key, int $maxRequests, int $windowSeconds, int $now): void
+    {
         $dir = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'fuckashare_rl';
         if (!is_dir($dir)) {
             if (!@mkdir($dir, 0700, true)) {
                 error_log("[SecurityAudit] 限流目录创建失败: {$dir}");
-                return; // 文件系统不可写，放行但记录日志
+                return;
             }
         }
 
         $file = $dir . DIRECTORY_SEPARATOR . md5($ip . '_' . $key) . '.json';
-        $now  = time();
 
-        // 读取
         $fp = @fopen($file, 'c+');
         if (!$fp) {
             error_log("[SecurityAudit] 限流文件打开失败: {$file}");
-            return; // 文件系统不可写，放行但记录日志
+            return;
         }
 
         if (!flock($fp, LOCK_EX)) {
@@ -408,12 +514,10 @@ class SecurityAudit
             $data = [];
         }
 
-        // 清理过期
         $data = array_filter($data, function ($ts) use ($now, $windowSeconds) {
             return ($now - $ts) < $windowSeconds;
         });
 
-        // 判断
         $remaining = max(0, $maxRequests - count($data));
         header('X-RateLimit-Limit: ' . $maxRequests);
         header('X-RateLimit-Remaining: ' . $remaining);
@@ -424,7 +528,6 @@ class SecurityAudit
             self::rejectRateLimit($maxRequests, $windowSeconds);
         }
 
-        // 记录本次请求
         $data[] = $now;
         ftruncate($fp, 0);
         rewind($fp);
@@ -442,7 +545,6 @@ class SecurityAudit
      */
     private static function getClientIP(): string
     {
-        // 仅在确认部署了可信反向代理时才读取转发头
         if (self::TRUST_PROXY) {
             if (!empty($_SERVER['HTTP_X_FORWARDED_FOR'])) {
                 $ips = explode(',', $_SERVER['HTTP_X_FORWARDED_FOR']);
@@ -486,7 +588,6 @@ class SecurityAudit
                     }
                     break;
 
-                // 以下规则：非必填且值为空时跳过，允许可选参数留空
                 case 'pattern':
                     if ($isEmpty && !$isRequired) {
                         break;
@@ -567,7 +668,6 @@ class SecurityAudit
      */
     public static function reject(string $message, int $httpCode = 400): void
     {
-        // SSE 模式下使用事件流格式拒绝
         if (self::$sseMode) {
             self::rejectSSE($message, $httpCode);
             return;
@@ -605,7 +705,6 @@ class SecurityAudit
 
         $message = "请求过于频繁，请 {$windowSeconds} 秒后重试";
 
-        // SSE 模式下以事件流格式返回 429
         if (self::$sseMode) {
             header('Content-Type: text/event-stream; charset=UTF-8');
             header('Cache-Control: no-cache');

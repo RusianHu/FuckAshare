@@ -1,0 +1,99 @@
+{
+  "data": {
+    "market": {
+      "status_id": 8,
+      "region": "CN",
+      "status": "休市",
+      "time_zone": "Asia/Shanghai",
+      "time_zone_desc": null,
+      "delay_tag": 0,
+      "downgrade_night_session": false,
+      "daylight_savings": true
+    },
+    "quote": {
+      "current_ext": null,
+      "symbol": "SH600519",
+      "volume_ext": null,
+      "high52w": 1586.3695,
+      "delayed": 0,
+      "type": 11,
+      "tick_size": 0.01,
+      "float_shares": 1252270215,
+      "limit_down": 1307.58,
+      "no_profit": null,
+      "high": 1462.5,
+      "float_market_capital": 1809530460675.0,
+      "timestamp_ext": null,
+      "lot_size": 100,
+      "lock_set": 0,
+      "weighted_voting_rights": null,
+      "chg": -7.87,
+      "eps": 71.89,
+      "last_close": 1452.87,
+      "profit_four": 90027341015.29,
+      "volume": 2613234,
+      "volume_ratio": 0.63,
+      "profit_forecast": 86168995616.0,
+      "turnover_rate": 0.21,
+      "low52w": 1322.01,
+      "name": "贵州茅台",
+      "exchange": "SH",
+      "pe_forecast": 21.0,
+      "total_shares": 1252270215,
+      "status": 1,
+      "is_vie_desc": null,
+      "security_status": null,
+      "code": "600519",
+      "goodwill_in_net_assets": null,
+      "avg_price": 1447.562,
+      "percent": -0.54,
+      "weighted_voting_rights_desc": null,
+      "amplitude": 1.62,
+      "current": 1445.0,
+      "is_vie": null,
+      "current_year_percent": 4.92,
+      "issue_date": 998841600000,
+      "sub_type": "ASH",
+      "low": 1439.0,
+      "is_registration_desc": "否",
+      "no_profit_desc": null,
+      "market_capital": 1809530460675.0,
+      "dividend": 51.644,
+      "dividend_yield": 3.574,
+      "currency": "CNY",
+      "navps": 205.2831,
+      "profit": 86228146421.62,
+      "timestamp": 1773990000000,
+      "pe_lyr": 20.985,
+      "amount": 3782818260.0,
+      "pledge_ratio": 0.06,
+      "traded_amount_ext": null,
+      "is_registration": "N",
+      "pb": 7.039,
+      "limit_up": 1598.16,
+      "pe_ttm": 20.1,
+      "time": 1773990000000,
+      "open": 1452.96
+    },
+    "others": {
+      "pankou_ratio": -53.07,
+      "cyb_switch": true
+    },
+    "tags": [
+      {
+        "description": "沪股通",
+        "value": 1
+      },
+      {
+        "description": "融",
+        "value": 6
+      },
+      {
+        "description": "空",
+        "value": 7
+      }
+    ]
+  },
+  "error_code": 0,
+  "error_description": ""
+}

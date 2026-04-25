@@ -1,9 +1,10 @@
-/php
-/__pycache__
-ai_api.php
-/.playwright-mcp
-/doc
-.ace-tool/
+# ── 本地运行时 / 自动化工具缓存 ──
+/php/
+/__pycache__/
+/.playwright-mcp/
+/.ace-tool/
+
+# ── 生成图片 / 临时截图 ──
 *.png
 
 # ── 敏感凭证 / 密钥文件 ──
@@ -30,3 +31,4 @@ desktop.ini
 
 # ── 日志文件 ──
 *.log
+AGENTS.md

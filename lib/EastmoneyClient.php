@@ -2,12 +2,13 @@
 /**
  * EastmoneyClient — 东方财富数据源封装
  *
- * 封装现有行情、资金、板块接口逻辑，复用 stock_quote_api / stock_flow_api / sector_flow_api / hot_stocks_api 中的请求逻辑
+ * Phase 2: 增加独立熔断器，每次调用经过熔断检查
  */
 
 require_once __DIR__ . '/HttpClient.php';
 require_once __DIR__ . '/StockCode.php';
 require_once __DIR__ . '/DataSourceResult.php';
+require_once __DIR__ . '/CircuitBreaker.php';
 
 class EastmoneyClient
 {
@@ -16,8 +17,12 @@ class EastmoneyClient
     /** @var HttpClient */
     private $http;
 
+    /** @var CircuitBreaker 熔断器 */
+    private $breaker;
+
     public function __construct()
     {
+        $this->breaker = new CircuitBreaker('eastmoney');
         $this->http = new HttpClient([
             'timeout' => 10,
             'headers' => [
@@ -35,6 +40,15 @@ class EastmoneyClient
      */
     public function quote(array $codes): DataSourceResult
     {
+        if (!$this->breaker->allow()) {
+            $state = $this->breaker->getState();
+            return DataSourceResult::error(self::SOURCE_NAME, 'quote', 'circuit_open', '东方财富接口熔断中，暂停请求', [
+                'circuit_state' => $state['state'],
+                'failures'      => $state['failures'],
+                'last_reason'   => $state['last_reason'] ?? '',
+            ]);
+        }
+
         $secids = [];
         foreach ($codes as $code) {
             $sc = StockCode::parse($code);
@@ -54,13 +68,17 @@ class EastmoneyClient
         $resp = $this->http->get($url);
 
         if ($resp['error'] || $resp['http_code'] !== 200) {
+            $this->breaker->failure('network_error: ' . ($resp['error'] ?: "HTTP {$resp['http_code']}"));
             return DataSourceResult::error(self::SOURCE_NAME, 'quote', 'network_error', '请求东方财富API失败: ' . ($resp['error'] ?: "HTTP {$resp['http_code']}"));
         }
 
         $parsed = HttpClient::parseJson($resp['body']);
         if (!$parsed['ok'] || !isset($parsed['data']['data'])) {
+            $this->breaker->failure('parse_error');
             return DataSourceResult::error(self::SOURCE_NAME, 'quote', 'parse_error', '解析东方财富数据失败');
         }
+
+        $this->breaker->success();
 
         $stocks = [];
         if (isset($parsed['data']['data']['diff']) && is_array($parsed['data']['data']['diff'])) {
@@ -106,6 +124,10 @@ class EastmoneyClient
      */
     public function stockFlow(string $code, int $lmt = 0): DataSourceResult
     {
+        if (!$this->breaker->allow()) {
+            return DataSourceResult::error(self::SOURCE_NAME, 'stock_flow', 'circuit_open', '东方财富接口熔断中');
+        }
+
         $sc = StockCode::parse($code);
         if (!$sc->isValid()) {
             return DataSourceResult::error(self::SOURCE_NAME, 'stock_flow', 'invalid_code', "无效股票代码: {$code}");
@@ -120,13 +142,17 @@ class EastmoneyClient
         $resp = $this->http->get($url);
 
         if ($resp['error'] || $resp['http_code'] !== 200) {
+            $this->breaker->failure('network_error');
             return DataSourceResult::error(self::SOURCE_NAME, 'stock_flow', 'network_error', '请求失败: ' . ($resp['error'] ?: "HTTP {$resp['http_code']}"));
         }
 
         $parsed = HttpClient::parseJson($resp['body']);
         if (!$parsed['ok']) {
+            $this->breaker->failure('parse_error');
             return DataSourceResult::error(self::SOURCE_NAME, 'stock_flow', 'parse_error', '解析数据失败');
         }
+
+        $this->breaker->success();
 
         $flowData = [];
         if (isset($parsed['data']['data']['klines']) && is_array($parsed['data']['data']['klines'])) {
@@ -155,6 +181,10 @@ class EastmoneyClient
      */
     public function sectorFlow(string $key = 'f62', string $type = 'industry'): DataSourceResult
     {
+        if (!$this->breaker->allow()) {
+            return DataSourceResult::error(self::SOURCE_NAME, 'sector_flow', 'circuit_open', '东方财富接口熔断中');
+        }
+
         $typeMap = [
             'industry' => 'm:90+s:4',
             'concept'  => 'm:90+e:4',
@@ -170,13 +200,17 @@ class EastmoneyClient
         ]);
 
         if ($resp['error'] || $resp['http_code'] !== 200) {
+            $this->breaker->failure('network_error');
             return DataSourceResult::error(self::SOURCE_NAME, 'sector_flow', 'network_error', '请求失败: ' . ($resp['error'] ?: "HTTP {$resp['http_code']}"));
         }
 
         $parsed = HttpClient::parseJson($resp['body']);
         if (!$parsed['ok'] || !isset($parsed['data']['data']['diff'])) {
+            $this->breaker->failure('parse_error');
             return DataSourceResult::error(self::SOURCE_NAME, 'sector_flow', 'parse_error', '解析数据失败');
         }
+
+        $this->breaker->success();
 
         $sectors = [];
         foreach ($parsed['data']['data']['diff'] as $item) {
@@ -207,6 +241,10 @@ class EastmoneyClient
      */
     public function hotStocks(int $page = 1, int $pageSize = 50, string $sortField = 'f62', int $sortOrder = 1): DataSourceResult
     {
+        if (!$this->breaker->allow()) {
+            return DataSourceResult::error(self::SOURCE_NAME, 'hot_stocks', 'circuit_open', '东方财富接口熔断中');
+        }
+
         $fs = 'm:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23';
         $fields = 'f2,f3,f8,f12,f13,f14,f62,f184,f66,f69,f72,f75,f78,f81,f84,f87';
         $url = "https://push2.eastmoney.com/api/qt/clist/get?"
@@ -218,13 +256,17 @@ class EastmoneyClient
         ]);
 
         if ($resp['error'] || $resp['http_code'] !== 200) {
+            $this->breaker->failure('network_error');
             return DataSourceResult::error(self::SOURCE_NAME, 'hot_stocks', 'network_error', '请求东方财富数据失败');
         }
 
         $parsed = HttpClient::parseJson($resp['body']);
         if (!$parsed['ok'] || !isset($parsed['data']['data']['diff'])) {
+            $this->breaker->failure('parse_error');
             return DataSourceResult::error(self::SOURCE_NAME, 'hot_stocks', 'parse_error', '解析东方财富数据失败');
         }
+
+        $this->breaker->success();
 
         $result = [];
         foreach ($parsed['data']['data']['diff'] as $item) {
