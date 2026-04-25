@@ -1,58 +1,68 @@
 <?php
 /**
  * 基金实时估值代理API
- * 代理天天基金实时估值接口（JSONP解析）
+ * Phase 1.3: 内部委托 FundService::estimate()，保留旧响应格式兼容前端
+ * 新增: 批量估值参数 codes（逗号分隔），一次请求多只基金
  */
 header('Content-Type: application/json; charset=utf-8');
 
 require_once __DIR__ . '/SecurityAudit.php';
 SecurityAudit::init(['endpoint' => 'fund_estimate']);
 
-$code = SecurityAudit::getParam('code', '', [
-    'required'  => true,
-    'pattern'   => SecurityAudit::FUND_CODE_PATTERN,
-    'maxLength' => 6,
-]);
+// 支持批量参数 codes（优先）或单只 code
+$codesParam = SecurityAudit::getParam('codes', '', ['maxLength' => 500]);
 
-$url = "https://fundgz.1234567.com.cn/js/{$code}.js?rt=" . time();
-
-$ch = curl_init();
-curl_setopt($ch, CURLOPT_URL, $url);
-curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-curl_setopt($ch, CURLOPT_TIMEOUT, 10);
-curl_setopt($ch, CURLOPT_HTTPHEADER, [
-    'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'Referer: https://fund.eastmoney.com/',
-]);
-
-$response = curl_exec($ch);
-$httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-$error = curl_error($ch);
-curl_close($ch);
-
-if ($error || $httpCode !== 200) {
-    echo json_encode(['success' => false, 'message' => '请求失败: ' . ($error ?: "HTTP {$httpCode}")]);
-    exit;
-}
-
-// 解析JSONP: jsonpgz({...})
-if (preg_match('/jsonpgz\((.+)\);?/s', $response, $matches)) {
-    $data = json_decode($matches[1], true);
-    if ($data) {
-        echo json_encode([
-            'success' => true,
-            'data' => [
-                'fundcode' => $data['fundcode'] ?? '',
-                'name' => $data['name'] ?? '',
-                'jzrq' => $data['jzrq'] ?? '',         // 净值日期
-                'dwjz' => $data['dwjz'] ?? '',          // 单位净值
-                'gsz' => $data['gsz'] ?? '',            // 估算值
-                'gszzl' => $data['gszzl'] ?? '',        // 估算涨跌幅
-                'gztime' => $data['gztime'] ?? '',      // 估算时间
-            ]
-        ]);
+if (!empty($codesParam)) {
+    // 批量估值
+    $codeList = array_values(array_filter(array_map('trim', explode(',', $codesParam)), 'strlen'));
+    $codeList = array_values(array_unique($codeList));
+    foreach ($codeList as $c) {
+        if (!preg_match('/^\d{6}$/', $c)) {
+            echo json_encode(['success' => false, 'message' => "基金代码 {$c} 格式不正确"]);
+            exit;
+        }
+    }
+    if (count($codeList) > 20) {
+        echo json_encode(['success' => false, 'message' => '基金代码数量超过限制，最多 20 个']);
         exit;
     }
-}
 
-echo json_encode(['success' => false, 'message' => '解析基金估值数据失败，可能非交易时间或基金代码不存在']);
+    require_once __DIR__ . '/lib/FundService.php';
+    $service = new FundService();
+    $result = $service->batchEstimate($codeList);
+
+    if ($result->hasData()) {
+        // 转换为数组格式，兼容前端
+        $items = [];
+        foreach ($result->data as $code => $item) {
+            $items[] = $item;
+        }
+        echo json_encode([
+            'success' => true,
+            'total'   => count($items),
+            'data'    => $items,
+        ], JSON_UNESCAPED_UNICODE);
+    } else {
+        echo json_encode(['success' => false, 'message' => $result->errorMessage ?? '批量估值请求失败'], JSON_UNESCAPED_UNICODE);
+    }
+} else {
+    // 单只估值（兼容旧前端）
+    $code = SecurityAudit::getParam('code', '', [
+        'required'  => true,
+        'pattern'   => SecurityAudit::FUND_CODE_PATTERN,
+        'maxLength' => 6,
+    ]);
+
+    require_once __DIR__ . '/lib/FundService.php';
+    $service = new FundService();
+    $result = $service->estimate($code);
+
+    if ($result->hasData()) {
+        echo json_encode([
+            'success' => true,
+            'data'    => $result->data,
+        ], JSON_UNESCAPED_UNICODE);
+    } else {
+        echo json_encode(['success' => false, 'message' => $result->errorMessage ?? '解析基金估值数据失败'], JSON_UNESCAPED_UNICODE);
+    }
+}

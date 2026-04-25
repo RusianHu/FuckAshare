@@ -471,7 +471,7 @@ const APP = {
     // 查询时是否触发AI分析
     queryWithAI: false,
     // 配置
-    config: { maxQueryStocks: 50, autoRefreshInterval: 30 },
+    config: { maxQueryStocks: 50, autoRefreshInterval: 30, superQueryMaxConcurrent: 3 },
     // AI 顾问面板状态
     advisorOpen: false,
     advisorExpanded: false,
@@ -1076,6 +1076,9 @@ const FlowModule = {
 // 自选股模块
 // ============================================================
 const WatchlistModule = {
+    _refreshing: false,
+    _abortController: null,
+
     save() {
         localStorage.setItem('fa_watchlist', JSON.stringify(APP.watchlist));
         document.getElementById('watchlist-count').textContent = APP.watchlist.length;
@@ -1125,13 +1128,28 @@ const WatchlistModule = {
     },
 
     async refreshPrices() {
-        for (const w of APP.watchlist) {
-            try {
-                const resp = await fetch(`stock_quote_api.php?codes=${encodeURIComponent(w.code)}`);
-                const data = await resp.json();
-                if (data.success && data.data.length > 0) {
-                    const q = data.data[0];
-                    const el = document.getElementById('wl-price-' + w.code.replace('.', ''));
+        if (APP.watchlist.length === 0) return;
+        if (this._refreshing) {
+            this._abortController?.abort();
+        }
+
+        this._refreshing = true;
+        this._abortController = new AbortController();
+        const signal = this._abortController.signal;
+
+        // Phase 1.4: 批量化 — 一次请求所有自选股行情
+        const allCodes = APP.watchlist.map(w => w.code).join(',');
+        try {
+            const resp = await fetch(`stock_quote_api.php?codes=${encodeURIComponent(allCodes)}`, { signal });
+            const data = await resp.json();
+            if (data.success && data.data.length > 0) {
+                for (const q of data.data) {
+                    const code = q.code || '';
+                    const marketPrefix = Number(q.market) === 0 ? 'sz' : 'sh';
+                    const normalized = /^[0-9]{6}$/.test(code) ? marketPrefix + code : normalizeCode(code);
+                    const wItem = APP.watchlist.find(w => normalizeCode(w.code) === normalized || w.code === code);
+                    if (!wItem) continue;
+                    const el = document.getElementById('wl-price-' + wItem.code.replace('.', ''));
                     if (el) {
                         el.innerHTML = `
                             <div class="wl-item-pct" style="${colorStyle(q.change_pct)}">${formatPct(q.change_pct)}</div>
@@ -1139,7 +1157,14 @@ const WatchlistModule = {
                         `;
                     }
                 }
-            } catch(e) {}
+            }
+        } catch(e) {
+            if (e.name !== 'AbortError') console.error('刷新自选股价格失败:', e);
+        } finally {
+            if (this._abortController?.signal === signal) {
+                this._abortController = null;
+                this._refreshing = false;
+            }
         }
     },
 
@@ -1161,6 +1186,9 @@ const WatchlistModule = {
 // 实时看板模块
 // ============================================================
 const RealtimeModule = {
+    _refreshing: false,   // Phase 1.4: 刷新锁，避免重复请求
+    _debounceTimer: null, // Phase 1.4: 添加代码的防抖定时器
+
     init() {
         this.render();
         this.startAutoRefresh();
@@ -1172,7 +1200,9 @@ const RealtimeModule = {
             APP.realtimeCodes.push(code);
             localStorage.setItem('fa_realtime_codes', JSON.stringify(APP.realtimeCodes));
         }
-        this.refresh();
+        // Phase 1.4: 防抖 — 快速连续添加时只触发一次刷新
+        clearTimeout(this._debounceTimer);
+        this._debounceTimer = setTimeout(() => this.refresh(), 300);
     },
 
     removeCode(code) {
@@ -1182,7 +1212,13 @@ const RealtimeModule = {
     },
 
     async refresh() {
-        if (APP.realtimeCodes.length === 0) { this.render(); return; }
+        if (APP.realtimeCodes.length === 0) {
+            this.renderPlaceholder();
+            return;
+        }
+        // Phase 1.4: 刷新锁 — 避免并发刷新
+        if (this._refreshing) return;
+        this._refreshing = true;
         const codesStr = APP.realtimeCodes.join(',');
         try {
             const resp = await fetch(`stock_quote_api.php?codes=${encodeURIComponent(codesStr)}`);
@@ -1191,12 +1227,17 @@ const RealtimeModule = {
                 this.renderCards(data.data);
             }
         } catch(e) { console.error('刷新实时行情失败:', e); }
+        finally { this._refreshing = false; }
+    },
+
+    renderPlaceholder() {
+        const grid = document.getElementById('realtime-grid');
+        grid.innerHTML = '<p class="placeholder-text">点击"添加"按钮输入股票代码，或从自选股添加</p>';
     },
 
     render() {
-        const grid = document.getElementById('realtime-grid');
         if (APP.realtimeCodes.length === 0) {
-            grid.innerHTML = '<p class="placeholder-text">点击"添加"按钮输入股票代码，或从自选股添加</p>';
+            this.renderPlaceholder();
             return;
         }
         this.refresh();
@@ -1397,16 +1438,22 @@ const FundModule = {
             return;
         }
 
-        let html = '';
-        // 批量获取估值
-        for (const f of APP.fundWatchlist) {
-            let estimate = null;
-            try {
-                const resp = await fetch(`fund_estimate_api.php?code=${f.code}`);
-                const data = await resp.json();
-                if (data.success) estimate = data.data;
-            } catch(e) {}
+        // Phase 1.4: 批量获取估值 — 一次请求替代逐个循环
+        let estimates = {};
+        try {
+            const allCodes = APP.fundWatchlist.map(f => f.code).join(',');
+            const resp = await fetch(`fund_estimate_api.php?codes=${encodeURIComponent(allCodes)}`);
+            const data = await resp.json();
+            if (data.success && Array.isArray(data.data)) {
+                for (const item of data.data) {
+                    if (item && item.fundcode) estimates[item.fundcode] = item;
+                }
+            }
+        } catch(e) {}
 
+        let html = '';
+        for (const f of APP.fundWatchlist) {
+            const estimate = estimates[f.code] || null;
             const pctClass = estimate ? colorClass(parseFloat(estimate.gszzl)) : '';
             html += `
                 <div class="fund-wl-item">
@@ -1593,6 +1640,12 @@ const AdvisorModule = {
     close() {
         if (!APP.advisorOpen) return;
         APP.advisorOpen = false;
+
+        if (APP._aiAbortController) {
+            APP._aiAbortController.abort();
+            APP._aiAbortController = null;
+        }
+        this.setThinking(false);
 
         const el = this._els;
         // 终止 GSAP 可能正在运行的动画，清除残留内联样式
@@ -2054,6 +2107,13 @@ const AIModule = {
     async sendToAI(loadingMessage, timer, targetContainer) {
         const requestVersion = APP.advisorRequestVersion;
         try {
+            // Phase 1.4: AbortController — 新请求发出时取消旧请求
+            if (APP._aiAbortController) {
+                APP._aiAbortController.abort();
+            }
+            APP._aiAbortController = new AbortController();
+            const signal = APP._aiAbortController.signal;
+
             const requestMessages = this.getContextMessages();
             // 渠道和模型由后端 ai_api.php 的 $defaultChannel 统一控制
             const response = await fetch('ai_api.php', {
@@ -2063,7 +2123,8 @@ const AIModule = {
                     session_id: APP.currentSessionId,
                     messages: requestMessages,
                     stream: true
-                })
+                }),
+                signal
             });
 
             if (!response.ok) throw new Error(`服务器错误(${response.status})`);
@@ -2197,6 +2258,11 @@ const AIModule = {
         } catch(error) {
             clearInterval(timer);
             if (loadingMessage.parentNode) loadingMessage.parentNode.removeChild(loadingMessage);
+            // Phase 1.4: AbortError 是用户主动取消，静默处理
+            if (error.name === 'AbortError') {
+                if (typeof AdvisorModule !== 'undefined') AdvisorModule.setThinking(false);
+                return;
+            }
             if (requestVersion === APP.advisorRequestVersion) {
                 this.appendMessage(`**错误:** ${error.message}`, null, 'bot-message', targetContainer);
             }
@@ -2819,9 +2885,19 @@ document.addEventListener('DOMContentLoaded', function() {
     fetchHotStocksData();
 
     // === 超级查询 ===
+    // Phase 1.4: 增加最大并发限制与取消机制
+    let superQueryAbortController = null;
     document.getElementById('super-query-btn')?.addEventListener('click', async function() {
         const rows = document.querySelectorAll('#hot-stocks-data tr');
         if (!rows.length) { alert('没有可查询的股票数据'); return; }
+
+        // 如果上一次查询还在进行中，先取消
+        if (superQueryAbortController) {
+            superQueryAbortController.abort();
+            superQueryAbortController = null;
+        }
+        superQueryAbortController = new AbortController();
+        const signal = superQueryAbortController.signal;
 
         const maxStocks = APP.config.maxQueryStocks || rows.length;
         const stockRows = Array.from(rows).slice(0, maxStocks);
@@ -2830,14 +2906,16 @@ document.addEventListener('DOMContentLoaded', function() {
         loadingEl.style.display = 'block';
         APP.allStocksData = {};
 
-        const batchSize = 5;
+        const maxConcurrent = Math.max(1, Math.min(APP.config.superQueryMaxConcurrent || 3, 3)); // 最大并发请求数，避免服务端请求风暴
+        const batchSize = maxConcurrent;
         for (let i = 0; i < total; i += batchSize) {
+            if (signal.aborted) break;
             const batch = stockRows.slice(i, Math.min(i + batchSize, total));
             const tasks = batch.map(row => {
                 const code = row.cells[0]?.textContent.trim();
                 const name = row.cells[1]?.textContent.trim();
                 if (!code) return Promise.resolve();
-                return fetch(`api.php?code=${encodeURIComponent(code)}&frequency=1d&count=60&end_date=`)
+                return fetch(`api.php?code=${encodeURIComponent(code)}&frequency=1d&count=60&end_date=`, { signal })
                     .then(r => r.json())
                     .then(data => {
                         if (data.success && data.data?.length > 0) {
@@ -2847,14 +2925,19 @@ document.addEventListener('DOMContentLoaded', function() {
                             row.addEventListener('click', () => showStockModal(code));
                         }
                     })
-                    .catch(() => {});
+                    .catch(err => {
+                        if (err.name === 'AbortError') return;
+                    });
             });
             await Promise.all(tasks);
+            if (signal.aborted) break;
             loadingEl.innerHTML = `已加载 ${Object.keys(APP.allStocksData).length}/${total} 只股票`;
             await new Promise(r => setTimeout(r, 100));
         }
 
+        superQueryAbortController = null;
         loadingEl.style.display = 'none';
+        if (Object.keys(APP.allStocksData).length === 0) return;
         const aiText = generateAIQueryText(APP.allStocksData);
         localStorage.setItem('superQueryData', aiText);
         document.getElementById('ask-ai-btn').style.display = 'inline-block';

@@ -242,6 +242,14 @@ class EastmoneyClient
                 'hsl'   => floatval($item['f8'] ?? 0),
                 'jlr'   => floatval($item['f62'] ?? 0),
                 'jlrl'  => floatval($item['f184'] ?? 0),
+                'cjlr_super'       => floatval($item['f66'] ?? 0),
+                'cjlr_super_rate'  => floatval($item['f69'] ?? 0),
+                'cjlr_big'         => floatval($item['f72'] ?? 0),
+                'cjlr_big_rate'    => floatval($item['f75'] ?? 0),
+                'cjlr_mid'         => floatval($item['f78'] ?? 0),
+                'cjlr_mid_rate'    => floatval($item['f81'] ?? 0),
+                'cjlr_small'       => floatval($item['f84'] ?? 0),
+                'cjlr_small_rate'  => floatval($item['f87'] ?? 0),
             ];
         }
 

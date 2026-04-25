@@ -14,8 +14,8 @@ SecurityAudit::init([
 SecurityAudit::requireMethod('POST');
 
 session_start();
-
 $sessionId = session_id();
+session_write_close();
 $timestamp = time();
 
 echo json_encode([
