@@ -338,7 +338,7 @@ class XueqiuClient
             'pb'            => $q['pb'] ?? 0,
             'total_mv'      => $q['market_capital'] ?? 0,
             'circ_mv'       => $q['float_market_capital'] ?? 0,
-            'quote_time'    => isset($q['timestamp']) ? date('c', $q['timestamp'] / 1000) : '',
+            'quote_time'    => isset($q['timestamp']) ? date('c', (int)floor($q['timestamp'] / 1000)) : '',
             'source'        => self::SOURCE_NAME,
         ];
     }
@@ -362,7 +362,7 @@ class XueqiuClient
         foreach ($items as $item) {
             $row = [];
             $row['time']          = isset($colMap['timestamp'], $item[$colMap['timestamp']])
-                ? date('Y-m-d', $item[$colMap['timestamp']] / 1000) : '';
+                ? date('Y-m-d', (int)floor($item[$colMap['timestamp']] / 1000)) : '';
             $row['open']          = $item[$colMap['open'] ?? 2] ?? 0;
             $row['close']         = $item[$colMap['close'] ?? 5] ?? 0;
             $row['high']          = $item[$colMap['high'] ?? 3] ?? 0;
@@ -470,7 +470,7 @@ class XueqiuClient
                 'title'           => $title,
                 'description'     => mb_substr($desc, 0, 300),
                 'created_at'      => isset($item['created_at'])
-                    ? date('c', $item['created_at'] / 1000) : '',
+                    ? date('c', (int)floor($item['created_at'] / 1000)) : '',
                 'author_name'     => $item['user']['screen_name'] ?? $item['screen_name'] ?? '',
                 'followers_count' => $item['user']['followers_count'] ?? 0,
                 'like_count'      => $item['like_count'] ?? 0,

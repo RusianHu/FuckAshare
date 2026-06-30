@@ -8,6 +8,7 @@
 require_once __DIR__ . '/DataSourceResult.php';
 require_once __DIR__ . '/HttpClient.php';
 require_once __DIR__ . '/CircuitBreaker.php';
+require_once __DIR__ . '/AppConfig.php';
 
 class AshareBridge
 {
@@ -26,11 +27,7 @@ class AshareBridge
     {
         $this->breaker = new CircuitBreaker('ashare');
 
-        if (stripos(PHP_OS_FAMILY, 'Windows') !== false) {
-            $this->pythonBinary = 'python';
-        } else {
-            $this->pythonBinary = '/www/server/pyporject_evn/versions/3.10.11/bin/python3';
-        }
+        $this->pythonBinary = $this->resolvePythonBinary();
         $this->scriptPath = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'get_stock_data.py';
     }
 
@@ -78,5 +75,45 @@ class AshareBridge
         return DataSourceResult::success(self::SOURCE_NAME, 'kline', $parsed['data'], [
             'provider_status' => 200,
         ]);
+    }
+
+    private function resolvePythonBinary(): string
+    {
+        $configured = AppConfig::get('python.binary', '');
+        $candidates = [];
+        if (is_string($configured) && $configured !== '') {
+            $candidates[] = $this->commandFragment($configured);
+        }
+
+        if (stripos(PHP_OS_FAMILY, 'Windows') !== false) {
+            $candidates[] = 'py -3.10';
+            $candidates[] = 'python';
+        } else {
+            $candidates[] = '/www/server/pyporject_evn/versions/3.10.11/bin/python3';
+            $candidates[] = 'python3';
+            $candidates[] = 'python';
+        }
+
+        foreach (array_unique($candidates) as $candidate) {
+            if ($this->pythonCanRunAshare($candidate)) {
+                return $candidate;
+            }
+        }
+
+        return $candidates[0] ?? 'python';
+    }
+
+    private function commandFragment(string $binary): string
+    {
+        return is_file($binary) ? escapeshellarg($binary) : $binary;
+    }
+
+    private function pythonCanRunAshare(string $binary): bool
+    {
+        $command = $binary . ' -c "import pandas,requests" 2>&1';
+        $output = [];
+        $returnCode = 0;
+        @exec($command, $output, $returnCode);
+        return $returnCode === 0;
     }
 }

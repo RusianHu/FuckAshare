@@ -124,6 +124,12 @@ return [
         'url'     => 'http://127.0.0.1:8900',
     ],
 
+    // ── Python CLI ──
+    // AshareBridge 执行 get_stock_data.py 时使用；留空则自动探测可导入 pandas/requests 的 Python
+    'python' => [
+        'binary' => '',
+    ],
+
     // ── 安全配置 ──
     'security' => [
         // 仅在确认部署了可信反向代理时设为 true

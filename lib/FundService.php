@@ -48,13 +48,21 @@ class FundService
     /** @var int negative cache TTL (秒) */
     const NEGATIVE_CACHE_TTL = 10;
 
+    const EASTMONEY_APP_PARAMS = [
+        'plat'     => 'Iphone',
+        'appType'  => 'ttjj',
+        'product'  => 'EFund',
+        'Version'  => '6.9.7',
+        'deviceid' => 'web',
+    ];
+
     public function __construct()
     {
         $this->http = new HttpClient([
             'timeout' => 10,
             'headers' => [
-                'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Referer: https://fund.eastmoney.com/',
+                'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Referer'    => 'https://fund.eastmoney.com/',
             ],
         ]);
         $this->cache = CacheStoreFactory::getInstance();
@@ -76,9 +84,7 @@ class FundService
         return $this->useCache('estimate', $key, function() use ($code) {
             return $this->withBreaker('estimate', function() use ($code) {
             $url = "https://fundgz.1234567.com.cn/js/{$code}.js?rt=" . time();
-            $resp = $this->http->get($url, [
-                'Referer: https://fund.eastmoney.com/',
-            ]);
+            $resp = $this->http->get($url, $this->eastmoneyFundMobileHeaders());
 
             if ($resp['error'] || $resp['http_code'] !== 200) {
                 return DataSourceResult::error(self::SOURCE_NAME, 'estimate', 'network_error', '请求失败: ' . ($resp['error'] ?: "HTTP {$resp['http_code']}"));
@@ -159,37 +165,36 @@ class FundService
         return $this->useCache('info', $key, function() use ($codes) {
             return $this->withBreaker('info', function() use ($codes) {
             $codeStr = implode(',', $codes);
-            $url = "https://fundmobapi.eastmoney.com/FundMNewApi/FundMNFInfo?Fcodes={$codeStr}&pageSize=20";
+            $url = "https://fundmobapi.eastmoney.com/FundMNewApi/FundMNFInfo?" . http_build_query(array_merge([
+                'Fcodes'   => $codeStr,
+                'pageSize' => 20,
+            ], self::EASTMONEY_APP_PARAMS));
 
-            $resp = $this->http->get($url, [
-                'Referer: https://fund.eastmoney.com/',
-            ]);
+            $resp = $this->http->get($url, $this->eastmoneyFundMobileHeaders());
 
             if ($resp['error'] || $resp['http_code'] !== 200) {
-                return DataSourceResult::error(self::SOURCE_NAME, 'info', 'network_error', '请求失败: ' . ($resp['error'] ?: "HTTP {$resp['http_code']}"));
+                return $this->infoByDetailFallback($codes, '请求失败: ' . ($resp['error'] ?: "HTTP {$resp['http_code']}"));
             }
 
             $parsed = HttpClient::parseJson($resp['body']);
-            if (!$parsed['ok'] || !isset($parsed['data']['Datas'])) {
-                return DataSourceResult::error(self::SOURCE_NAME, 'info', 'parse_error', '解析基金数据失败');
+            if (!$parsed['ok'] || !isset($parsed['data']['Datas']) || ($parsed['data']['Success'] ?? true) === false) {
+                return $this->infoByDetailFallback($codes, $parsed['data']['ErrMsg'] ?? $parsed['error'] ?? '解析基金数据失败');
             }
 
             $funds = [];
             foreach ($parsed['data']['Datas'] as $item) {
-                $funds[] = [
-                    'code'          => $item['FCODE'] ?? '',
-                    'name'          => $item['SHORTNAME'] ?? '',
-                    'type'          => $item['FTYPE'] ?? '',
-                    'nav_date'      => $item['PDATE'] ?? '',
-                    'nav'           => $item['NAV'] ?? '',
-                    'acc_nav'       => $item['ACCNAV'] ?? '',
-                    'nav_chg_rate'  => $item['NAVCHGRT'] ?? '',
-                    'latest_price'  => $item['GSZ'] ?? '',
-                    'is_buy'        => ($item['ISBUY'] ?? '0') === '1',
-                    'min_purchase'  => $item['MINSG'] ?? '',
-                    'fund_company'  => $item['JJGS'] ?? '',
-                    'fund_manager'  => $item['JJJL'] ?? '',
-                ];
+                $fund = $this->normalizeFundInfoItem($item);
+                if ($fund['type'] === '' || $fund['fund_company'] === '' || $fund['fund_manager'] === '') {
+                    $detail = $this->fetchFundDetail($fund['code']);
+                    if ($detail !== null) {
+                        $fund = $this->mergeMissingFundFields($fund, $detail);
+                    }
+                }
+                $funds[] = $fund;
+            }
+
+            if (empty($funds)) {
+                return $this->infoByDetailFallback($codes, '基金详情返回为空');
             }
 
             return DataSourceResult::success(self::SOURCE_NAME, 'info', $funds, [
@@ -211,9 +216,7 @@ class FundService
             $encodedKey = urlencode($keyword);
             $url = "https://fundsuggest.eastmoney.com/FundSearch/api/FundSearchAPI.ashx?m=9&key={$encodedKey}";
 
-            $resp = $this->http->get($url, [
-                'Referer: https://fund.eastmoney.com/',
-            ]);
+            $resp = $this->http->get($url, $this->eastmoneyFundMobileHeaders());
 
             if ($resp['error'] || $resp['http_code'] !== 200) {
                 return DataSourceResult::error(self::SOURCE_NAME, 'search', 'network_error', '请求失败: ' . ($resp['error'] ?: "HTTP {$resp['http_code']}"));
@@ -428,5 +431,87 @@ class FundService
     private function cacheKey(string $action, string $params): string
     {
         return "fund:{$action}:{$params}";
+    }
+
+    private function infoByDetailFallback(array $codes, string $reason): DataSourceResult
+    {
+        $funds = [];
+        foreach ($codes as $code) {
+            $detail = $this->fetchFundDetail($code);
+            if ($detail !== null) {
+                $funds[] = $detail;
+            }
+        }
+
+        if (!empty($funds)) {
+            return DataSourceResult::success(self::SOURCE_NAME, 'info', $funds, [
+                'total' => count($funds),
+                'upstream_fallback' => 'FundMNDetailInformation/FundMNNBasicInformation',
+                'fallback_reason' => $reason,
+            ]);
+        }
+
+        return DataSourceResult::error(self::SOURCE_NAME, 'info', 'parse_error', '解析基金数据失败: ' . $reason);
+    }
+
+    private function fetchFundDetail(string $code): ?array
+    {
+        foreach (['FundMNDetailInformation', 'FundMNNBasicInformation'] as $api) {
+            $url = "https://fundmobapi.eastmoney.com/FundMNewApi/{$api}?" . http_build_query(array_merge([
+                'FCODE' => $code,
+            ], self::EASTMONEY_APP_PARAMS));
+
+            $resp = $this->http->get($url, $this->eastmoneyFundMobileHeaders());
+
+            if ($resp['error'] || $resp['http_code'] !== 200) {
+                continue;
+            }
+
+            $parsed = HttpClient::parseJson($resp['body']);
+            if (!$parsed['ok'] || !is_array($parsed['data']['Datas'] ?? null) || ($parsed['data']['Success'] ?? true) === false) {
+                continue;
+            }
+
+            return $this->normalizeFundInfoItem($parsed['data']['Datas']);
+        }
+
+        return null;
+    }
+
+    private function normalizeFundInfoItem(array $item): array
+    {
+        return [
+            'code'          => $item['FCODE'] ?? '',
+            'name'          => $item['SHORTNAME'] ?? '',
+            'type'          => $item['FTYPE'] ?? '',
+            'nav_date'      => $item['PDATE'] ?? $item['FSRQ'] ?? $item['SYRQ'] ?? '',
+            'nav'           => $item['NAV'] ?? $item['DWJZ'] ?? '',
+            'acc_nav'       => $item['ACCNAV'] ?? $item['LJJZ'] ?? '',
+            'nav_chg_rate'  => $item['NAVCHGRT'] ?? $item['RZDF'] ?? '',
+            'latest_price'  => $item['GSZ'] ?? $item['NEWPRICE'] ?? '',
+            'is_buy'        => ($item['ISBUY'] ?? '0') === '1' || ($item['BUY'] ?? false) === true,
+            'min_purchase'  => $item['MINSG'] ?? '',
+            'fund_company'  => $item['JJGS'] ?? '',
+            'fund_manager'  => $item['JJJL'] ?? '',
+        ];
+    }
+
+    private function mergeMissingFundFields(array $base, array $fallback): array
+    {
+        foreach ($fallback as $key => $value) {
+            if (($base[$key] ?? '') === '' && $value !== '') {
+                $base[$key] = $value;
+            }
+        }
+        return $base;
+    }
+
+    private function eastmoneyFundMobileHeaders(): array
+    {
+        return [
+            'User-Agent' => 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 EastmoneyFund/6.9.7',
+            'Referer'    => 'https://fund.eastmoney.com/',
+            'Accept'     => 'application/json,text/plain,*/*',
+        ];
     }
 }
