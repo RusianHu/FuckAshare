@@ -23,7 +23,7 @@ class AIChatToolAgent
     /** @var callable|null */
     private $streamTransport;
 
-    public function __construct(array $channel, array $options = [], ?AIToolExecutor $executor = null, callable $transport = null, callable $streamTransport = null)
+    public function __construct(array $channel, array $options = [], ?AIToolExecutor $executor = null, ?callable $transport = null, ?callable $streamTransport = null)
     {
         $this->channel = $channel;
         $this->options = array_merge([
@@ -606,7 +606,7 @@ class AIChatToolAgent
         return [];
     }
 
-    private function compactAssistantMessage(array $assistant, array $toolCalls = null): array
+    private function compactAssistantMessage(array $assistant, ?array $toolCalls = null): array
     {
         $message = [
             'role' => 'assistant',
