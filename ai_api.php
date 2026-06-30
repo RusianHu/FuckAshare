@@ -161,8 +161,10 @@ if (!isset($input['messages']) || empty($input['messages'])) {
     exit;
 }
 
-// 验证消息内容安全性
-$input['messages'] = SecurityAudit::validateMessages($input['messages']);
+// 验证消息内容安全性。限制值允许由 config.php 的 ai.max_message_length / max_message_count 覆盖。
+$maxMessageLength = (int)($aiConfig['max_message_length'] ?? SecurityAudit::MAX_MESSAGE_LENGTH);
+$maxMessageCount = (int)($aiConfig['max_message_count'] ?? SecurityAudit::MAX_MESSAGE_COUNT);
+$input['messages'] = SecurityAudit::validateMessages($input['messages'], $maxMessageLength, $maxMessageCount);
 
 $defaultChannel = (string)($aiConfig['default_channel'] ?? '');
 $channels = is_array($aiConfig['channels'] ?? null) ? $aiConfig['channels'] : [];

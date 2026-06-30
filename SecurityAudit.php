@@ -313,10 +313,13 @@ class SecurityAudit
      * @param array $messages
      * @return array
      */
-    public static function validateMessages(array $messages): array
+    public static function validateMessages(array $messages, ?int $maxMessageLength = null, ?int $maxMessageCount = null): array
     {
-        if (count($messages) > self::MAX_MESSAGE_COUNT) {
-            self::reject('消息数量超过限制，最多 ' . self::MAX_MESSAGE_COUNT . ' 条');
+        $maxMessageLength = $maxMessageLength !== null && $maxMessageLength > 0 ? $maxMessageLength : self::MAX_MESSAGE_LENGTH;
+        $maxMessageCount = $maxMessageCount !== null && $maxMessageCount > 0 ? $maxMessageCount : self::MAX_MESSAGE_COUNT;
+
+        if (count($messages) > $maxMessageCount) {
+            self::reject('消息数量超过限制，最多 ' . $maxMessageCount . ' 条');
         }
 
         $allowedRoles = ['system', 'user', 'assistant'];
@@ -334,8 +337,8 @@ class SecurityAudit
                 self::reject("第 {$i} 条消息内容无效");
             }
 
-            if (mb_strlen($msg['content']) > self::MAX_MESSAGE_LENGTH) {
-                self::reject("第 {$i} 条消息内容过长，最大 " . self::MAX_MESSAGE_LENGTH . " 字符");
+            if (mb_strlen($msg['content']) > $maxMessageLength) {
+                self::reject("第 {$i} 条消息内容过长，最大 " . $maxMessageLength . " 字符");
             }
         }
 

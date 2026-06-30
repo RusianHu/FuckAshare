@@ -33,6 +33,10 @@ function formatCompactSize(value) {
     return String(n);
 }
 
+function countTextChars(text) {
+    return Array.from(String(text || '')).length;
+}
+
 function submitStockQuery(code, options = {}) {
     const codeInput = document.getElementById('code');
     const sourceInput = document.getElementById('data-source');
@@ -453,7 +457,7 @@ const AnimationManager = {
 // ============================================================
 // 全局状态
 // ============================================================
-const AI_SYSTEM_PROMPT = '你是一位专业的股票分析师，擅长解读股票数据并给出建议。';
+const AI_SYSTEM_PROMPT = '你是一位专业的金融研究助理，擅长解读A股、板块资金、基金净值、估值和排行数据。回答时区分事实、推断和不确定性，避免把基金当作股票分析，结尾提示内容仅供研究参考，不构成投资建议。';
 const AI_CONTEXT_LIMIT = 255000;
 
 const APP = {
@@ -494,7 +498,7 @@ const APP = {
     advisorExpanded: false,
     advisorUnread: 0,
     advisorThinking: false,
-    advisorContext: { stock: '', tab: 'stock', source: '' },
+    advisorContext: { assetType: '', assetCode: '', assetName: '', assetLabel: '', stock: '', tab: 'stock', source: '' },
     advisorChatContainer: null,
     advisorUserInput: null,
     advisorLastFocusedElement: null,
@@ -1653,6 +1657,9 @@ const FundModule = {
                 history: historyData.success ? historyData.data : [],
                 estimate: estimateData.success ? estimateData.data : null
             };
+            if (typeof AdvisorModule !== 'undefined') {
+                AdvisorModule.setAssetContext('fund', fund, '基金详情');
+            }
             this.renderDetail(this.selectedFund);
         } catch (e) {
             loading.style.display = 'none';
@@ -1743,8 +1750,16 @@ const FundModule = {
         try {
             const payload = await this.collectFundAIContext(this.selectedFund);
             const prompt = this.buildFundAIContextPrompt(payload);
-            APP.advisorContext.source = '基金深度分析';
-            APP.advisorContext.stock = `${payload.fund.name || ''} (${payload.fund.code || ''})`;
+            if (typeof AdvisorModule !== 'undefined') {
+                AdvisorModule.setAssetContext('fund', payload.fund, '基金深度分析');
+            } else {
+                APP.advisorContext.source = '基金深度分析';
+                APP.advisorContext.assetType = 'fund';
+                APP.advisorContext.assetCode = payload.fund.code || '';
+                APP.advisorContext.assetName = payload.fund.name || '';
+                APP.advisorContext.assetLabel = `${payload.fund.name || ''} (${payload.fund.code || ''})`;
+                APP.advisorContext.stock = '';
+            }
             AdvisorModule.autoSend(prompt);
         } catch (e) {
             console.error('构建基金AI上下文失败:', e);
@@ -2366,6 +2381,11 @@ const AdvisorModule = {
         this.updateContext();
     },
 
+    /** 兼容旧调用：外部模块可直接发送到顾问面板 */
+    send(message) {
+        this.autoSend(message);
+    },
+
     /** 从外部自动触发（替代原来的 switchTab('ai') + AIModule.autoSend） */
     autoSend(message) {
         // 打开面板
@@ -2384,6 +2404,135 @@ const AdvisorModule = {
             this.setThinking(true);
             AIModule.sendToAI(loadingMsg, timer, this._els.chatContainer);
         }, 150);
+    },
+
+    /** 显式设置顾问当前资产上下文 */
+    setAssetContext(assetType, asset = {}, source = '') {
+        const type = assetType === 'fund' ? 'fund' : (assetType === 'stock' ? 'stock' : '');
+        const code = String(asset.code || asset.fundcode || asset.symbol || asset.dm || asset.stock || '').trim();
+        const name = String(asset.name || asset.mc || '').trim();
+        const label = type === 'fund'
+            ? (name && code ? `${name} (${code})` : (name || code))
+            : (name && code && name !== code ? `${name} (${code})` : (code || name));
+
+        APP.advisorContext.assetType = type;
+        APP.advisorContext.assetCode = code;
+        APP.advisorContext.assetName = name;
+        APP.advisorContext.assetLabel = label;
+        APP.advisorContext.stock = type === 'stock' ? code : '';
+        if (source) APP.advisorContext.source = source;
+
+        this.updateContext();
+    },
+
+    /** 当前导航模块 */
+    getActiveTabName() {
+        return document.querySelector('.nav-tab.active')?.dataset.tab || APP.advisorContext.tab || 'stock';
+    },
+
+    /** 从基金模块读取当前基金详情 */
+    getSelectedFundContext() {
+        if (typeof FundModule === 'undefined' || !FundModule.selectedFund?.fund) return null;
+        const fund = FundModule.selectedFund.fund;
+        const code = String(fund.code || '').trim();
+        const name = String(fund.name || FundModule.selectedFund.estimate?.name || '').trim();
+        if (!code && !name) return null;
+        return {
+            type: 'fund',
+            code,
+            name,
+            label: name && code ? `${name} (${code})` : (name || code)
+        };
+    },
+
+    /** 根据当前页面模块推导顾问资产上下文，避免基金页串用股票代码 */
+    resolvePageContext() {
+        const tab = this.getActiveTabName();
+        const tabNames = { stock: '股票行情', realtime: '实时看板', sector: '板块资金', fund: '基金分析', ai: 'AI顾问' };
+        const result = {
+            tab,
+            tabLabel: tabNames[tab] || tab,
+            assetType: '',
+            assetCode: '',
+            assetName: '',
+            assetLabel: ''
+        };
+
+        if (tab === 'fund') {
+            const fund = this.getSelectedFundContext();
+            if (fund) {
+                result.assetType = fund.type;
+                result.assetCode = fund.code;
+                result.assetName = fund.name;
+                result.assetLabel = fund.label;
+            }
+            return result;
+        }
+
+        if (tab === 'stock' || tab === 'realtime' || tab === 'sector') {
+            const fallbackStock = APP.advisorContext.assetType === 'stock' ? APP.advisorContext.assetCode : APP.advisorContext.stock;
+            const stockCode = String(APP.currentStockCode || fallbackStock || '').trim();
+            if (stockCode) {
+                result.assetType = 'stock';
+                result.assetCode = stockCode;
+                result.assetName = APP.advisorContext.assetType === 'stock' ? (APP.advisorContext.assetName || '') : '';
+                result.assetLabel = APP.advisorContext.assetType === 'stock' ? (APP.advisorContext.assetLabel || stockCode) : stockCode;
+            }
+        }
+
+        return result;
+    },
+
+    /** 按当前模块更新欢迎区和快捷任务 */
+    updateWelcomeState(pageContext) {
+        const title = this._els.welcome?.querySelector('.welcome-title');
+        const sub = this._els.welcome?.querySelector('.welcome-sub');
+        const isFund = pageContext?.tab === 'fund';
+        const asset = pageContext?.assetLabel || '';
+
+        if (title) {
+            title.textContent = isFund
+                ? '你好，我可以结合基金净值、估值、排行和产品资料做研究评估。'
+                : '你好，我可以结合行情、资金流和板块数据帮你快速研判。';
+        }
+        if (sub) {
+            sub.textContent = isFund
+                ? (asset ? `当前基金：${asset}。可以直接问我收益波动、回撤风险、同类对照或持有适配。` : '从搜索结果、自选或排行中打开基金详情后，我会自动接入当前基金上下文。')
+                : '我已接入当前页面数据，可以直接问我股票趋势、主力意图或板块机会。';
+        }
+
+        this.renderQuickActions(isFund ? this.getFundQuickActions(asset) : this.getStockQuickActions());
+    },
+
+    getStockQuickActions() {
+        return [
+            { icon: Icons.chart, text: '分析当前股票趋势', prompt: '帮我分析当前股票的趋势与支撑压力位' },
+            { icon: Icons.flow, text: '判断主力资金意图', prompt: '帮我结合资金流向判断主力在吸筹还是出货' },
+            { icon: Icons.hot, text: '从热榜筛选候选标的', prompt: '帮我从净流入热榜里筛选短期值得关注的标的' },
+            { icon: Icons.search, text: '雪球热度+选股共振', prompt: '帮我结合雪球热度榜和条件选股数据，找出当前市场关注度与基本面共振的标的', source: 'xueqiu' }
+        ];
+    },
+
+    getFundQuickActions(assetLabel = '') {
+        const subject = assetLabel ? `当前基金 ${assetLabel}` : '当前基金';
+        return [
+            { icon: Icons.chart, text: '分析基金收益质量', prompt: `请基于${subject}的净值、估值、历史走势和同类排行，分析收益质量、波动、回撤与结论摘要。` },
+            { icon: Icons.flow, text: '评估波动与风险', prompt: `请评估${subject}近期估值涨跌、历史净值波动、最大回撤和申购赎回状态，指出主要风险和跟踪指标。` },
+            { icon: Icons.table, text: '对照同类基金排行', prompt: `请结合${subject}与同类基金近1年、近3月排行样本，判断相对强弱、风格适配和替代选择标准。` },
+            { icon: Icons.search, text: '检查持有适配度', prompt: `请从基金类型、基金经理、基金公司、规模、费率、业绩基准和投资者画像角度，评估${subject}是否适合继续关注。` }
+        ];
+    },
+
+    renderQuickActions(actions) {
+        const box = this._els.quickActions;
+        if (!box || !Array.isArray(actions)) return;
+        box.innerHTML = actions.map(action => `
+            <button class="quick-action-btn" data-prompt="${escapeAttr(action.prompt || '')}"${action.source ? ` data-source="${escapeAttr(action.source)}"` : ''}>
+                <span class="qa-icon">${action.icon || Icons.search}</span>
+                <span class="qa-text">${escapeHTML(action.text || '')}</span>
+                <span class="qa-arrow">→</span>
+            </button>
+        `).join('');
     },
 
     /** 清理历史对话，并保持顾问可立即继续使用 */
@@ -2493,13 +2642,27 @@ const AdvisorModule = {
     updateContext() {
         const ctx = APP.advisorContext;
         const el = this._els;
+        const pageContext = this.resolvePageContext();
+        const previousSource = ctx.source || '';
         let show = false;
 
-        // 当前股票
-        if (APP.currentStockCode) {
-            ctx.stock = APP.currentStockCode;
+        ctx.tab = pageContext.tab;
+        ctx.assetType = pageContext.assetType;
+        ctx.assetCode = pageContext.assetCode;
+        ctx.assetName = pageContext.assetName;
+        ctx.assetLabel = pageContext.assetLabel;
+        ctx.stock = pageContext.assetType === 'stock' ? pageContext.assetCode : '';
+        if (pageContext.assetType === 'stock' && ['基金详情', '基金深度分析'].includes(previousSource)) {
+            ctx.source = '股票查询';
+        } else if (pageContext.assetType === 'fund' && ['股票查询', 'AI分析', 'AI选股'].includes(previousSource)) {
+            ctx.source = '基金详情';
+        }
+
+        // 当前资产
+        if (pageContext.assetLabel) {
+            const assetPrefix = pageContext.assetType === 'fund' ? '基金 ' : '股票 ';
             if (el.contextStock) {
-                el.contextStock.textContent = '股票 ' + ctx.stock;
+                el.contextStock.textContent = assetPrefix + pageContext.assetLabel;
                 el.contextStock.style.display = '';
             }
             show = true;
@@ -2508,22 +2671,16 @@ const AdvisorModule = {
         }
 
         // 当前 Tab
-        const activeTab = document.querySelector('.nav-tab.active');
-        if (activeTab) {
-            const tabNames = { stock: '股票行情', realtime: '实时看板', sector: '板块资金', fund: '基金分析', ai: 'AI顾问' };
-            ctx.tab = activeTab.dataset.tab || 'stock';
-            if (el.contextTab) {
-                el.contextTab.textContent = '模块 ' + (tabNames[ctx.tab] || ctx.tab);
-                el.contextTab.style.display = '';
-            }
-            show = true;
-        } else {
-            if (el.contextTab) el.contextTab.style.display = 'none';
+        if (el.contextTab) {
+            el.contextTab.textContent = '模块 ' + pageContext.tabLabel;
+            el.contextTab.style.display = '';
         }
+        show = true;
 
         if (el.context) {
             el.context.style.display = show ? 'flex' : 'none';
         }
+        this.updateWelcomeState(pageContext);
     },
 
     /** 更新上下文用量环 */
@@ -2536,10 +2693,11 @@ const AdvisorModule = {
         const stats = AIModule.getContextStats();
         const percent = Math.min(Math.round(stats.sentSize / stats.limit * 1000) / 10, 100);
         const dash = stats.sentSize > 0 ? Math.max(1, Math.min(percent, 100)) : 0;
-        const label = `${AIModule.formatContextSize(stats.sentSize)} / ${AIModule.formatContextSize(stats.limit)}`;
+        const label = `约${AIModule.formatContextSize(stats.sentSize)} / ${AIModule.formatContextSize(stats.limit)}`;
+        const charLabel = `${formatCompactSize(stats.sentChars)} 字符`;
         const title = stats.truncated
-            ? `上下文: ${label}，已发送最近 ${stats.sentMessages}/${stats.totalMessages} 条消息`
-            : `上下文: ${label}，共 ${stats.totalMessages} 条消息`;
+            ? `估算上下文: ${label}，实际 ${charLabel}，已发送最近 ${stats.sentMessages}/${stats.totalMessages} 条消息`
+            : `估算上下文: ${label}，实际 ${charLabel}，共 ${stats.totalMessages} 条消息`;
 
         ring.style.strokeDasharray = `${dash} 100`;
         if (size) size.textContent = label;
@@ -2630,6 +2788,10 @@ const AdvisorModule = {
 // AI聊天模块
 // ============================================================
 const AIModule = {
+    countMessageChars(message) {
+        return countTextChars(message?.content || '');
+    },
+
     estimateContextSize(text) {
         if (!text) return 0;
         const value = String(text);
@@ -2684,6 +2846,8 @@ const AIModule = {
             limit: APP.aiContextLimit || AI_CONTEXT_LIMIT,
             totalSize: messages.reduce((sum, msg) => sum + this.estimateMessageSize(msg), 0),
             sentSize: contextMessages.reduce((sum, msg) => sum + this.estimateMessageSize(msg), 0),
+            totalChars: messages.reduce((sum, msg) => sum + this.countMessageChars(msg), 0),
+            sentChars: contextMessages.reduce((sum, msg) => sum + this.countMessageChars(msg), 0),
             totalMessages,
             sentMessages,
             truncated: sentMessages < totalMessages
@@ -2715,7 +2879,7 @@ const AIModule = {
             div.appendChild(contentDiv);
 
             const shouldCollapse = APP.config?.collapseLongUserMessages !== false
-                && String(content || '').length > (APP.config?.longUserMessageThreshold || 4000);
+                && countTextChars(content) > (APP.config?.longUserMessageThreshold || 4000);
             if (shouldCollapse) {
                 div.classList.add('long-user-message', 'collapsed');
 
@@ -2723,7 +2887,10 @@ const AIModule = {
                 tools.classList.add('message-collapse-tools');
 
                 const meta = document.createElement('span');
-                meta.textContent = `已折叠长消息 · ${formatCompactSize(String(content || '').length)} 字符`;
+                const charSize = countTextChars(content);
+                const contextSize = this.estimateContextSize(content);
+                meta.textContent = `已折叠长消息 · ${formatCompactSize(charSize)} 字符 · 约${formatCompactSize(contextSize)}上下文`;
+                meta.title = `实际字符 ${charSize}，估算上下文单位 ${contextSize}`;
 
                 const toggle = document.createElement('button');
                 toggle.type = 'button';
@@ -3277,6 +3444,10 @@ function switchTab(tabName) {
 
     // 刷新 ScrollTrigger 位置计算
     AnimationManager.refreshAfterTabSwitch();
+
+    if (typeof AdvisorModule !== 'undefined' && AdvisorModule._els?.panel) {
+        AdvisorModule.updateContext();
+    }
 }
 
 // ============================================================
@@ -3403,6 +3574,9 @@ document.addEventListener('DOMContentLoaded', function() {
         errorDiv.style.display = 'none';
         stockTable.style.display = 'none';
         APP.currentStockCode = code;
+        if (typeof AdvisorModule !== 'undefined') {
+            AdvisorModule.setAssetContext('stock', { code }, '股票查询');
+        }
 
         const source = document.getElementById('data-source')?.value || 'auto';
         const url = `api.php?code=${encodeURIComponent(code)}&frequency=${encodeURIComponent(frequency)}&count=${encodeURIComponent(count)}&end_date=${encodeURIComponent(end_date)}&source=${encodeURIComponent(source)}`;

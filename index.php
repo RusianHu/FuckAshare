@@ -588,8 +588,8 @@
         <!-- 欢迎区 / 空状态区 -->
         <div class="advisor-welcome" id="ai-advisor-welcome">
             <div class="welcome-text">
-                <p class="welcome-title">你好，我可以结合行情、资金流和板块数据帮你快速研判。</p>
-                <p class="welcome-sub">我已接入当前页面数据，可以直接问我股票趋势、主力意图或板块机会。</p>
+                <p class="welcome-title">你好，我可以结合行情、资金流、板块和基金数据帮你快速研判。</p>
+                <p class="welcome-sub">我会根据当前模块接入对应上下文，可以直接问我股票、板块或基金的问题。</p>
             </div>
             <div class="advisor-quick-actions" id="ai-advisor-quick-actions">
                 <button class="quick-action-btn" data-prompt="帮我分析当前股票的趋势与支撑压力位">
@@ -622,12 +622,12 @@
         <div class="advisor-input-area">
             <div class="advisor-input-box">
                 <textarea id="advisor-user-input" placeholder="问我任何股票、板块、基金的问题…" rows="1" aria-label="AI 顾问输入框"></textarea>
-                <div class="advisor-context-meter" id="advisor-context-meter" role="meter" aria-label="上下文用量" aria-valuemin="0" aria-valuemax="255000" aria-valuenow="0" title="上下文: 0 / 255K">
+                <div class="advisor-context-meter" id="advisor-context-meter" role="meter" aria-label="估算上下文用量" aria-valuemin="0" aria-valuemax="255000" aria-valuenow="0" title="估算上下文: 约0 / 255K">
                     <svg class="advisor-context-ring" viewBox="0 0 20 20" aria-hidden="true">
                         <circle class="context-ring-track" cx="10" cy="10" r="8" pathLength="100"></circle>
                         <circle class="context-ring-value" id="advisor-context-ring" cx="10" cy="10" r="8" pathLength="100"></circle>
                     </svg>
-                    <span class="advisor-context-size" id="advisor-context-size">0 / 255K</span>
+                    <span class="advisor-context-size" id="advisor-context-size">约0 / 255K</span>
                 </div>
                 <button class="advisor-send-btn" id="advisor-send-btn" title="发送" aria-label="发送消息" disabled>
                     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
