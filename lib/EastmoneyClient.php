@@ -13,6 +13,9 @@ require_once __DIR__ . '/CircuitBreaker.php';
 class EastmoneyClient
 {
     const SOURCE_NAME = 'eastmoney';
+    const PUSH2_URL = 'https://push2.eastmoney.com';
+    const PUSH2_DELAY_URL = 'https://push2delay.eastmoney.com';
+    const PUSH2HIS_URL = 'https://push2his.eastmoney.com';
 
     /** @var HttpClient */
     private $http;
@@ -63,9 +66,9 @@ class EastmoneyClient
 
         $secidStr = implode(',', $secids);
         $fields = 'f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,f20,f21,f23,f24,f25,f26,f115';
-        $url = "https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&fields={$fields}&secids={$secidStr}&_=" . (time() * 1000);
+        $path = "/api/qt/ulist.np/get?fltt=2&fields={$fields}&secids={$secidStr}&_=" . (time() * 1000);
 
-        $resp = $this->http->get($url);
+        $resp = $this->getPush2($path);
 
         if ($resp['error'] || $resp['http_code'] !== 200) {
             $this->breaker->failure('network_error: ' . ($resp['error'] ?: "HTTP {$resp['http_code']}"));
@@ -134,12 +137,12 @@ class EastmoneyClient
         }
 
         $secid = $sc->toEastmoneySecid();
-        $url = "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get?secid={$secid}&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65";
+        $path = "/api/qt/stock/fflow/daykline/get?secid={$secid}&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65";
         if ($lmt > 0) {
-            $url .= "&lmt={$lmt}";
+            $path .= "&lmt={$lmt}";
         }
 
-        $resp = $this->http->get($url);
+        $resp = $this->getPush2($path, [self::PUSH2HIS_URL, self::PUSH2_DELAY_URL]);
 
         if ($resp['error'] || $resp['http_code'] !== 200) {
             $this->breaker->failure('network_error');
@@ -247,11 +250,11 @@ class EastmoneyClient
 
         $fs = 'm:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23';
         $fields = 'f2,f3,f8,f12,f13,f14,f62,f184,f66,f69,f72,f75,f78,f81,f84,f87';
-        $url = "https://push2.eastmoney.com/api/qt/clist/get?"
+        $path = "/api/qt/clist/get?"
              . "pn={$page}&pz={$pageSize}&po={$sortOrder}&np=1&fltt=2&invt=2"
              . "&fid={$sortField}&fs=" . urlencode($fs) . "&fields={$fields}";
 
-        $resp = $this->http->get($url, [
+        $resp = $this->getPush2($path, [self::PUSH2_URL, self::PUSH2_DELAY_URL], [
             'Referer: https://data.eastmoney.com/',
         ]);
 
@@ -298,5 +301,23 @@ class EastmoneyClient
         return DataSourceResult::success(self::SOURCE_NAME, 'hot_stocks', $result, [
             'provider_status' => $resp['http_code'],
         ]);
+    }
+
+    private function getPush2(string $path, array $bases = [self::PUSH2_URL, self::PUSH2_DELAY_URL], array $headers = []): array
+    {
+        $lastResp = null;
+        foreach ($bases as $base) {
+            $resp = $this->http->get($base . $path, $headers);
+            if (!$resp['error'] && $resp['http_code'] === 200) {
+                return $resp;
+            }
+            $lastResp = $resp;
+        }
+        return $lastResp ?: [
+            'body' => '',
+            'http_code' => 0,
+            'error' => 'no eastmoney endpoint available',
+            'content_type' => '',
+        ];
     }
 }

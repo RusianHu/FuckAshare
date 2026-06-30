@@ -506,6 +506,7 @@
                 </div>
             </div>
             <div class="advisor-header-right">
+                <button class="advisor-header-btn advisor-clear-btn" id="advisor-clear-btn" title="清理历史对话" aria-label="清理 AI 顾问历史对话"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-trash"></use></svg></span></button>
                 <button class="advisor-header-btn" id="advisor-expand-btn" title="展开到完整页" aria-label="展开到完整 AI 顾问页"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-expand"></use></svg></span></button>
                 <button class="advisor-header-btn" id="advisor-close-btn" title="关闭面板" aria-label="关闭 AI 顾问面板"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-close"></use></svg></span></button>
             </div>

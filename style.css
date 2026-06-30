@@ -653,6 +653,7 @@ input[type="text"]::placeholder, input[type="number"]::placeholder, textarea::pl
 }
 table {
     width: 100%; border-collapse: collapse;
+    font-variant-numeric: tabular-nums;
 }
 #stock-table,
 #hot-stocks-table,
@@ -660,10 +661,17 @@ table {
 .stock-details-table {
     min-width: 720px;
 }
+#stock-table {
+    table-layout: fixed;
+}
+#stock-table th:nth-child(1), #stock-table td:nth-child(1) { width: 150px; text-align: left; }
+#stock-table th:nth-child(n+2), #stock-table td:nth-child(n+2) { text-align: right; font-family: var(--font-mono); }
 th, td {
     padding: 8px 12px; text-align: right;
     border-bottom: 1px solid var(--border-light);
     font-size: 0.85rem; white-space: nowrap;
+    line-height: 1.35;
+    vertical-align: middle;
     transition: border-color 0.3s ease, background 0.2s ease, color 0.2s ease;
 }
 th {
@@ -747,22 +755,74 @@ tr:hover td { background: var(--bg-hover); }
 .flow-bar-value { width: 80px; text-align: left; font-family: var(--font-mono); }
 
 /* ===== 热门股票 ===== */
-.hot-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.hot-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; justify-content: flex-end; }
 .hot-card { margin-top: 16px; }
 .hot-table-wrapper {
     max-height: 520px; overflow-y: auto; overflow-x: auto;
 }
-#hot-stocks-table th { font-size: 0.82rem; white-space: nowrap; }
-#hot-stocks-table td { text-align: center; white-space: nowrap; font-size: 0.85rem; }
-#hot-stocks-table td:nth-child(4) { font-weight: 600; }
-#hot-stocks-table td:nth-child(6) { font-weight: 600; font-family: var(--font-mono); }
-#hot-stocks-table td:first-child { text-align: left; font-family: var(--font-mono); font-size: 0.8rem; }
-.btn-quick-query {
-    padding: 3px 8px; background: var(--accent-blue); color: #fff;
-    border: none; border-radius: 4px; font-size: 0.75rem;
-    cursor: pointer; transition: var(--transition);
+#hot-stocks-table {
+    min-width: 1060px;
+    table-layout: fixed;
 }
-.btn-quick-query:hover { filter: brightness(1.15); }
+#hot-stocks-table th,
+#hot-stocks-table td {
+    font-size: 0.84rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+#hot-stocks-table th:nth-child(1), #hot-stocks-table td:nth-child(1) { width: 96px; text-align: left; font-family: var(--font-mono); font-size: 0.8rem; }
+#hot-stocks-table th:nth-child(2), #hot-stocks-table td:nth-child(2) { width: 132px; text-align: left; }
+#hot-stocks-table th:nth-child(3), #hot-stocks-table td:nth-child(3) { width: 92px; text-align: right; }
+#hot-stocks-table th:nth-child(4), #hot-stocks-table td:nth-child(4) { width: 92px; text-align: right; font-weight: 600; }
+#hot-stocks-table th:nth-child(5), #hot-stocks-table td:nth-child(5) { width: 88px; text-align: right; }
+#hot-stocks-table th:nth-child(6), #hot-stocks-table td:nth-child(6) { width: 132px; text-align: right; font-weight: 600; font-family: var(--font-mono); }
+#hot-stocks-table th:nth-child(7), #hot-stocks-table td:nth-child(7),
+#hot-stocks-table th:nth-child(8), #hot-stocks-table td:nth-child(8) { width: 126px; text-align: right; font-family: var(--font-mono); }
+#hot-stocks-table th:nth-child(9), #hot-stocks-table td:nth-child(9) { width: 214px; text-align: center; }
+.hot-action-cell {
+    overflow: visible !important;
+    text-overflow: clip !important;
+}
+.table-action-group {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: 100%;
+}
+.btn-quick-query,
+.btn-hot-ai {
+    height: 28px;
+    padding: 0 10px;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: var(--transition);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    white-space: nowrap;
+    flex: 0 0 auto;
+}
+.btn-quick-query {
+    min-width: 48px;
+    background: var(--accent-blue);
+}
+.btn-hot-ai {
+    min-width: 104px;
+    background: linear-gradient(135deg, var(--accent-purple), var(--accent-blue));
+}
+.btn-hot-ai .ui-icon {
+    width: 13px;
+    height: 13px;
+}
+.btn-quick-query:hover,
+.btn-hot-ai:hover { filter: brightness(1.15); }
 
 .query-progress-bar {
     padding: 8px 16px; background: var(--accent-blue-bg);
@@ -847,7 +907,18 @@ tr:hover td { background: var(--bg-hover); }
 }
 .sector-bar-value { width: 90px; text-align: left; font-family: var(--font-mono); }
 .sector-table-wrapper { max-height: 500px; overflow: auto; }
-#sector-table td { text-align: center; }
+#sector-table {
+    min-width: 980px;
+    table-layout: fixed;
+}
+#sector-table th,
+#sector-table td {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+#sector-table th:nth-child(1), #sector-table td:nth-child(1) { width: 64px; text-align: center; color: var(--text-muted); }
+#sector-table th:nth-child(2), #sector-table td:nth-child(2) { width: 160px; text-align: left; }
+#sector-table th:nth-child(n+3), #sector-table td:nth-child(n+3) { text-align: right; font-family: var(--font-mono); }
 #sector-table td:nth-child(3), #sector-table td:nth-child(4) { font-weight: 600; }
 
 /* ===== 基金分析 ===== */
@@ -858,14 +929,39 @@ tr:hover td { background: var(--bg-hover); }
 }
 .xueqiu-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; min-width: 0; }
 .xueqiu-table-wrapper { overflow-x: auto; }
-#xq-hot-table, #xq-screener-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+#xq-hot-table, #xq-screener-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+    table-layout: fixed;
+}
+#xq-hot-table { min-width: 900px; }
+#xq-screener-table { min-width: 1160px; }
 #xq-hot-table th, #xq-hot-table td,
 #xq-screener-table th, #xq-screener-table td {
-    padding: 8px 10px; text-align: center; border-bottom: 1px solid var(--border-color);
+    padding: 8px 10px; text-align: right; border-bottom: 1px solid var(--border-color);
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 #xq-hot-table th, #xq-screener-table th {
     background: var(--bg-secondary); font-weight: 600; position: sticky; top: 0; z-index: 1;
+}
+#xq-hot-table th:nth-child(1), #xq-hot-table td:nth-child(1),
+#xq-screener-table th:nth-child(1), #xq-screener-table td:nth-child(1) {
+    width: 104px;
+    text-align: left;
+    font-family: var(--font-mono);
+}
+#xq-hot-table th:nth-child(2), #xq-hot-table td:nth-child(2),
+#xq-screener-table th:nth-child(2), #xq-screener-table td:nth-child(2) {
+    width: 128px;
+    text-align: left;
+}
+#xq-hot-table th:last-child, #xq-hot-table td:last-child,
+#xq-screener-table th:last-child, #xq-screener-table td:last-child {
+    width: 86px;
+    text-align: center;
 }
 
 /* 雪球动态卡片 */
@@ -1201,6 +1297,7 @@ body.watchlist-open .ai-advisor-panel {
     display: flex;
     align-items: center;
     gap: 10px;
+    min-width: 0;
 }
 .advisor-avatar {
     position: relative;
@@ -1238,6 +1335,7 @@ body.watchlist-open .ai-advisor-panel {
     display: flex;
     flex-direction: column;
     gap: 1px;
+    min-width: 0;
 }
 .advisor-name {
     font-weight: 700;
@@ -1253,6 +1351,7 @@ body.watchlist-open .ai-advisor-panel {
     display: flex;
     align-items: center;
     gap: 4px;
+    flex-shrink: 0;
 }
 .advisor-header-btn {
     width: 30px;
@@ -1271,6 +1370,14 @@ body.watchlist-open .ai-advisor-panel {
 .advisor-header-btn:hover {
     background: var(--bg-hover);
     color: var(--text-primary);
+}
+.advisor-clear-btn:hover {
+    background: var(--accent-red-bg);
+    color: var(--accent-red);
+}
+.advisor-clear-btn:focus-visible {
+    outline: 2px solid var(--accent-red);
+    outline-offset: 2px;
 }
 
 /* 上下文提示区 */
@@ -1771,10 +1878,16 @@ body.watchlist-open .ai-advisor-panel {
     .nav-brand { margin-right: 0; }
     .nav-tabs {
         order: 3;
+        flex: 0 0 100%;
         width: 100%;
+        max-width: 100%;
         flex-wrap: nowrap;
         overflow-x: auto;
+        overflow-y: hidden;
+        -webkit-overflow-scrolling: touch;
+        overscroll-behavior-x: contain;
         scrollbar-width: none;
+        -ms-overflow-style: none;
         padding-bottom: 2px;
     }
     .nav-tabs::-webkit-scrollbar { display: none; }

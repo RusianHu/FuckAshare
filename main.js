@@ -1493,6 +1493,7 @@ const AdvisorModule = {
             sendBtn: document.getElementById('advisor-send-btn'),
             closeBtn: document.getElementById('advisor-close-btn'),
             expandBtn: document.getElementById('advisor-expand-btn'),
+            clearBtn: document.getElementById('advisor-clear-btn'),
             welcome: document.getElementById('ai-advisor-welcome'),
             context: document.getElementById('ai-advisor-context'),
             contextStock: document.getElementById('advisor-context-stock'),
@@ -1528,6 +1529,9 @@ const AdvisorModule = {
             this.close();
             switchTab('ai');
         });
+
+        // 清理历史对话 / 上下文
+        el.clearBtn?.addEventListener('click', () => this.clearConversation());
 
         // 遮罩关闭（移动端）
         el.backdrop?.addEventListener('click', () => this.close());
@@ -1751,6 +1755,41 @@ const AdvisorModule = {
             this.setThinking(true);
             AIModule.sendToAI(loadingMsg, timer, this._els.chatContainer);
         }, 150);
+    },
+
+    /** 清理历史对话，并保持顾问可立即继续使用 */
+    clearConversation() {
+        APP.advisorRequestVersion++;
+
+        if (APP._aiAbortController) {
+            APP._aiAbortController.abort();
+            APP._aiAbortController = null;
+        }
+
+        APP.messageHistory = [{ role: 'system', content: AI_SYSTEM_PROMPT }];
+
+        if (APP.chatContainer) APP.chatContainer.innerHTML = '';
+        if (this._els.chatContainer) this._els.chatContainer.innerHTML = '';
+        this._els.panel?.classList.remove('has-messages');
+
+        if (APP.userInput) {
+            APP.userInput.value = '';
+            APP.userInput.style.height = '44px';
+        }
+        if (this._els.userInput) {
+            this._els.userInput.value = '';
+            this._els.userInput.style.height = '24px';
+        }
+
+        this.setThinking(false);
+        this.clearUnread();
+        this.updateContextMeter();
+        this._updateSendState();
+
+        if (APP.advisorOpen) {
+            this.updateContext();
+            setTimeout(() => this._els.userInput?.focus(), 0);
+        }
     },
 
     /** 渲染历史消息到顾问面板 */
@@ -2852,7 +2891,12 @@ document.addEventListener('DOMContentLoaded', function() {
                             <td class="${colorClass(netInflow)}">${formatAmount(netInflow)}</td>
                             <td class="${colorClass(superInflow)}">${formatAmount(superInflow)}</td>
                             <td class="${colorClass(bigInflow)}">${formatAmount(bigInflow)}</td>
-                            <td><button class="btn-quick-query" data-code="${stock.dm}">查询</button></td>
+                            <td class="hot-action-cell">
+                                <div class="table-action-group">
+                                    <button class="btn-quick-query" data-code="${stock.dm}">查询</button>
+                                    <button class="btn-hot-ai" data-code="${stock.dm}"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-ai"></use></svg></span> 一键AI分析</button>
+                                </div>
+                            </td>
                         `;
                         hotStocksData.appendChild(tr);
                     });
@@ -2862,13 +2906,24 @@ document.addEventListener('DOMContentLoaded', function() {
                     // 热门股票行入场动画
                     AnimationManager.animateHotRows();
 
+                    const submitHotStockQuery = (code, withAI = false) => {
+                        document.getElementById('code').value = code;
+                        document.getElementById('frequency').value = '1d';
+                        document.getElementById('count').value = '60';
+                        APP.queryWithAI = withAI;
+                        stockForm.dispatchEvent(new Event('submit'));
+                    };
+
                     document.querySelectorAll('.btn-quick-query').forEach(btn => {
-                        btn.addEventListener('click', function() {
-                            const code = this.getAttribute('data-code');
-                            document.getElementById('code').value = code;
-                            document.getElementById('frequency').value = '1d';
-                            document.getElementById('count').value = '60';
-                            stockForm.dispatchEvent(new Event('submit'));
+                        btn.addEventListener('click', function(e) {
+                            e.stopPropagation();
+                            submitHotStockQuery(this.getAttribute('data-code'), false);
+                        });
+                    });
+                    document.querySelectorAll('.btn-hot-ai').forEach(btn => {
+                        btn.addEventListener('click', function(e) {
+                            e.stopPropagation();
+                            submitHotStockQuery(this.getAttribute('data-code'), true);
                         });
                     });
                 } else {
@@ -3070,17 +3125,8 @@ document.addEventListener('DOMContentLoaded', function() {
     // === AI聊天 ===
     document.getElementById('send-button')?.addEventListener('click', sendMessage);
     document.getElementById('clear-chat-btn')?.addEventListener('click', () => {
-        APP.advisorRequestVersion++;
-        APP.chatContainer.innerHTML = '';
-        APP.messageHistory = [{ role: 'system', content: AI_SYSTEM_PROMPT }];
-        // 同步清空顾问面板消息
-        if (APP.advisorChatContainer) APP.advisorChatContainer.innerHTML = '';
-        const advisorPanel = document.getElementById('ai-advisor-panel');
-        if (advisorPanel) advisorPanel.classList.remove('has-messages');
         if (typeof AdvisorModule !== 'undefined') {
-            AdvisorModule.setThinking(false);
-            AdvisorModule.clearUnread();
-            AdvisorModule.updateContextMeter();
+            AdvisorModule.clearConversation();
         }
     });
 
