@@ -42,7 +42,7 @@ class AIToolSchema
         return ['type' => ['string', 'null'], 'description' => $description];
     }
 
-    public static function nullableInteger(string $description, int $min = null, int $max = null): array
+    public static function nullableInteger(string $description, ?int $min = null, ?int $max = null): array
     {
         $schema = ['type' => ['integer', 'null'], 'description' => $description];
         if ($min !== null) $schema['minimum'] = $min;
