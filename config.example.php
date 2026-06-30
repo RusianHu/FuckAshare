@@ -157,6 +157,21 @@ return [
         'max_message_length' => 50000,    //    单条消息最大字符数；fallback SecurityAudit::MAX_MESSAGE_LENGTH=50000
         'max_message_count'  => 100,      //    单次会话最大消息条数；fallback SecurityAudit::MAX_MESSAGE_COUNT=100
 
+        // ✅ AI 工具调用智能体：服务端按 OpenAI Chat Completions tools/tool_calls 协议编排。
+        //    启用后，ai_api.php 会先让模型选择只读研究工具，执行本地行情/基金/雪球服务，
+        //    再将工具结果回填给模型生成最终 SSE 回复。若渠道 supports_tools=false，则回退纯流式对话。
+        'tool_agent' => [
+            'enabled' => true,
+            'max_tool_rounds' => 10,            // 单次用户请求最多工具调用轮次
+            'max_tool_calls_per_round' => 8,    // 每轮最多执行的工具调用数
+            'tool_timeout' => 45,               // 工具握手耗时预算（秒）；失败会自动回退普通流式对话
+            'tool_output_char_limit' => 60000,  // 单个工具输出回填给模型的最大字符数
+            'parallel_tool_calls' => true,      // 允许模型一次请求多个工具；服务端仍按顺序安全执行
+            'expose_tool_trace' => true,        // 向前端发送 tool_status SSE 事件用于展示进度
+            'auto_prefetch' => true,            // 股票/基金分析请求先由服务端确定性预取核心工具数据
+            'stream_after_tool_round' => true,  // 模型主动选择一轮工具后直接生成最终回答，避免兼容端点多轮握手卡顿
+        ],
+
         // ── 渠道定义 ──
         // 每个渠道需提供 api_url / api_key / model 三项，缺任一项 ai_api.php 报错退出。
         // ⚠️ api_key 属于敏感信息，必须在 config.php 中填写，切勿提交到版本库！
@@ -166,12 +181,14 @@ return [
                 'api_url' => 'https://api.deepseek.com/chat/completions', // ✅ 上游 Chat Completions 端点
                 'api_key' => '',               // ← 必填，DeepSeek API Key
                 'model'   => 'deepseek-chat',   // ✅ 调用的模型名
+                'supports_tools' => true,       // ✅ 是否支持 OpenAI-compatible tools/tool_calls
             ],
             'openai' => [
                 'name'    => 'OpenAI兼容',                            // ✅ 任意兼容 OpenAI 协议的端点均可
                 'api_url' => '',               // ← 必填，如 https://api.example.com/v1/chat/completions
                 'api_key' => '',               // ← 必填
                 'model'   => '',               // ← 必填，如 gpt-4o、kimi-k2.6
+                'supports_tools' => true,       // ✅ 不支持工具调用的兼容端点请设为 false
             ],
         ],
     ],

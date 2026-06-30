@@ -2969,6 +2969,54 @@ const AIModule = {
         if (scrollContainer) scrollContainer.scrollTop = scrollContainer.scrollHeight;
     },
 
+    _appendToolStatus(botDiv, status) {
+        if (!botDiv || !status) return;
+        let trace = botDiv.querySelector('.tool-trace');
+        if (!trace) {
+            trace = document.createElement('div');
+            trace.className = 'tool-trace';
+
+            const head = document.createElement('div');
+            head.className = 'tool-trace-head';
+            head.textContent = status.trace_title || 'AI 工具调用';
+
+            const list = document.createElement('div');
+            list.className = 'tool-trace-list';
+
+            trace.appendChild(head);
+            trace.appendChild(list);
+            const reasoning = botDiv.querySelector('.reasoning-content');
+            if (reasoning && reasoning.nextSibling) {
+                botDiv.insertBefore(trace, reasoning.nextSibling);
+            } else if (reasoning) {
+                botDiv.appendChild(trace);
+            } else {
+                botDiv.insertBefore(trace, botDiv.firstChild);
+            }
+        }
+
+        const list = trace.querySelector('.tool-trace-list');
+        if (!list) return;
+        const head = trace.querySelector('.tool-trace-head');
+        if (head && status.trace_title && !head.textContent.includes(status.trace_title)) {
+            head.textContent = status.trace_title;
+        }
+
+        const item = document.createElement('div');
+        item.className = 'tool-trace-item';
+        item.dataset.origin = status.origin || 'model_tool_call';
+        const message = status.message || '调用研究工具';
+        const tool = status.tool || '';
+        const args = status.args_summary && Object.keys(status.args_summary).length
+            ? ' · ' + Object.entries(status.args_summary).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(',') : v}`).join(' / ')
+            : '';
+        item.textContent = `${message}${tool ? ` (${tool})` : ''}${args}`;
+        list.appendChild(item);
+
+        const scrollContainer = botDiv.closest('.chat-messages, .advisor-messages');
+        if (scrollContainer) scrollContainer.scrollTop = scrollContainer.scrollHeight;
+    },
+
     async sendToAI(loadingMessage, timer, targetContainer) {
         const requestVersion = APP.advisorRequestVersion;
         try {
@@ -3033,6 +3081,16 @@ const AIModule = {
                         try {
                             const json = JSON.parse(jsonStr);
 
+                            if (json.type === 'tool_status') {
+                                const label = json.message || '调用研究工具';
+                                loadingMessage.textContent = `${label}...`;
+                                this._appendToolStatus(botDiv, json);
+                                if (typeof AdvisorModule !== 'undefined' && AdvisorModule._els?.status) {
+                                    AdvisorModule._els.status.textContent = label + '...';
+                                }
+                                continue;
+                            }
+
                             // 错误响应
                             if (json.error) {
                                 fullResponse = `**错误:** ${json.error.message || JSON.stringify(json.error)}`;
@@ -3073,6 +3131,14 @@ const AIModule = {
                     if (jsonStr) {
                         try {
                             const json = JSON.parse(jsonStr);
+                            if (json.type === 'tool_status') {
+                                const label = json.message || '调用研究工具';
+                                loadingMessage.textContent = `${label}...`;
+                                this._appendToolStatus(botDiv, json);
+                                if (typeof AdvisorModule !== 'undefined' && AdvisorModule._els?.status) {
+                                    AdvisorModule._els.status.textContent = label + '...';
+                                }
+                            }
                             if (json.error) {
                                 fullResponse = `**错误:** ${json.error.message || JSON.stringify(json.error)}`;
                                 this._updateContent(botDiv, fullResponse);

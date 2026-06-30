@@ -6,6 +6,7 @@
 // ============================================================
 
 require_once __DIR__ . '/lib/AppConfig.php';
+require_once __DIR__ . '/lib/AIChatToolAgent.php';
 require_once __DIR__ . '/SecurityAudit.php';
 
 $aiConfig = AppConfig::get('ai', []);
@@ -184,65 +185,47 @@ foreach (['api_url', 'api_key', 'model'] as $field) {
     }
 }
 
-$model = $channel['model'];
-
-// 7. 构建上游请求数据
-$postData = json_encode([
-    'model'    => $model,
-    'messages' => $input['messages'],
-    'stream'   => true,
-]);
-
-// 8. 初始化 cURL
-$ch = curl_init();
-curl_setopt($ch, CURLOPT_URL, $channel['api_url']);
-curl_setopt($ch, CURLOPT_RETURNTRANSFER, false);  // 流式必须为 false
-curl_setopt($ch, CURLOPT_POST, true);
-curl_setopt($ch, CURLOPT_HTTPHEADER, [
-    'Authorization: Bearer ' . $channel['api_key'],
-    'Content-Type: application/json',
-    'Accept: text/event-stream',
-]);
-curl_setopt($ch, CURLOPT_POSTFIELDS, $postData);
-
-// SSL 配置
-curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
-curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
-
-// 超时配置：推理模型思考时间可能很长，默认设置 5 分钟
-curl_setopt($ch, CURLOPT_TIMEOUT, (int)($aiConfig['timeout'] ?? 300));
-curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, (int)($aiConfig['connect_timeout'] ?? 15));
-
-// 9. 流式透传：将上游 SSE 数据逐块转发给客户端
-//    同时检测客户端断开，及时停止上游 cURL
-curl_setopt($ch, CURLOPT_WRITEFUNCTION, function ($ch, $data) {
-    // 如果客户端已断开，停止上游传输
-    if (connection_aborted()) {
-        return 0;  // 返回 0 终止 cURL 传输
-    }
+$emit = function (string $data): void {
     echo $data;
     if (ob_get_level()) ob_flush();
     flush();
-    return strlen($data);
-});
+};
 
-// 10. 执行请求
-$result = curl_exec($ch);
+$toolAgentConfig = is_array($aiConfig['tool_agent'] ?? null) ? $aiConfig['tool_agent'] : [];
+$toolAgentEnabled = array_key_exists('enabled', $toolAgentConfig)
+    ? (bool)$toolAgentConfig['enabled']
+    : array_key_exists('supports_tools', $channel);
+$channelSupportsTools = array_key_exists('supports_tools', $channel) ? (bool)$channel['supports_tools'] : false;
 
-// 11. 错误处理：如果 cURL 出错，通过 SSE 发送错误事件
-if (curl_errno($ch)) {
-    $errorMsg = curl_error($ch);
-    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    // 尝试通过 SSE 通知前端
+$agentOptions = [
+    'max_tool_rounds' => (int)($toolAgentConfig['max_tool_rounds'] ?? 10),
+    'max_tool_calls_per_round' => (int)($toolAgentConfig['max_tool_calls_per_round'] ?? 8),
+    'tool_timeout' => (int)($toolAgentConfig['tool_timeout'] ?? 45),
+    'tool_output_char_limit' => (int)($toolAgentConfig['tool_output_char_limit'] ?? 60000),
+    'parallel_tool_calls' => (bool)($toolAgentConfig['parallel_tool_calls'] ?? true),
+    'expose_tool_trace' => (bool)($toolAgentConfig['expose_tool_trace'] ?? true),
+    'auto_prefetch' => (bool)($toolAgentConfig['auto_prefetch'] ?? true),
+    'stream_after_tool_round' => (bool)($toolAgentConfig['stream_after_tool_round'] ?? true),
+    'timeout' => (int)($aiConfig['timeout'] ?? 300),
+    'connect_timeout' => (int)($aiConfig['connect_timeout'] ?? 15),
+];
+
+$agent = new AIChatToolAgent($channel, $agentOptions);
+
+try {
+    if ($toolAgentEnabled && $channelSupportsTools) {
+        $agent->run($input['messages'], $emit);
+    } else {
+        $agent->streamPlain($input['messages'], $emit);
+    }
+} catch (Throwable $e) {
     echo "data: " . json_encode([
         'error' => [
-            'message' => "API请求失败: $errorMsg",
-            'type'    => 'proxy_error',
-            'code'    => $httpCode ?: curl_errno($ch),
+            'message' => $e->getMessage(),
+            'type'    => 'tool_agent_error',
+            'code'    => $e->getCode(),
         ]
-    ]) . "\n\n";
+    ], JSON_UNESCAPED_UNICODE) . "\n\n";
     if (ob_get_level()) ob_flush();
     flush();
 }
-
-curl_close($ch);

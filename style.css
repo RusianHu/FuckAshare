@@ -1425,6 +1425,34 @@ tr:hover td { background: var(--bg-hover); }
     background: var(--accent-green-bg);
     border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
 }
+.tool-trace {
+    margin-bottom: 8px;
+    padding: 8px 10px;
+    border: 1px solid var(--border-color);
+    border-left: 3px solid var(--accent-blue);
+    background: rgba(42, 123, 255, 0.08);
+    border-radius: var(--radius-sm);
+    font-size: 0.78rem;
+}
+.tool-trace-head {
+    margin-bottom: 5px;
+    color: var(--text-secondary);
+    font-weight: 700;
+}
+.tool-trace-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.tool-trace-item {
+    color: var(--text-primary);
+    overflow-wrap: anywhere;
+}
+.tool-trace-item::before {
+    content: "• ";
+    color: var(--accent-blue);
+    font-weight: 700;
+}
 
 .chat-input-area {
     display: flex; gap: 10px; padding: 12px 16px;
