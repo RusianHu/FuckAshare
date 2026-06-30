@@ -988,14 +988,38 @@ tr:hover td { background: var(--bg-hover); }
 }
 
 .fund-layout {
-    display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
 }
-@media (max-width: 900px) { .fund-layout { grid-template-columns: 1fr; } }
+.fund-top-grid {
+    display: grid;
+    grid-template-columns: minmax(420px, 1fr) minmax(520px, 0.92fr);
+    gap: 16px;
+    align-items: start;
+}
+.fund-left-stack,
+.fund-right-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    min-width: 0;
+}
+@media (max-width: 1100px) {
+    .fund-top-grid {
+        grid-template-columns: 1fr;
+    }
+}
 .fund-controls { display: flex; gap: 8px; flex-wrap: wrap; min-width: 0; }
 
 .fund-search-results {
-    display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-    gap: 10px; padding: 12px;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 10px;
+    padding: 12px;
+}
+.fund-search-results:empty {
+    padding: 0;
 }
 .fund-card {
     background: var(--bg-secondary); border: 1px solid var(--border-color);
@@ -1041,6 +1065,278 @@ tr:hover td { background: var(--bg-hover); }
 }
 .fund-wl-remove:hover { color: var(--accent-red); background: var(--accent-red-bg); }
 
+.fund-search-card .card-header,
+.fund-watch-card .card-header,
+.fund-detail-card .card-header,
+.fund-rank-card .card-header {
+    min-height: 54px;
+}
+.fund-search-card,
+.fund-watch-card,
+.fund-detail-card,
+.fund-rank-card {
+    overflow: hidden;
+    margin-bottom: 0;
+}
+@media (min-width: 1101px) {
+    .fund-detail-card {
+        max-height: calc(100vh - 112px);
+        display: flex;
+        flex-direction: column;
+    }
+    .fund-detail-card .fund-detail {
+        overflow-y: auto;
+    }
+}
+.fund-rank-controls {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+    min-width: 0;
+}
+.fund-rank-controls select {
+    min-width: 98px;
+    padding: 7px 9px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-input);
+    color: var(--text-primary);
+    font-size: 0.85rem;
+}
+.fc-title-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    align-items: flex-start;
+}
+.fc-name {
+    overflow-wrap: anywhere;
+}
+.fc-metrics {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin: 10px 0;
+}
+.fc-metrics span,
+.fund-watchlist-summary span,
+.fund-metric-grid div,
+.fund-profile-grid div {
+    min-width: 0;
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    background: var(--bg-primary);
+    padding: 8px 10px;
+}
+.fc-metrics b,
+.fund-watchlist-summary b,
+.fund-metric-grid b,
+.fund-profile-grid b {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: 0.95rem;
+    overflow-wrap: anywhere;
+}
+.fc-metrics small,
+.fund-watchlist-summary small,
+.fund-metric-grid small {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    margin-top: 2px;
+}
+.fund-watchlist-summary {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+    margin-bottom: 10px;
+}
+.fund-wl-info {
+    cursor: pointer;
+    min-width: 0;
+}
+.fund-detail-code {
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+}
+.fund-detail {
+    padding: 12px;
+}
+.fund-detail-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+.fund-detail-head h4 {
+    font-size: 1.05rem;
+    margin: 0 0 4px;
+    overflow-wrap: anywhere;
+}
+.fund-detail-head p {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    margin: 0;
+    line-height: 1.5;
+}
+.fund-detail-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+.fund-metric-grid,
+.fund-profile-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(150px, 1fr));
+    gap: 8px;
+    margin-bottom: 12px;
+}
+.fund-metric-grid span,
+.fund-profile-grid span,
+.fund-benchmark span {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.72rem;
+    margin-bottom: 4px;
+}
+.fund-profile-grid b {
+    font-family: var(--font-sans);
+    font-size: 0.86rem;
+    font-weight: 600;
+}
+.fund-benchmark {
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    background: var(--bg-primary);
+    padding: 10px 12px;
+    margin-bottom: 12px;
+}
+.fund-benchmark p {
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+    line-height: 1.5;
+}
+.fund-history-spark {
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-sm);
+    background: var(--bg-primary);
+    padding: 9px 10px;
+    margin-bottom: 12px;
+}
+.fund-history-spark-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    color: var(--text-muted);
+    font-size: 0.76rem;
+    margin-bottom: 8px;
+}
+.fund-history-bars {
+    height: 58px;
+    display: flex;
+    align-items: flex-end;
+    gap: 3px;
+}
+.fund-history-bars span {
+    flex: 1 1 0;
+    min-width: 3px;
+    border-radius: 3px 3px 0 0;
+    background: var(--accent-blue);
+    opacity: 0.78;
+}
+.fund-history-table-wrapper,
+.fund-rank-table-wrapper {
+    overflow-x: auto;
+}
+.fund-history-table,
+#fund-rank-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.82rem;
+    table-layout: fixed;
+}
+#fund-rank-table { min-width: 980px; }
+.fund-history-table { min-width: 680px; }
+.fund-history-table th,
+.fund-history-table td,
+#fund-rank-table th,
+#fund-rank-table td {
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border-light);
+    text-align: right;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.fund-history-table th,
+#fund-rank-table th {
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    font-weight: 600;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+}
+.fund-history-table th:first-child,
+.fund-history-table td:first-child,
+#fund-rank-table th:nth-child(2),
+#fund-rank-table td:nth-child(2) {
+    text-align: left;
+}
+#fund-rank-table th:nth-child(1),
+#fund-rank-table td:nth-child(1) {
+    width: 58px;
+    text-align: center;
+    color: var(--text-muted);
+}
+#fund-rank-table th:nth-child(2),
+#fund-rank-table td:nth-child(2) { width: 260px; }
+#fund-rank-table th:last-child,
+#fund-rank-table td:last-child {
+    width: 96px;
+    text-align: center;
+}
+#fund-rank-table td small {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.7rem;
+    margin-top: 2px;
+}
+.fund-rank-summary {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    padding: 0 12px 10px;
+}
+.fund-link-btn {
+    border: none;
+    background: transparent;
+    color: var(--text-primary);
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    cursor: pointer;
+    max-width: 100%;
+    padding: 0;
+    text-align: left;
+}
+.fund-link-btn span {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.fund-link-btn:hover span {
+    color: var(--accent-blue);
+}
+
 /* ===== AI聊天 ===== */
 .ai-layout { max-width: 900px; margin: 0 auto; }
 .ai-card { display: flex; flex-direction: column; height: calc(100vh - 130px); }
@@ -1063,6 +1359,50 @@ tr:hover td { background: var(--bg-hover); }
     margin-left: auto; background: var(--message-user-bg);
     color: var(--message-user-text);
     border-radius: var(--radius-md) var(--radius-md) 0 var(--radius-md);
+}
+.user-message .content {
+    white-space: pre-wrap;
+}
+.long-user-message {
+    position: relative;
+}
+.long-user-message.collapsed .content {
+    max-height: 180px;
+    overflow: hidden;
+    -webkit-mask-image: linear-gradient(180deg, #000 68%, transparent 100%);
+    mask-image: linear-gradient(180deg, #000 68%, transparent 100%);
+}
+.long-user-message.expanded .content {
+    max-height: min(70vh, 720px);
+    overflow: auto;
+    -webkit-mask-image: none;
+    mask-image: none;
+}
+.message-collapse-tools {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid rgba(255,255,255,0.22);
+    font-size: 0.76rem;
+}
+.message-collapse-tools span {
+    opacity: 0.82;
+}
+.message-collapse-toggle {
+    border: 1px solid rgba(255,255,255,0.45);
+    background: rgba(255,255,255,0.16);
+    color: var(--message-user-text);
+    border-radius: var(--radius-sm);
+    padding: 3px 8px;
+    cursor: pointer;
+    font-size: 0.75rem;
+    white-space: nowrap;
+}
+.message-collapse-toggle:hover {
+    background: rgba(255,255,255,0.24);
 }
 .bot-message {
     margin-right: auto; background: var(--message-bot-bg);
@@ -1498,6 +1838,9 @@ body.watchlist-open .ai-advisor-panel {
     max-width: 92%;
     font-size: 0.85rem;
     margin-bottom: 12px;
+}
+.advisor-messages .long-user-message.collapsed .content {
+    max-height: 150px;
 }
 
 /* 顾问输入区 */
@@ -2042,6 +2385,32 @@ body.watchlist-open .ai-advisor-panel {
     .fund-search-results {
         grid-template-columns: 1fr;
     }
+    .fund-detail-card,
+    .fund-rank-card {
+        grid-column: auto;
+        grid-row: auto;
+    }
+    .fund-rank-controls {
+        width: 100%;
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .fund-rank-controls button {
+        grid-column: 1 / -1;
+        width: 100%;
+    }
+    .fund-metric-grid,
+    .fund-profile-grid,
+    .fund-watchlist-summary {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .fund-detail-head {
+        flex-direction: column;
+    }
+    .fund-detail-actions {
+        width: 100%;
+        justify-content: flex-start;
+    }
     .realtime-grid { padding: 14px; }
     .fund-wl-item {
         flex-wrap: wrap;
@@ -2057,6 +2426,16 @@ body.watchlist-open .ai-advisor-panel {
     .modal-dialog {
         width: calc(100vw - 20px);
         max-height: 88dvh;
+    }
+}
+
+@media (max-width: 480px) {
+    .fund-rank-controls,
+    .fund-metric-grid,
+    .fund-profile-grid,
+    .fund-watchlist-summary,
+    .fc-metrics {
+        grid-template-columns: 1fr;
     }
 }
 

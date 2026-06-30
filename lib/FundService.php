@@ -43,6 +43,8 @@ class FundService
         'batch_estimate' => 10,
         'info'        => 300,    // 基金详情：5 分钟
         'search'      => 600,   // 基金搜索：10 分钟
+        'rank'        => 300,    // 基金排行：5 分钟
+        'history'     => 300,    // 历史净值：5 分钟
     ];
 
     /** @var int negative cache TTL (秒) */
@@ -248,6 +250,136 @@ class FundService
                 'keyword' => $keyword,
                 'total'   => count($results),
             ]);
+            });
+        });
+    }
+
+    /**
+     * 基金收益排行
+     */
+    public function rank(string $type = 'all', string $period = 'year', int $page = 1, int $pageSize = 30): DataSourceResult
+    {
+        $typeMap = [
+            'all'  => 'all',
+            'stock' => 'gp',
+            'mixed' => 'hh',
+            'bond'  => 'zq',
+            'index' => 'zs',
+            'qdii'  => 'qdii',
+            'fof'   => 'fof',
+        ];
+        $periodMap = [
+            'day' => 'rzdf',
+            'week' => 'zzf',
+            'month' => '1yzf',
+            'quarter' => '3yzf',
+            'half_year' => '6yzf',
+            'year' => '1nzf',
+            'two_year' => '2nzf',
+            'three_year' => '3nzf',
+            'this_year' => 'jnzf',
+            'since' => 'lnzf',
+        ];
+
+        $typeKey = $typeMap[$type] ?? 'all';
+        $sortKey = $periodMap[$period] ?? '1nzf';
+        $page = max(1, min($page, 1000));
+        $pageSize = max(5, min($pageSize, 100));
+        $cacheKey = $this->cacheKey('rank', "{$type}:{$period}:{$page}:{$pageSize}");
+
+        return $this->useCache('rank', $cacheKey, function() use ($type, $period, $typeKey, $sortKey, $page, $pageSize) {
+            return $this->withBreaker('rank', function() use ($type, $period, $typeKey, $sortKey, $page, $pageSize) {
+                $endDate = date('Y-m-d');
+                $startDate = date('Y-m-d', strtotime('-1 year'));
+                $url = 'https://fund.eastmoney.com/data/rankhandler.aspx?' . http_build_query([
+                    'op' => 'ph',
+                    'dt' => 'kf',
+                    'ft' => $typeKey,
+                    'rs' => '',
+                    'gs' => '0',
+                    'sc' => $sortKey,
+                    'st' => 'desc',
+                    'sd' => $startDate,
+                    'ed' => $endDate,
+                    'qdii' => '',
+                    'tabSubtype' => ',,,,,',
+                    'pi' => $page,
+                    'pn' => $pageSize,
+                    'dx' => '1',
+                    'v' => sprintf('%.6f', microtime(true)),
+                ]);
+
+                $resp = $this->http->get($url, [
+                    'Referer' => 'https://fund.eastmoney.com/data/fundranking.html',
+                    'Accept'  => '*/*',
+                ]);
+
+                if ($resp['error'] || $resp['http_code'] !== 200) {
+                    return DataSourceResult::error(self::SOURCE_NAME, 'rank', 'network_error', '请求失败: ' . ($resp['error'] ?: "HTTP {$resp['http_code']}"));
+                }
+
+                $parsed = $this->parseRankResponse($resp['body'], $period);
+                if ($parsed === null) {
+                    return DataSourceResult::error(self::SOURCE_NAME, 'rank', 'parse_error', '解析基金排行数据失败');
+                }
+
+                $parsed['type'] = $type;
+                $parsed['period'] = $period;
+                return DataSourceResult::success(self::SOURCE_NAME, 'rank', $parsed['items'], [
+                    'type' => $type,
+                    'period' => $period,
+                    'page' => $parsed['page'],
+                    'page_size' => $parsed['page_size'],
+                    'total' => $parsed['total'],
+                    'total_pages' => $parsed['total_pages'],
+                    'category_counts' => $parsed['category_counts'],
+                ]);
+            });
+        });
+    }
+
+    /**
+     * 基金历史净值
+     */
+    public function history(string $code, int $page = 1, int $pageSize = 30): DataSourceResult
+    {
+        $page = max(1, min($page, 200));
+        $pageSize = max(5, min($pageSize, 100));
+        $key = $this->cacheKey('history', "{$code}:{$page}:{$pageSize}");
+
+        return $this->useCache('history', $key, function() use ($code, $page, $pageSize) {
+            return $this->withBreaker('history', function() use ($code, $page, $pageSize) {
+                $url = 'https://fundf10.eastmoney.com/F10DataApi.aspx?' . http_build_query([
+                    'type' => 'lsjz',
+                    'code' => $code,
+                    'page' => $page,
+                    'per'  => $pageSize,
+                    'sdate' => '',
+                    'edate' => '',
+                    'rt' => sprintf('%.6f', microtime(true)),
+                ]);
+
+                $resp = $this->http->get($url, [
+                    'Referer' => "https://fundf10.eastmoney.com/jjjz_{$code}.html",
+                    'Accept'  => '*/*',
+                ]);
+
+                if ($resp['error'] || $resp['http_code'] !== 200) {
+                    return DataSourceResult::error(self::SOURCE_NAME, 'history', 'network_error', '请求失败: ' . ($resp['error'] ?: "HTTP {$resp['http_code']}"));
+                }
+
+                $parsed = $this->parseHistoryResponse($resp['body']);
+                if ($parsed === null) {
+                    return DataSourceResult::error(self::SOURCE_NAME, 'history', 'parse_error', '解析历史净值失败');
+                }
+
+                return DataSourceResult::success(self::SOURCE_NAME, 'history', $parsed['items'], [
+                    'code' => $code,
+                    'page' => $parsed['page'],
+                    'page_size' => $pageSize,
+                    'records' => $parsed['records'],
+                    'pages' => $parsed['pages'],
+                ]);
             });
         });
     }
@@ -483,7 +615,12 @@ class FundService
         return [
             'code'          => $item['FCODE'] ?? '',
             'name'          => $item['SHORTNAME'] ?? '',
+            'full_name'     => $item['FULLNAME'] ?? '',
             'type'          => $item['FTYPE'] ?? '',
+            'risk_level'    => $item['RISKLEVEL'] ?? $item['RLEVEL_SZ'] ?? '',
+            'establish_date'=> $item['ESTABDATE'] ?? '',
+            'scale'         => $item['ENDNAV'] ?? '',
+            'scale_date'    => $item['FEGMRQ'] ?? '',
             'nav_date'      => $item['PDATE'] ?? $item['FSRQ'] ?? $item['SYRQ'] ?? '',
             'nav'           => $item['NAV'] ?? $item['DWJZ'] ?? '',
             'acc_nav'       => $item['ACCNAV'] ?? $item['LJJZ'] ?? '',
@@ -493,6 +630,11 @@ class FundService
             'min_purchase'  => $item['MINSG'] ?? '',
             'fund_company'  => $item['JJGS'] ?? '',
             'fund_manager'  => $item['JJJL'] ?? '',
+            'custodian'     => $item['TGYH'] ?? '',
+            'management_fee'=> $item['MGREXP'] ?? '',
+            'custody_fee'   => $item['TRUSTEXP'] ?? '',
+            'benchmark'     => $item['BENCH'] ?? $item['PERFCMP'] ?? '',
+            'investment_target' => $item['INVTGT'] ?? '',
         ];
     }
 
@@ -513,5 +655,137 @@ class FundService
             'Referer'    => 'https://fund.eastmoney.com/',
             'Accept'     => 'application/json,text/plain,*/*',
         ];
+    }
+
+    private function parseRankResponse(string $body, string $selectedPeriod): ?array
+    {
+        if (!preg_match('/datas:\s*(\[[\s\S]*?\])\s*,\s*allRecords:/', $body, $matches)) {
+            return null;
+        }
+
+        $datas = json_decode($matches[1], true);
+        if (!is_array($datas)) {
+            return null;
+        }
+
+        $meta = [
+            'total' => $this->extractRankNumber($body, 'allRecords'),
+            'page' => $this->extractRankNumber($body, 'pageIndex'),
+            'page_size' => $this->extractRankNumber($body, 'pageNum'),
+            'total_pages' => $this->extractRankNumber($body, 'allPages'),
+            'category_counts' => [
+                'index' => $this->extractRankNumber($body, 'zs_count'),
+                'stock' => $this->extractRankNumber($body, 'gp_count'),
+                'mixed' => $this->extractRankNumber($body, 'hh_count'),
+                'bond' => $this->extractRankNumber($body, 'zq_count'),
+                'qdii' => $this->extractRankNumber($body, 'qdii_count'),
+                'fof' => $this->extractRankNumber($body, 'fof_count'),
+            ],
+        ];
+
+        $items = [];
+        foreach ($datas as $row) {
+            $cols = explode(',', $row);
+            $items[] = [
+                'code' => $cols[0] ?? '',
+                'name' => $cols[1] ?? '',
+                'pinyin' => $cols[2] ?? '',
+                'nav_date' => $cols[3] ?? '',
+                'nav' => $cols[4] ?? '',
+                'acc_nav' => $cols[5] ?? '',
+                'day_growth' => $cols[6] ?? '',
+                'week_growth' => $cols[7] ?? '',
+                'month_growth' => $cols[8] ?? '',
+                'quarter_growth' => $cols[9] ?? '',
+                'half_year_growth' => $cols[10] ?? '',
+                'year_growth' => $cols[11] ?? '',
+                'two_year_growth' => $cols[12] ?? '',
+                'three_year_growth' => $cols[13] ?? '',
+                'this_year_growth' => $cols[14] ?? '',
+                'since_growth' => $cols[15] ?? '',
+                'establish_date' => $cols[16] ?? '',
+                'buy_status' => $cols[17] ?? '',
+                'custom_growth' => $cols[18] ?? '',
+                'fee' => $cols[19] ?? '',
+                'discount_fee' => $cols[20] ?? '',
+                'selected_growth' => $this->rankGrowthByPeriod($cols, $selectedPeriod),
+            ];
+        }
+
+        return array_merge($meta, ['items' => $items]);
+    }
+
+    private function rankGrowthByPeriod(array $cols, string $period): string
+    {
+        $indexMap = [
+            'day' => 6,
+            'week' => 7,
+            'month' => 8,
+            'quarter' => 9,
+            'half_year' => 10,
+            'year' => 11,
+            'two_year' => 12,
+            'three_year' => 13,
+            'this_year' => 14,
+            'since' => 15,
+        ];
+        $idx = $indexMap[$period] ?? 11;
+        return $cols[$idx] ?? '';
+    }
+
+    private function extractRankNumber(string $body, string $key): int
+    {
+        if (preg_match('/' . preg_quote($key, '/') . '\s*:\s*(\d+)/', $body, $matches)) {
+            return (int)$matches[1];
+        }
+        return 0;
+    }
+
+    private function parseHistoryResponse(string $body): ?array
+    {
+        if (!preg_match('/content:\s*"([\s\S]*?)"\s*,\s*records:/', $body, $contentMatch)) {
+            return null;
+        }
+
+        $html = stripcslashes($contentMatch[1]);
+        $records = 0;
+        $pages = 0;
+        $page = 1;
+        if (preg_match('/records\s*:\s*(\d+)/', $body, $m)) $records = (int)$m[1];
+        if (preg_match('/pages\s*:\s*(\d+)/', $body, $m)) $pages = (int)$m[1];
+        if (preg_match('/curpage\s*:\s*(\d+)/', $body, $m)) $page = (int)$m[1];
+
+        preg_match_all('/<tr>(.*?)<\/tr>/is', $html, $rowMatches);
+        $items = [];
+        foreach ($rowMatches[1] as $row) {
+            preg_match_all('/<td[^>]*>(.*?)<\/td>/is', $row, $cellMatches);
+            if (count($cellMatches[1]) < 4) {
+                continue;
+            }
+            $cells = array_map([$this, 'cleanHtmlCell'], $cellMatches[1]);
+            $items[] = [
+                'date' => $cells[0] ?? '',
+                'nav' => $cells[1] ?? '',
+                'acc_nav' => $cells[2] ?? '',
+                'growth_rate' => str_replace('%', '', $cells[3] ?? ''),
+                'purchase_status' => $cells[4] ?? '',
+                'redeem_status' => $cells[5] ?? '',
+                'dividend' => $cells[6] ?? '',
+            ];
+        }
+
+        return [
+            'items' => $items,
+            'records' => $records,
+            'pages' => $pages,
+            'page' => $page,
+        ];
+    }
+
+    private function cleanHtmlCell(string $html): string
+    {
+        $text = html_entity_decode(strip_tags($html), ENT_QUOTES, 'UTF-8');
+        $text = preg_replace('/\s+/u', ' ', $text);
+        return trim($text);
     }
 }

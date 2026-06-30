@@ -427,27 +427,94 @@
         <!-- 基金分析页 -->
         <div class="tab-panel" id="panel-fund">
             <div class="fund-layout">
-                <div class="card">
-                    <div class="card-header">
-                        <h3><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-fund"></use></svg></span> 基金分析</h3>
-                        <div class="fund-controls">
-                            <input type="text" id="fund-search-input" placeholder="输入基金代码或名称搜索">
-                            <button id="fund-search-btn" class="btn-sm btn-accent">搜索</button>
+                <div class="fund-top-grid">
+                    <div class="fund-left-stack">
+                        <div class="card fund-search-card">
+                            <div class="card-header">
+                                <h3><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-search"></use></svg></span> 基金检索</h3>
+                                <div class="fund-controls">
+                                    <input type="text" id="fund-search-input" placeholder="输入基金代码或名称搜索">
+                                    <button id="fund-search-btn" class="btn-sm btn-accent">搜索</button>
+                                </div>
+                            </div>
+                            <div id="fund-loading" style="display:none;" class="loading-spinner"><div class="spinner"></div><span>搜索基金中...</span></div>
+                            <div class="fund-content">
+                                <div class="fund-search-results" id="fund-search-results"></div>
+                            </div>
+                        </div>
+
+                        <!-- 自选基金 -->
+                        <div class="card fund-watch-card">
+                            <div class="card-header">
+                                <h3><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-star"></use></svg></span> 自选基金</h3>
+                                <button id="fund-refresh-btn" class="btn-sm"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-refresh"></use></svg></span> 刷新估值</button>
+                            </div>
+                            <div class="fund-watchlist" id="fund-watchlist">
+                                <p class="placeholder-text">搜索基金后可添加到自选</p>
+                            </div>
                         </div>
                     </div>
-                    <div id="fund-loading" style="display:none;" class="loading-spinner"><div class="spinner"></div><span>搜索基金中...</span></div>
-                    <div class="fund-content">
-                        <div class="fund-search-results" id="fund-search-results"></div>
+
+                    <div class="fund-right-stack">
+                        <div class="card fund-detail-card">
+                            <div class="card-header">
+                                <h3><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-fund"></use></svg></span> 基金详情</h3>
+                                <span class="fund-detail-code" id="fund-detail-code">未选择</span>
+                            </div>
+                            <div id="fund-detail-loading" style="display:none;" class="loading-spinner"><div class="spinner"></div><span>加载基金详情...</span></div>
+                            <div class="fund-detail" id="fund-detail">
+                                <p class="placeholder-text">从搜索结果、自选或排行中打开基金详情</p>
+                            </div>
+                        </div>
                     </div>
                 </div>
-                <!-- 自选基金 -->
-                <div class="card">
+
+                <div class="card fund-rank-card">
                     <div class="card-header">
-                        <h3><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-star"></use></svg></span> 自选基金</h3>
-                        <button id="fund-refresh-btn" class="btn-sm"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-refresh"></use></svg></span> 刷新估值</button>
+                        <h3><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-table"></use></svg></span> 基金排行</h3>
+                        <div class="fund-rank-controls">
+                            <select id="fund-rank-type" aria-label="基金类型">
+                                <option value="all">全部</option>
+                                <option value="stock">股票型</option>
+                                <option value="mixed">混合型</option>
+                                <option value="bond">债券型</option>
+                                <option value="index">指数型</option>
+                                <option value="qdii">QDII</option>
+                                <option value="fof">FOF</option>
+                            </select>
+                            <select id="fund-rank-period" aria-label="排行周期">
+                                <option value="day">日涨幅</option>
+                                <option value="week">近1周</option>
+                                <option value="month">近1月</option>
+                                <option value="quarter">近3月</option>
+                                <option value="half_year">近6月</option>
+                                <option value="year" selected>近1年</option>
+                                <option value="two_year">近2年</option>
+                                <option value="three_year">近3年</option>
+                                <option value="this_year">今年来</option>
+                                <option value="since">成立来</option>
+                            </select>
+                            <button id="fund-rank-btn" class="btn-sm btn-accent">刷新</button>
+                        </div>
                     </div>
-                    <div class="fund-watchlist" id="fund-watchlist">
-                        <p class="placeholder-text">搜索基金后可添加到自选</p>
+                    <div id="fund-rank-loading" style="display:none;" class="loading-spinner"><div class="spinner"></div><span>加载基金排行...</span></div>
+                    <div class="fund-rank-summary" id="fund-rank-summary"></div>
+                    <div class="fund-rank-table-wrapper">
+                        <table id="fund-rank-table" style="display:none;">
+                            <thead>
+                                <tr>
+                                    <th>排名</th>
+                                    <th>基金</th>
+                                    <th>净值</th>
+                                    <th>日涨幅</th>
+                                    <th>周期收益</th>
+                                    <th>今年来</th>
+                                    <th>成立来</th>
+                                    <th>操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="fund-rank-data"></tbody>
+                        </table>
                     </div>
                 </div>
             </div>

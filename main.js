@@ -22,6 +22,17 @@ function escapeHTML(value) {
     }[ch]));
 }
 
+function escapeAttr(value) {
+    return escapeHTML(value).replace(/`/g, '&#96;');
+}
+
+function formatCompactSize(value) {
+    const n = Number(value) || 0;
+    if (n >= 1000000) return (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+    if (n >= 1000) return Math.round(n / 1000) + 'K';
+    return String(n);
+}
+
 function submitStockQuery(code, options = {}) {
     const codeInput = document.getElementById('code');
     const sourceInput = document.getElementById('data-source');
@@ -471,7 +482,13 @@ const APP = {
     // 查询时是否触发AI分析
     queryWithAI: false,
     // 配置
-    config: { maxQueryStocks: 50, autoRefreshInterval: 30, superQueryMaxConcurrent: 3 },
+    config: {
+        maxQueryStocks: 50,
+        autoRefreshInterval: 30,
+        superQueryMaxConcurrent: 3,
+        collapseLongUserMessages: true,
+        longUserMessageThreshold: 4000
+    },
     // AI 顾问面板状态
     advisorOpen: false,
     advisorExpanded: false,
@@ -1366,6 +1383,41 @@ const SectorModule = {
 // 基金模块
 // ============================================================
 const FundModule = {
+    selectedFund: null,
+    rankItems: [],
+    rankMeta: {},
+    currentRankType: 'all',
+    currentRankPeriod: 'year',
+    aiContextLimit: 255000,
+    aiHistoryTargetRows: 240,
+    rankPeriodLabels: {
+        day: '日涨幅',
+        week: '近1周',
+        month: '近1月',
+        quarter: '近3月',
+        half_year: '近6月',
+        year: '近1年',
+        two_year: '近2年',
+        three_year: '近3年',
+        this_year: '今年来',
+        since: '成立来'
+    },
+
+    init() {
+        const panel = document.getElementById('panel-fund');
+        panel?.addEventListener('click', (e) => {
+            const btn = e.target.closest('[data-fund-action]');
+            if (!btn) return;
+            const action = btn.dataset.fundAction;
+            const code = btn.dataset.code || '';
+            const name = btn.dataset.name || '';
+            if (action === 'watch') this.addToWatchlist(code, name);
+            if (action === 'detail') this.openDetail(code, name);
+            if (action === 'remove') this.removeFromWatchlist(code);
+            if (action === 'ai') this.analyzeSelectedFund(btn);
+        });
+    },
+
     async search() {
         const keyword = document.getElementById('fund-search-input').value.trim();
         if (!keyword) return;
@@ -1378,9 +1430,12 @@ const FundModule = {
             loading.style.display = 'none';
             if (data.success) {
                 this.renderSearchResults(data.data);
+            } else {
+                document.getElementById('fund-search-results').innerHTML = `<div class="error-msg">${escapeHTML(data.message || '搜索基金失败')}</div>`;
             }
         } catch(e) {
             loading.style.display = 'none';
+            document.getElementById('fund-search-results').innerHTML = '<div class="error-msg">搜索基金失败，请稍后重试</div>';
             console.error('搜索基金失败:', e);
         }
     },
@@ -1394,15 +1449,25 @@ const FundModule = {
         let html = '';
         funds.forEach(f => {
             const inWl = APP.fundWatchlist.some(w => w.code === f.code);
+            const code = escapeAttr(f.code || '');
+            const name = escapeAttr(f.name || '');
             html += `
                 <div class="fund-card">
-                    <div class="fc-name">${f.name}</div>
-                    <div class="fc-code">${f.code}</div>
-                    <span class="fc-type">${f.type || '-'}</span>
-                    <div class="fc-nav">${f.nav || '-'}</div>
-                    <div class="fc-meta">${f.company || ''} · ${f.manager || ''}</div>
+                    <div class="fc-title-row">
+                        <div>
+                            <div class="fc-name">${escapeHTML(f.name || '-')}</div>
+                            <div class="fc-code">${escapeHTML(f.code || '')}</div>
+                        </div>
+                        <span class="fc-type">${escapeHTML(f.type || f.category || '-')}</span>
+                    </div>
+                    <div class="fc-metrics">
+                        <span><b>${escapeHTML(f.nav || '-')}</b><small>单位净值</small></span>
+                        <span class="${colorClass(f.nav_chg_rate)}"><b>${formatPct(f.nav_chg_rate)}</b><small>${escapeHTML(f.nav_date || '-')}</small></span>
+                    </div>
+                    <div class="fc-meta">${escapeHTML(f.company || '')}${f.company && f.manager ? ' · ' : ''}${escapeHTML(f.manager || '')}</div>
                     <div class="fc-actions">
-                        <button class="btn-sm ${inWl ? '' : 'btn-star'}" onclick="FundModule.addToWatchlist('${f.code}','${f.name}')">
+                        <button class="btn-sm" data-fund-action="detail" data-code="${code}" data-name="${name}">${Icons.table} 详情</button>
+                        <button class="btn-sm ${inWl ? '' : 'btn-star'}" data-fund-action="watch" data-code="${code}" data-name="${name}" ${inWl ? 'disabled' : ''}>
                             ${inWl ? '已添加' : `${Icons.star} 加自选`}
                         </button>
                     </div>
@@ -1416,6 +1481,7 @@ const FundModule = {
     },
 
     addToWatchlist(code, name) {
+        if (!/^\d{6}$/.test(code)) return;
         if (APP.fundWatchlist.some(w => w.code === code)) return;
         APP.fundWatchlist.push({ code, name });
         localStorage.setItem('fa_fund_watchlist', JSON.stringify(APP.fundWatchlist));
@@ -1451,28 +1517,591 @@ const FundModule = {
             }
         } catch(e) {}
 
-        let html = '';
+        const estimateList = APP.fundWatchlist.map(f => estimates[f.code]).filter(Boolean);
+        const avg = estimateList.length ? estimateList.reduce((sum, item) => sum + (parseFloat(item.gszzl) || 0), 0) / estimateList.length : NaN;
+        const upCount = estimateList.filter(item => parseFloat(item.gszzl) > 0).length;
+        const downCount = estimateList.filter(item => parseFloat(item.gszzl) < 0).length;
+
+        let html = `
+            <div class="fund-watchlist-summary">
+                <span><b>${APP.fundWatchlist.length}</b><small>自选</small></span>
+                <span><b class="${colorClass(avg)}">${formatPct(avg)}</b><small>平均估值</small></span>
+                <span><b class="up">${upCount}</b><small>上涨</small></span>
+                <span><b class="down">${downCount}</b><small>下跌</small></span>
+            </div>
+        `;
         for (const f of APP.fundWatchlist) {
             const estimate = estimates[f.code] || null;
             const pctClass = estimate ? colorClass(parseFloat(estimate.gszzl)) : '';
+            const code = escapeAttr(f.code || '');
+            const name = escapeAttr(f.name || estimate?.name || '');
             html += `
                 <div class="fund-wl-item">
-                    <div class="fund-wl-info">
-                        <div class="fund-wl-name">${f.name}</div>
-                        <div class="fund-wl-code">${f.code}</div>
+                    <div class="fund-wl-info" data-fund-action="detail" data-code="${code}" data-name="${name}">
+                        <div class="fund-wl-name">${escapeHTML(f.name || estimate?.name || '-')}</div>
+                        <div class="fund-wl-code">${escapeHTML(f.code || '')}</div>
                     </div>
                     <div class="fund-wl-estimate">
                         ${estimate ? `
-                            <div class="fund-wl-gsz">${estimate.gsz}</div>
+                            <div class="fund-wl-gsz">${escapeHTML(estimate.gsz || '-')}</div>
                             <div class="fund-wl-gszzl ${pctClass}">${formatPct(parseFloat(estimate.gszzl))}</div>
-                            <div class="fund-wl-time">${estimate.gztime}</div>
+                            <div class="fund-wl-time">${escapeHTML(estimate.gztime || '')}</div>
                         ` : '<span style="color:var(--text-muted)">暂无估值</span>'}
                     </div>
-                    <button class="fund-wl-remove" onclick="FundModule.removeFromWatchlist('${f.code}')" title="删除" aria-label="删除">${Icons.close}</button>
+                    <button class="fund-wl-remove" data-fund-action="remove" data-code="${code}" title="删除" aria-label="删除">${Icons.close}</button>
                 </div>
             `;
         }
         container.innerHTML = html;
+    },
+
+    async loadRank() {
+        const type = document.getElementById('fund-rank-type')?.value || 'all';
+        const period = document.getElementById('fund-rank-period')?.value || 'year';
+        const loading = document.getElementById('fund-rank-loading');
+        const table = document.getElementById('fund-rank-table');
+        const tbody = document.getElementById('fund-rank-data');
+        const summary = document.getElementById('fund-rank-summary');
+        if (loading) loading.style.display = 'flex';
+
+        try {
+            const resp = await fetch(`fund_rank_api.php?type=${encodeURIComponent(type)}&period=${encodeURIComponent(period)}&page=1&page_size=30`);
+            const data = await resp.json();
+            if (loading) loading.style.display = 'none';
+            if (!data.success) {
+                summary.innerHTML = `<div class="error-msg">${escapeHTML(data.message || '获取基金排行失败')}</div>`;
+                table.style.display = 'none';
+                return;
+            }
+            this.renderRank(data.data || [], data.meta || {}, period);
+        } catch (e) {
+            if (loading) loading.style.display = 'none';
+            summary.innerHTML = '<div class="error-msg">获取基金排行失败，请稍后重试</div>';
+            table.style.display = 'none';
+            console.error('获取基金排行失败:', e);
+        }
+    },
+
+    renderRank(funds, meta, period) {
+        const table = document.getElementById('fund-rank-table');
+        const tbody = document.getElementById('fund-rank-data');
+        const summary = document.getElementById('fund-rank-summary');
+        const label = this.rankPeriodLabels[period] || '周期收益';
+        this.rankItems = Array.isArray(funds) ? funds : [];
+        this.rankMeta = meta || {};
+        this.currentRankType = document.getElementById('fund-rank-type')?.value || 'all';
+        this.currentRankPeriod = period;
+        summary.innerHTML = `
+            <span>${label}</span>
+            <span>共 ${meta.total || funds.length} 只</span>
+            <span>更新时间 ${new Date().toLocaleTimeString()}</span>
+        `;
+        tbody.innerHTML = '';
+        funds.forEach((f, index) => {
+            const inWl = APP.fundWatchlist.some(w => w.code === f.code);
+            const tr = document.createElement('tr');
+            tr.innerHTML = `
+                <td>${index + 1}</td>
+                <td>
+                    <button class="fund-link-btn" data-fund-action="detail" data-code="${escapeAttr(f.code)}" data-name="${escapeAttr(f.name)}">
+                        <span>${escapeHTML(f.name || '-')}</span>
+                        <small>${escapeHTML(f.code || '')}</small>
+                    </button>
+                </td>
+                <td>${escapeHTML(f.nav || '-')}<small>${escapeHTML(f.nav_date || '')}</small></td>
+                <td class="${colorClass(f.day_growth)}">${formatPct(f.day_growth)}</td>
+                <td class="${colorClass(f.selected_growth)}">${formatPct(f.selected_growth)}</td>
+                <td class="${colorClass(f.this_year_growth)}">${formatPct(f.this_year_growth)}</td>
+                <td class="${colorClass(f.since_growth)}">${formatPct(f.since_growth)}</td>
+                <td>
+                    <button class="btn-sm ${inWl ? '' : 'btn-star'}" data-fund-action="watch" data-code="${escapeAttr(f.code)}" data-name="${escapeAttr(f.name)}" ${inWl ? 'disabled' : ''}>${inWl ? '已添加' : '加自选'}</button>
+                </td>
+            `;
+            tbody.appendChild(tr);
+        });
+        table.style.display = 'table';
+    },
+
+    async openDetail(code, name = '') {
+        if (!/^\d{6}$/.test(code)) return;
+        const loading = document.getElementById('fund-detail-loading');
+        const box = document.getElementById('fund-detail');
+        const codeTag = document.getElementById('fund-detail-code');
+        codeTag.textContent = code;
+        loading.style.display = 'flex';
+        box.innerHTML = '';
+
+        try {
+            const [infoResp, historyResp, estimateResp] = await Promise.all([
+                fetch(`fund_info_api.php?codes=${encodeURIComponent(code)}`),
+                fetch(`fund_history_api.php?code=${encodeURIComponent(code)}&page=1&page_size=40`),
+                fetch(`fund_estimate_api.php?code=${encodeURIComponent(code)}`)
+            ]);
+            const [infoData, historyData, estimateData] = await Promise.all([
+                infoResp.json(),
+                historyResp.json(),
+                estimateResp.json()
+            ]);
+            loading.style.display = 'none';
+            if (!infoData.success && !historyData.success) {
+                box.innerHTML = `<div class="error-msg">${escapeHTML(infoData.message || historyData.message || '加载基金详情失败')}</div>`;
+                return;
+            }
+            const fund = (infoData.data && infoData.data[0]) || { code, name };
+            this.selectedFund = {
+                fund,
+                history: historyData.success ? historyData.data : [],
+                estimate: estimateData.success ? estimateData.data : null
+            };
+            this.renderDetail(this.selectedFund);
+        } catch (e) {
+            loading.style.display = 'none';
+            box.innerHTML = '<div class="error-msg">加载基金详情失败，请稍后重试</div>';
+            console.error('加载基金详情失败:', e);
+        }
+    },
+
+    renderDetail(payload) {
+        const { fund, history, estimate } = payload;
+        const box = document.getElementById('fund-detail');
+        const latest = history?.[0] || {};
+        const scale = parseFloat(fund.scale);
+        const scaleText = isNaN(scale) ? '-' : (scale / 1e8).toFixed(2) + '亿';
+        const spark = this.renderHistorySparkline(history || []);
+        const rows = (history || []).slice(0, 12).map(item => `
+            <tr>
+                <td>${escapeHTML(item.date || '')}</td>
+                <td>${escapeHTML(item.nav || '-')}</td>
+                <td>${escapeHTML(item.acc_nav || '-')}</td>
+                <td class="${colorClass(item.growth_rate)}">${formatPct(item.growth_rate)}</td>
+                <td>${escapeHTML(item.purchase_status || '-')}</td>
+                <td>${escapeHTML(item.redeem_status || '-')}</td>
+            </tr>
+        `).join('');
+
+        box.innerHTML = `
+            <div class="fund-detail-head">
+                <div>
+                    <h4>${escapeHTML(fund.name || estimate?.name || '-')}</h4>
+                    <p>${escapeHTML(fund.full_name || fund.code || '')}</p>
+                </div>
+                <div class="fund-detail-actions">
+                    <button class="btn-sm btn-star" data-fund-action="watch" data-code="${escapeAttr(fund.code)}" data-name="${escapeAttr(fund.name || estimate?.name || '')}">${Icons.star} 加自选</button>
+                    <button class="btn-sm btn-accent" data-fund-action="ai">${Icons.chart} AI分析</button>
+                </div>
+            </div>
+            <div class="fund-metric-grid">
+                <div><span>单位净值</span><b>${escapeHTML(latest.nav || fund.nav || estimate?.dwjz || '-')}</b><small>${escapeHTML(latest.date || fund.nav_date || estimate?.jzrq || '')}</small></div>
+                <div><span>估算净值</span><b>${escapeHTML(estimate?.gsz || '-')}</b><small>${escapeHTML(estimate?.gztime || '盘中估值')}</small></div>
+                <div><span>估算涨幅</span><b class="${colorClass(estimate?.gszzl)}">${formatPct(estimate?.gszzl)}</b><small>实时</small></div>
+                <div><span>最新日涨幅</span><b class="${colorClass(latest.growth_rate || fund.nav_chg_rate)}">${formatPct(latest.growth_rate || fund.nav_chg_rate)}</b><small>净值</small></div>
+                <div><span>基金类型</span><b>${escapeHTML(fund.type || '-')}</b><small>风险 ${escapeHTML(fund.risk_level || '-')}</small></div>
+                <div><span>基金规模</span><b>${scaleText}</b><small>${escapeHTML(fund.scale_date || '')}</small></div>
+            </div>
+            <div class="fund-profile-grid">
+                <div><span>基金公司</span><b>${escapeHTML(fund.fund_company || '-')}</b></div>
+                <div><span>基金经理</span><b>${escapeHTML(fund.fund_manager || '-')}</b></div>
+                <div><span>托管银行</span><b>${escapeHTML(fund.custodian || '-')}</b></div>
+                <div><span>成立日期</span><b>${escapeHTML(fund.establish_date || '-')}</b></div>
+                <div><span>管理费</span><b>${escapeHTML(fund.management_fee || '-')}</b></div>
+                <div><span>托管费</span><b>${escapeHTML(fund.custody_fee || '-')}</b></div>
+            </div>
+            ${fund.benchmark ? `<div class="fund-benchmark"><span>业绩比较基准</span><p>${escapeHTML(fund.benchmark)}</p></div>` : ''}
+            ${spark}
+            <div class="fund-history-table-wrapper">
+                <table class="fund-history-table">
+                    <thead><tr><th>日期</th><th>单位净值</th><th>累计净值</th><th>日增长率</th><th>申购</th><th>赎回</th></tr></thead>
+                    <tbody>${rows || '<tr><td colspan="6">暂无历史净值</td></tr>'}</tbody>
+                </table>
+            </div>
+        `;
+    },
+
+    renderHistorySparkline(history) {
+        const rows = history.slice(0, 30).reverse();
+        const values = rows.map(item => parseFloat(item.nav)).filter(v => !isNaN(v));
+        if (values.length < 2) return '';
+        const min = Math.min(...values);
+        const max = Math.max(...values);
+        const range = max - min || 1;
+        const bars = rows.map(item => {
+            const nav = parseFloat(item.nav);
+            const h = isNaN(nav) ? 4 : Math.max(8, Math.round(((nav - min) / range) * 54) + 6);
+            return `<span style="height:${h}px" title="${escapeAttr(item.date)} ${escapeAttr(item.nav)}"></span>`;
+        }).join('');
+        return `<div class="fund-history-spark"><div class="fund-history-spark-head"><span>近30条净值走势</span><small>${min.toFixed(4)} - ${max.toFixed(4)}</small></div><div class="fund-history-bars">${bars}</div></div>`;
+    },
+
+    async analyzeSelectedFund(triggerBtn = null) {
+        if (!this.selectedFund || typeof AdvisorModule === 'undefined') return;
+        const originalText = triggerBtn?.innerHTML || '';
+        if (triggerBtn) {
+            triggerBtn.disabled = true;
+            triggerBtn.innerHTML = `${Icons.chart} 整理资料...`;
+        }
+
+        try {
+            const payload = await this.collectFundAIContext(this.selectedFund);
+            const prompt = this.buildFundAIContextPrompt(payload);
+            APP.advisorContext.source = '基金深度分析';
+            APP.advisorContext.stock = `${payload.fund.name || ''} (${payload.fund.code || ''})`;
+            AdvisorModule.autoSend(prompt);
+        } catch (e) {
+            console.error('构建基金AI上下文失败:', e);
+            alert('整理基金分析资料失败，请稍后重试');
+        } finally {
+            if (triggerBtn) {
+                triggerBtn.disabled = false;
+                triggerBtn.innerHTML = originalText;
+            }
+        }
+    },
+
+    async collectFundAIContext(basePayload) {
+        const fund = basePayload.fund || {};
+        const code = fund.code;
+        const fundRankType = this.typeToRankType(fund.type);
+        const watchCodes = APP.fundWatchlist.map(item => item.code).filter(code => /^\d{6}$/.test(code));
+
+        const tasks = [
+            this.fetchFundHistoryForAI(code, this.aiHistoryTargetRows),
+            this.fetchJson(`fund_estimate_api.php?code=${encodeURIComponent(code)}`),
+            this.fetchJson(`fund_rank_api.php?type=${encodeURIComponent(fundRankType)}&period=year&page=1&page_size=100`),
+            this.fetchJson(`fund_rank_api.php?type=${encodeURIComponent(fundRankType)}&period=quarter&page=1&page_size=100`)
+        ];
+
+        if (watchCodes.length > 0) {
+            tasks.push(this.fetchJson(`fund_estimate_api.php?codes=${encodeURIComponent(watchCodes.join(','))}`));
+        }
+
+        const [historyData, estimateData, sameTypeYearRank, sameTypeQuarterRank, watchEstimateData] = await Promise.all(tasks);
+        const history = historyData?.success ? historyData.data : (basePayload.history || []);
+        const estimate = estimateData?.success ? estimateData.data : basePayload.estimate;
+        const stats = this.calculateHistoryStats(history);
+
+        return {
+            fund,
+            estimate,
+            history,
+            stats,
+            historyMeta: historyData?.meta || {},
+            visibleRank: {
+                type: this.currentRankType,
+                period: this.currentRankPeriod,
+                meta: this.rankMeta,
+                items: this.rankItems
+            },
+            sameTypeYearRank: sameTypeYearRank?.success ? sameTypeYearRank : null,
+            sameTypeQuarterRank: sameTypeQuarterRank?.success ? sameTypeQuarterRank : null,
+            watchlist: APP.fundWatchlist.slice(),
+            watchEstimates: watchEstimateData?.success ? (watchEstimateData.data || []) : []
+        };
+    },
+
+    async fetchJson(url) {
+        const resp = await fetch(url);
+        return await resp.json();
+    },
+
+    async fetchFundHistoryForAI(code, targetRows = 160) {
+        const pageSize = 20; // 上游常见实际返回上限约 20 行，分页更稳。
+        const maxPages = Math.ceil(targetRows / pageSize);
+        const rows = [];
+        const seen = new Set();
+        const meta = { target_rows: targetRows, page_size: pageSize, fetched_pages: 0, records: 0, pages: 0 };
+
+        for (let page = 1; page <= maxPages; page++) {
+            const data = await this.fetchJson(`fund_history_api.php?code=${encodeURIComponent(code)}&page=${page}&page_size=${pageSize}`);
+            if (!data?.success || !Array.isArray(data.data) || data.data.length === 0) {
+                break;
+            }
+            meta.fetched_pages = page;
+            meta.records = data.meta?.records || meta.records;
+            meta.pages = data.meta?.pages || meta.pages;
+            for (const item of data.data) {
+                const key = item.date || JSON.stringify(item);
+                if (!seen.has(key)) {
+                    seen.add(key);
+                    rows.push(item);
+                }
+            }
+            if (rows.length >= targetRows || data.data.length < pageSize) {
+                break;
+            }
+        }
+
+        return { success: rows.length > 0, data: rows.slice(0, targetRows), meta };
+    },
+
+    typeToRankType(type = '') {
+        if (type.includes('股票')) return 'stock';
+        if (type.includes('混合')) return 'mixed';
+        if (type.includes('债')) return 'bond';
+        if (type.includes('指数')) return 'index';
+        if (/QDII/i.test(type)) return 'qdii';
+        if (/FOF/i.test(type)) return 'fof';
+        return 'all';
+    },
+
+    calculateHistoryStats(history = []) {
+        const rows = history
+            .map(item => ({
+                date: item.date || '',
+                nav: parseFloat(item.nav),
+                accNav: parseFloat(item.acc_nav),
+                growth: parseFloat(item.growth_rate),
+                purchase: item.purchase_status || '',
+                redeem: item.redeem_status || ''
+            }))
+            .filter(item => !isNaN(item.nav));
+
+        const chronological = rows.slice().reverse();
+        const growthRows = rows.filter(item => !isNaN(item.growth));
+        const growths = growthRows.map(item => item.growth);
+        const sum = growths.reduce((a, b) => a + b, 0);
+        const avg = growths.length ? sum / growths.length : NaN;
+        const variance = growths.length ? growths.reduce((acc, v) => acc + Math.pow(v - avg, 2), 0) / growths.length : NaN;
+        const dailyVol = isNaN(variance) ? NaN : Math.sqrt(variance);
+        const annualizedVol = isNaN(dailyVol) ? NaN : dailyVol * Math.sqrt(252);
+        const positives = growths.filter(v => v > 0).length;
+        const negatives = growths.filter(v => v < 0).length;
+        const flats = growths.filter(v => v === 0).length;
+        const latest = rows[0] || null;
+        const oldest = rows[rows.length - 1] || null;
+        const sampleReturn = latest && oldest && oldest.nav ? (latest.nav / oldest.nav - 1) * 100 : NaN;
+        const best = growthRows.reduce((best, item) => (!best || item.growth > best.growth ? item : best), null);
+        const worst = growthRows.reduce((worst, item) => (!worst || item.growth < worst.growth ? item : worst), null);
+
+        let peak = -Infinity;
+        let peakDate = '';
+        let maxDrawdown = 0;
+        let troughDate = '';
+        chronological.forEach(item => {
+            if (item.nav > peak) {
+                peak = item.nav;
+                peakDate = item.date;
+            }
+            if (peak > 0) {
+                const dd = (item.nav / peak - 1) * 100;
+                if (dd < maxDrawdown) {
+                    maxDrawdown = dd;
+                    troughDate = item.date;
+                }
+            }
+        });
+
+        const purchaseCounts = {};
+        const redeemCounts = {};
+        rows.forEach(item => {
+            if (item.purchase) purchaseCounts[item.purchase] = (purchaseCounts[item.purchase] || 0) + 1;
+            if (item.redeem) redeemCounts[item.redeem] = (redeemCounts[item.redeem] || 0) + 1;
+        });
+
+        return {
+            count: rows.length,
+            dateRange: latest && oldest ? `${oldest.date} 至 ${latest.date}` : '',
+            latestNav: latest?.nav,
+            oldestNav: oldest?.nav,
+            sampleReturn,
+            avgDailyGrowth: avg,
+            dailyVol,
+            annualizedVol,
+            winRate: growths.length ? positives / growths.length * 100 : NaN,
+            positives,
+            negatives,
+            flats,
+            best,
+            worst,
+            maxDrawdown,
+            peakDate,
+            troughDate,
+            purchaseCounts,
+            redeemCounts,
+            latestPurchase: latest?.purchase || '',
+            latestRedeem: latest?.redeem || ''
+        };
+    },
+
+    buildFundAIContextPrompt(payload) {
+        const cap = Math.min(this.aiContextLimit || 255000, APP.aiContextLimit || AI_CONTEXT_LIMIT);
+        const fund = payload.fund || {};
+        const estimate = payload.estimate || {};
+        const stats = payload.stats || {};
+        const scale = parseFloat(fund.scale);
+        const scaleText = isNaN(scale) ? (fund.scale || '-') : `${(scale / 1e8).toFixed(2)}亿元`;
+        const line = (label, value) => `${label}: ${value === undefined || value === null || value === '' ? '-' : value}`;
+        const fmt = (value, digits = 2) => {
+            const n = parseFloat(value);
+            return isNaN(n) ? '-' : n.toFixed(digits);
+        };
+        const pct = value => {
+            const n = parseFloat(value);
+            return isNaN(n) ? '-' : `${n >= 0 ? '+' : ''}${n.toFixed(2)}%`;
+        };
+        const countsToText = obj => {
+            const entries = Object.entries(obj || {});
+            return entries.length ? entries.map(([k, v]) => `${k}:${v}`).join('；') : '-';
+        };
+        const rankPeriodLabel = this.rankPeriodLabels[this.currentRankPeriod] || this.currentRankPeriod;
+        const historyRows = payload.history || [];
+        const visibleRankItems = payload.visibleRank?.items || [];
+        const sameYearItems = payload.sameTypeYearRank?.data || [];
+        const sameQuarterItems = payload.sameTypeQuarterRank?.data || [];
+        const watchEstimates = payload.watchEstimates || [];
+
+        const sections = [];
+        const add = (title, body) => {
+            if (!body) return;
+            sections.push(`\n## ${title}\n${body.trim()}\n`);
+        };
+
+        add('分析任务', [
+            '请基于下面尽可能完整的基金资料，做一次偏投研风格的基金分析。',
+            '要求输出：1. 结论摘要；2. 收益与波动特征；3. 回撤和极端波动；4. 基金类型/策略/基准适配度；5. 经理、公司、规模、费率与申赎状态影响；6. 同类基金对照；7. 适合/不适合的投资者画像；8. 后续跟踪指标；9. 数据局限。',
+            '不要只根据最近几天涨跌下结论；请区分事实、推断和不确定性。本系统仅供研究娱乐，不构成投资建议。'
+        ].join('\n'));
+
+        add('基金基础信息', [
+            line('基金名称', `${fund.name || '-'} (${fund.code || '-'})`),
+            line('基金全称', fund.full_name),
+            line('基金类型', fund.type),
+            line('风险等级', fund.risk_level),
+            line('成立日期', fund.establish_date),
+            line('基金公司', fund.fund_company),
+            line('基金经理', fund.fund_manager),
+            line('托管银行', fund.custodian),
+            line('基金规模', `${scaleText}，规模日期 ${fund.scale_date || '-'}`),
+            line('管理费', fund.management_fee),
+            line('托管费', fund.custody_fee),
+            line('最低申购', fund.min_purchase),
+            line('是否支持购买', fund.is_buy ? '是' : '否或未知')
+        ].join('\n'));
+
+        add('最新净值与估值', [
+            line('净值日期', fund.nav_date || estimate.jzrq),
+            line('单位净值', fund.nav || estimate.dwjz),
+            line('累计净值', fund.acc_nav),
+            line('最新日涨幅', pct(fund.nav_chg_rate)),
+            line('估算净值', estimate.gsz),
+            line('估算涨幅', pct(estimate.gszzl)),
+            line('估值时间', estimate.gztime),
+            line('估值基金名', estimate.name)
+        ].join('\n'));
+
+        add('量化统计摘要', [
+            line('样本条数', stats.count),
+            line('样本区间', stats.dateRange),
+            line('样本期累计收益', pct(stats.sampleReturn)),
+            line('样本期平均日增长率', pct(stats.avgDailyGrowth)),
+            line('样本期日波动率', pct(stats.dailyVol)),
+            line('估算年化波动率', pct(stats.annualizedVol)),
+            line('上涨/下跌/持平天数', `${stats.positives || 0}/${stats.negatives || 0}/${stats.flats || 0}`),
+            line('胜率', pct(stats.winRate)),
+            line('样本最大回撤', `${pct(stats.maxDrawdown)}，峰值日期 ${stats.peakDate || '-'}，低点日期 ${stats.troughDate || '-'}`),
+            line('最大单日上涨', stats.best ? `${stats.best.date} ${pct(stats.best.growth)} NAV=${fmt(stats.best.nav, 4)}` : '-'),
+            line('最大单日下跌', stats.worst ? `${stats.worst.date} ${pct(stats.worst.growth)} NAV=${fmt(stats.worst.nav, 4)}` : '-'),
+            line('申购状态分布', countsToText(stats.purchaseCounts)),
+            line('赎回状态分布', countsToText(stats.redeemCounts)),
+            line('最新申购/赎回', `${stats.latestPurchase || '-'} / ${stats.latestRedeem || '-'}`)
+        ].join('\n'));
+
+        add('业绩比较基准与投资目标', [
+            line('业绩比较基准', fund.benchmark),
+            line('投资目标', fund.investment_target)
+        ].join('\n'));
+
+        add(`历史净值明细 目标${payload.historyMeta?.target_rows || historyRows.length}条`, [
+            `目标至少半年数据；本次实际取得 ${historyRows.length} 条，分页 ${payload.historyMeta?.fetched_pages || '-'} 页，接口记录数 ${payload.historyMeta?.records || '-'}`,
+            '日期,单位净值,累计净值,日增长率,申购状态,赎回状态,分红送配',
+            ...historyRows.map(item => [
+                item.date || '',
+                item.nav || '',
+                item.acc_nav || '',
+                pct(item.growth_rate),
+                item.purchase_status || '',
+                item.redeem_status || '',
+                item.dividend || ''
+            ].join(','))
+        ].join('\n'));
+
+        add(`当前页面基金排行快照 ${rankPeriodLabel}`, [
+            `类型=${payload.visibleRank?.type || '-'} 周期=${payload.visibleRank?.period || '-'} 总数=${payload.visibleRank?.meta?.total || '-'}`,
+            '名次,代码,名称,净值日期,单位净值,日涨幅,周期收益,今年来,成立来',
+            ...visibleRankItems.slice(0, 30).map((item, index) => [
+                index + 1,
+                item.code || '',
+                item.name || '',
+                item.nav_date || '',
+                item.nav || '',
+                pct(item.day_growth),
+                pct(item.selected_growth),
+                pct(item.this_year_growth),
+                pct(item.since_growth)
+            ].join(','))
+        ].join('\n'));
+
+        add(`同类基金近1年排行样本 ${fund.type || ''}`, [
+            `总数=${payload.sameTypeYearRank?.meta?.total || '-'}；当前基金不一定在Top100内，主要用于观察同类强势样本和收益分布。`,
+            '名次,代码,名称,净值日期,单位净值,日涨幅,近1年,今年来,成立来,成立日期',
+            ...sameYearItems.slice(0, 100).map((item, index) => [
+                index + 1,
+                item.code || '',
+                item.name || '',
+                item.nav_date || '',
+                item.nav || '',
+                pct(item.day_growth),
+                pct(item.year_growth),
+                pct(item.this_year_growth),
+                pct(item.since_growth),
+                item.establish_date || ''
+            ].join(','))
+        ].join('\n'));
+
+        add(`同类基金近3月排行样本 ${fund.type || ''}`, [
+            `总数=${payload.sameTypeQuarterRank?.meta?.total || '-'}；用于观察近期风格强弱和短期动量。`,
+            '名次,代码,名称,净值日期,单位净值,日涨幅,近1月,近3月,近6月,今年来',
+            ...sameQuarterItems.slice(0, 100).map((item, index) => [
+                index + 1,
+                item.code || '',
+                item.name || '',
+                item.nav_date || '',
+                item.nav || '',
+                pct(item.day_growth),
+                pct(item.month_growth),
+                pct(item.quarter_growth),
+                pct(item.half_year_growth),
+                pct(item.this_year_growth)
+            ].join(','))
+        ].join('\n'));
+
+        add('自选基金估值横向对照', [
+            '代码,名称,净值日期,单位净值,估算净值,估算涨幅,估值时间',
+            ...watchEstimates.filter(Boolean).map(item => [
+                item.fundcode || '',
+                item.name || '',
+                item.jzrq || '',
+                item.dwjz || '',
+                item.gsz || '',
+                pct(item.gszzl),
+                item.gztime || ''
+            ].join(','))
+        ].join('\n'));
+
+        let prompt = '';
+        for (const section of sections) {
+            if (prompt.length + section.length <= cap) {
+                prompt += section;
+            } else {
+                const remaining = cap - prompt.length - 120;
+                if (remaining > 500) {
+                    prompt += section.slice(0, remaining) + '\n...[因上下文上限截断，以上为优先保留的主要资料]\n';
+                }
+                break;
+            }
+        }
+
+        prompt += `\n## 上下文规模\n本次基金资料包约 ${prompt.length} 字符，上限 ${cap} 字符。请尽量利用所有资料做全面分析。\n`;
+        return prompt.slice(0, cap);
     }
 };
 
@@ -2084,6 +2713,36 @@ const AIModule = {
             contentDiv.classList.add('content');
             contentDiv.textContent = content;
             div.appendChild(contentDiv);
+
+            const shouldCollapse = APP.config?.collapseLongUserMessages !== false
+                && String(content || '').length > (APP.config?.longUserMessageThreshold || 4000);
+            if (shouldCollapse) {
+                div.classList.add('long-user-message', 'collapsed');
+
+                const tools = document.createElement('div');
+                tools.classList.add('message-collapse-tools');
+
+                const meta = document.createElement('span');
+                meta.textContent = `已折叠长消息 · ${formatCompactSize(String(content || '').length)} 字符`;
+
+                const toggle = document.createElement('button');
+                toggle.type = 'button';
+                toggle.className = 'message-collapse-toggle';
+                toggle.textContent = '展开全文';
+                toggle.addEventListener('click', () => {
+                    const expanded = div.classList.toggle('expanded');
+                    div.classList.toggle('collapsed', !expanded);
+                    toggle.textContent = expanded ? '收起全文' : '展开全文';
+                    const scrollContainer = div.closest('.chat-messages, .advisor-messages');
+                    if (expanded && scrollContainer) {
+                        div.scrollIntoView({ block: 'nearest' });
+                    }
+                });
+
+                tools.appendChild(meta);
+                tools.appendChild(toggle);
+                div.appendChild(tools);
+            }
         } else {
             if (reasoningContent) {
                 const rd = document.createElement('div');
@@ -3115,12 +3774,17 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('xq-fundx-btn')?.addEventListener('click', () => XueqiuModule.fetchFundx());
 
     // === 基金分析 ===
+    FundModule.init();
     document.getElementById('fund-search-btn')?.addEventListener('click', () => FundModule.search());
     document.getElementById('fund-search-input')?.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') { e.preventDefault(); FundModule.search(); }
     });
     document.getElementById('fund-refresh-btn')?.addEventListener('click', () => FundModule.renderWatchlist());
+    document.getElementById('fund-rank-btn')?.addEventListener('click', () => FundModule.loadRank());
+    document.getElementById('fund-rank-type')?.addEventListener('change', () => FundModule.loadRank());
+    document.getElementById('fund-rank-period')?.addEventListener('change', () => FundModule.loadRank());
     FundModule.renderWatchlist();
+    FundModule.loadRank();
 
     // === AI聊天 ===
     document.getElementById('send-button')?.addEventListener('click', sendMessage);
