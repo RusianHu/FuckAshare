@@ -100,6 +100,7 @@ return [
         'stock_flow'     => 30,     // ✅ 个股资金流向；默认 30s
         'sector_flow'    => 60,     // ✅ 板块资金流向；默认 60s
         'hot_stocks'     => 30,     // ✅ 热门股票资金榜；默认 30s
+        'market_breadth' => 20,     // ✅ 市场宽度/涨跌家数/近似涨跌停统计；默认 20s
 
         // ── FundService（基金）──
         'estimate'       => 10,     // ✅ 基金实时估值（盘中短缓存）；默认 10s

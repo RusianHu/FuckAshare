@@ -67,6 +67,59 @@ class FakeMarketDataService extends MarketDataService
         }
         return DataSourceResult::success('fake', 'kline', $rows);
     }
+    public function marketBreadth(string $scope = 'a_share', bool $includeLimitStats = true, bool $includeIndexQuotes = true): DataSourceResult
+    {
+        return DataSourceResult::success('fake', 'market_breadth', [
+            'scope' => $scope,
+            'generated_at' => '2026-01-01T00:00:00+00:00',
+            'indices' => $includeIndexQuotes ? [[
+                'code' => '000001',
+                'market' => 'SH',
+                'name' => '上证指数',
+                'price' => 3000.0,
+                'change_pct' => 1.0,
+                'up_count' => 900,
+                'down_count' => 300,
+                'flat_count' => 50,
+                'total_count' => 1250,
+                'advance_decline_ratio' => 3.0,
+            ]] : [],
+            'aggregate' => [
+                'method' => 'full_a_share_scan',
+                'up_count' => 3000,
+                'down_count' => 1800,
+                'flat_count' => 100,
+                'unknown_count' => 10,
+                'tradable_count' => 4900,
+                'total_count' => 4910,
+                'up_ratio_pct' => 61.22,
+                'down_ratio_pct' => 36.73,
+                'advance_decline_ratio' => 1.6667,
+                'breadth_score' => 62.25,
+                'sentiment_label' => 'positive',
+                'sample_scope' => $scope,
+            ],
+            'limit_stats' => $includeLimitStats ? [
+                'method' => 'approx_by_pct_threshold',
+                'limit_up_count' => 80,
+                'limit_down_count' => 12,
+                'near_limit_up_count' => 210,
+                'near_limit_down_count' => 40,
+                'note' => '涨停/跌停统计为公开行情涨跌幅阈值近似口径，可能不完全覆盖 ST、北交所、上市新股等特殊规则。',
+            ] : [
+                'method' => 'not_requested',
+                'limit_up_count' => null,
+                'limit_down_count' => null,
+                'near_limit_up_count' => null,
+                'near_limit_down_count' => null,
+                'note' => '调用参数未要求计算涨停/跌停近似统计。',
+            ],
+        ], [
+            'capability_level' => $includeLimitStats ? 'full_scan' : 'indices_only',
+            'partial' => false,
+            'failures' => [],
+        ]);
+    }
 }
 
 class FakeToolExecutor extends AIToolExecutor
@@ -157,7 +210,7 @@ class FundRankExecutor extends AIToolExecutor
 }
 
 $tools = AIToolRegistry::chatTools();
-assert_true(count($tools) >= 16, 'registry exposes planned tool set');
+assert_true(count($tools) >= 17, 'registry exposes planned tool set');
 foreach ($tools as $tool) {
     assert_true(($tool['type'] ?? '') === 'function', 'tool type is function');
     $fn = $tool['function'] ?? [];
@@ -220,6 +273,7 @@ $payloadToolNames = array_map(function($tool) {
 assert_true(in_array('fa_get_fund_rank', $payloadToolNames, true), 'fund profile payload includes fund tools');
 assert_true(in_array('fa_get_stock_quote', $payloadToolNames, true), 'fund profile payload still includes stock quote tool');
 assert_true(in_array('fa_get_hot_stocks', $payloadToolNames, true), 'fund profile payload still includes stock discovery tool');
+assert_true(in_array('fa_get_market_breadth', $payloadToolNames, true), 'fund profile payload still includes market breadth tool');
 
 $streamEmitter = new AIAgentStreamEmitter($normalizedOptions);
 $sanitized = $streamEmitter->sanitizeAssistantChunk("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"secret\",\"content\":\"visible\"}}]}\n\n");
@@ -283,6 +337,29 @@ $indicators = $executor->execute('fa_calculate_kline_indicators', [
 assert_true($indicators['success'] === true, 'indicator tool succeeds with fake kline data');
 assert_true(isset($indicators['data']['ma']['ma5']), 'indicator tool returns MA values');
 assert_true(isset($indicators['data']['macd']['dif']), 'indicator tool returns MACD values');
+
+$marketBreadth = $executor->execute('fa_get_market_breadth', [
+    'scope' => 'a_share',
+    'include_limit_stats' => true,
+    'include_index_quotes' => true,
+]);
+assert_true($marketBreadth['success'] === true, 'market breadth tool succeeds with fake data');
+assert_true(($marketBreadth['data']['aggregate']['method'] ?? '') === 'full_a_share_scan', 'market breadth returns aggregate method');
+assert_true(($marketBreadth['data']['limit_stats']['method'] ?? '') === 'approx_by_pct_threshold', 'market breadth returns approximate limit stats');
+
+$invalidMarketBreadthScope = $executor->execute('fa_get_market_breadth', [
+    'scope' => 'bad_scope',
+    'include_limit_stats' => true,
+    'include_index_quotes' => true,
+]);
+assert_true($invalidMarketBreadthScope['success'] === false && $invalidMarketBreadthScope['code'] === 'tool_error', 'invalid market breadth scope is rejected structurally');
+
+$invalidMarketBreadthBool = $executor->execute('fa_get_market_breadth', [
+    'scope' => 'a_share',
+    'include_limit_stats' => 'true',
+    'include_index_quotes' => true,
+]);
+assert_true($invalidMarketBreadthBool['success'] === false && $invalidMarketBreadthBool['code'] === 'tool_error', 'invalid market breadth boolean is rejected structurally');
 
 $compare = $executor->execute('fa_compare_candidates', [
     'asset_type' => 'stock',
@@ -377,6 +454,16 @@ $plainAgent = new AIChatToolAgent(
     null,
     function(array $payload, callable $emit): void {
         assert_true(($payload['stream'] ?? false) === true, 'plain fallback uses streaming payload');
+        $messages = $payload['messages'];
+        $prompt = '';
+        foreach ($messages as $message) {
+            $prompt .= (string)($message['content'] ?? '');
+        }
+        assert_true(strpos((string)($messages[0]['content'] ?? ''), '时间锚点') === false, 'plain stable system prompt excludes dynamic time anchor');
+        $anchor = $messages[count($messages) - 2] ?? [];
+        assert_true(($anchor['role'] ?? '') === 'system', 'plain time anchor is a separate system message before latest user');
+        assert_contains('时间锚点：当前北京时间（Asia/Shanghai）', (string)($anchor['content'] ?? ''), 'plain time anchor includes current Beijing time');
+        assert_contains('不要声称无法获取当前时间', (string)($anchor['content'] ?? ''), 'plain time anchor forbids claiming no current time');
         $emit("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"hidden-reasoning\"}}]}\n\n");
         $emit("data: {\"choices\":[{\"delta\":{\"content\":\"plain\"}}]}\n\n");
         $emit("data: [DONE]\n\n");
@@ -612,6 +699,67 @@ assert_true(strpos($invalidArgsStream, '参数 JSON 不完整') !== false, 'inva
 assert_true(strpos($invalidArgsStream, '服务端数据预取') === false, 'invalid args path exposes no server prefetch trace');
 assert_contains('基金深入研究最终结论', $invalidArgsStream, 'invalid args path emits final answer after follow-up tools');
 
+$marketBreadthExecutor = new FakeToolExecutor();
+$marketBreadthTransportCalls = 0;
+$marketBreadthStream = '';
+$marketBreadthAgent = new AIChatToolAgent(
+    ['api_url' => 'http://fake', 'api_key' => 'test', 'model' => 'fake-model'],
+    ['max_tool_rounds' => 3, 'max_tool_calls_per_round' => 4, 'expose_tool_trace' => true, 'auto_prefetch' => false],
+    $marketBreadthExecutor,
+    function(array $payload) use (&$marketBreadthTransportCalls): array {
+        $marketBreadthTransportCalls++;
+        if ($marketBreadthTransportCalls === 1) {
+            $messages = $payload['messages'];
+            $prompt = '';
+            foreach ($messages as $message) {
+                $prompt .= (string)($message['content'] ?? '');
+            }
+            assert_true(strpos($prompt, 'fa_get_market_breadth') !== false, 'system prompt mentions market breadth tool');
+            assert_true(strpos((string)($messages[0]['content'] ?? ''), '时间锚点') === false, 'tool stable system prompt excludes dynamic time anchor');
+            $anchor = $messages[count($messages) - 2] ?? [];
+            assert_true(($anchor['role'] ?? '') === 'system', 'tool time anchor is a separate system message before latest user');
+            assert_contains('时间锚点：当前北京时间（Asia/Shanghai）', (string)($anchor['content'] ?? ''), 'tool time anchor includes current Beijing time');
+            assert_contains('不要声称无法获取当前时间', (string)($anchor['content'] ?? ''), 'tool time anchor forbids claiming no current time');
+            return [
+                'choices' => [[
+                    'message' => [
+                        'role' => 'assistant',
+                        'content' => null,
+                        'tool_calls' => [[
+                            'id' => 'breadth_1',
+                            'type' => 'function',
+                            'function' => [
+                                'name' => 'fa_get_market_breadth',
+                                'arguments' => '{"scope":"a_share","include_limit_stats":true,"include_index_quotes":true}',
+                            ],
+                        ]],
+                    ],
+                ]],
+            ];
+        }
+        return [
+            'choices' => [[
+                'message' => [
+                    'role' => 'assistant',
+                    'content' => '市场宽度最终结论：已参考涨跌家数和近似涨跌停统计。内容仅供研究参考，不构成投资建议。',
+                ],
+            ]],
+        ];
+    },
+    function(array $payload, callable $emit): void {
+        assert_true(false, 'market breadth model path should finish directly after useful tool result');
+    }
+);
+$marketBreadthAgent->run([
+    ['role' => 'user', 'content' => '今天大盘环境怎么样，市场宽度和涨跌家数如何？'],
+], function(string $chunk) use (&$marketBreadthStream): void {
+    $marketBreadthStream .= $chunk;
+});
+assert_true($marketBreadthTransportCalls === 2, 'market breadth request performs one tool turn then final answer');
+assert_true(($marketBreadthExecutor->calls[0][0] ?? '') === 'fa_get_market_breadth', 'market breadth request executes market breadth tool');
+assert_contains('获取市场宽度', $marketBreadthStream, 'market breadth stream exposes tool status');
+assert_contains('市场宽度最终结论', $marketBreadthStream, 'market breadth stream emits final answer');
+
 $modelLoopExecutor = new MarketScanDeepDiveExecutor();
 $modelLoopTransportCalls = 0;
 $modelLoopStream = '';
@@ -636,6 +784,24 @@ $modelLoopAgent = new AIChatToolAgent(
                         'role' => 'assistant',
                         'content' => null,
                         'tool_calls' => [[
+                            'id' => 'breadth_before_hot_1',
+                            'type' => 'function',
+                            'function' => [
+                                'name' => 'fa_get_market_breadth',
+                                'arguments' => '{"scope":"a_share","include_limit_stats":true,"include_index_quotes":true}',
+                            ],
+                        ]],
+                    ],
+                ]],
+            ];
+        }
+        if ($modelLoopTransportCalls === 2) {
+            return [
+                'choices' => [[
+                    'message' => [
+                        'role' => 'assistant',
+                        'content' => null,
+                        'tool_calls' => [[
                             'id' => 'hot_1',
                             'type' => 'function',
                             'function' => [
@@ -647,7 +813,7 @@ $modelLoopAgent = new AIChatToolAgent(
                 ]],
             ];
         }
-        if ($modelLoopTransportCalls === 2) {
+        if ($modelLoopTransportCalls === 3) {
             return [
                 'choices' => [[
                     'message' => [
@@ -689,8 +855,9 @@ $modelLoopAgent = new AIChatToolAgent(
         foreach ($payload['messages'] as $message) {
             $content .= (string)($message['content'] ?? '');
         }
-        assert_true(strpos($content, 'fa_get_hot_stocks') !== false, 'multi-turn final context includes first model tool result');
-        assert_true(strpos($content, 'fa_get_stock_quote') !== false, 'multi-turn final context includes second model tool result');
+        assert_true(strpos($content, 'fa_get_market_breadth') !== false, 'multi-turn final context includes market breadth result');
+        assert_true(strpos($content, 'fa_get_hot_stocks') !== false, 'multi-turn final context includes hot stocks result');
+        assert_true(strpos($content, 'fa_get_stock_quote') !== false, 'multi-turn final context includes quote result');
         assert_true(strpos($content, 'server_planned') === false, 'multi-turn main path does not use server planned tools');
         $emit("data: {\"choices\":[{\"delta\":{\"content\":\"multi-turn-final\"}}]}\n\n");
         $emit("data: [DONE]\n\n");
@@ -702,8 +869,9 @@ $modelLoopAgent->run([
     $modelLoopStream .= $chunk;
 });
 $modelLoopNames = array_map(function($call) { return $call[0]; }, $modelLoopExecutor->calls);
-assert_true($modelLoopTransportCalls === 3, 'multi-turn main path lets model decide again after tool observation');
-assert_true(in_array('fa_get_hot_stocks', $modelLoopNames, true), 'multi-turn executes first model discovery tool');
+assert_true($modelLoopTransportCalls === 4, 'multi-turn main path lets model decide again after each tool observation');
+assert_true(($modelLoopNames[0] ?? '') === 'fa_get_market_breadth', 'multi-turn executes market breadth before hot stocks');
+assert_true(in_array('fa_get_hot_stocks', $modelLoopNames, true), 'multi-turn executes discovery tool after market breadth');
 assert_true(in_array('fa_get_stock_quote', $modelLoopNames, true), 'multi-turn executes second model quote tool');
 assert_true(in_array('fa_get_stock_flow', $modelLoopNames, true), 'multi-turn executes second model flow tool');
 assert_true(!in_array('fa_calculate_kline_indicators', $modelLoopNames, true), 'multi-turn main path avoids automatic server planned indicators');

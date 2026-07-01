@@ -71,6 +71,8 @@ class SecurityAudit
     /** 条件选股类型白名单 */
     const ALLOWED_SCREENER_TYPES = ['11', '82', '30', '', 'ashare', 'hk', 'us', 'sh_sz', 'sh', 'sz', 'bj', 'kcb', 'cyb'];
 
+    const ALLOWED_MARKET_BREADTH_SCOPES = ['a_share', 'sh', 'sz', 'core_indices'];
+
     /** 搜索关键词最大长度 */
     const MAX_KEYWORD_LENGTH = 100;
 

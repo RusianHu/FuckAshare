@@ -29,6 +29,7 @@ class AIToolExecutor
         'fa_get_stock_flow' => 'executeStockFlow',
         'fa_get_sector_flow' => 'executeSectorFlow',
         'fa_get_hot_stocks' => 'executeHotStocks',
+        'fa_get_market_breadth' => 'executeMarketBreadth',
         'fa_get_xueqiu_hot_stock' => 'executeXueqiuHotStock',
         'fa_run_xueqiu_screener' => 'executeXueqiuScreener',
         'fa_get_xueqiu_feed' => 'executeXueqiuFeed',
@@ -137,6 +138,15 @@ class AIToolExecutor
             $this->int($args['page_size'] ?? null, 1, 200, 50),
             $this->enum($args['sort'] ?? null, SecurityAudit::ALLOWED_SORT_FIELDS, 'f62'),
             $this->int($args['order'] ?? null, -1, 1, 1)
+        ), $started);
+    }
+
+    private function executeMarketBreadth(array $args, float $started): array
+    {
+        return $this->fromResult($this->market->marketBreadth(
+            $this->enum($args['scope'] ?? null, SecurityAudit::ALLOWED_MARKET_BREADTH_SCOPES, 'a_share'),
+            $this->bool($args['include_limit_stats'] ?? null, true),
+            $this->bool($args['include_index_quotes'] ?? null, true)
         ), $started);
     }
 
@@ -599,7 +609,8 @@ class AIToolExecutor
     private function bool($value, bool $default): bool
     {
         if ($value === null) return $default;
-        return (bool)$value;
+        if (!is_bool($value)) throw new InvalidArgumentException('参数必须是布尔值');
+        return $value;
     }
 
     private function date($value, bool $allowEmpty): string

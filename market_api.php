@@ -3,7 +3,7 @@
  * 聚合行情服务 API
  * 给前端工作台使用的统一入口
  *
- * action: quote / kline / hot_stock / screener / fundx / stock_flow / sector_flow / hot_stocks
+ * action: quote / kline / hot_stock / screener / fundx / stock_flow / sector_flow / hot_stocks / market_breadth
  * source: auto / eastmoney / ashare / xueqiu
  * fallback: 1 / 0
  * raw: 1 / 0
@@ -108,10 +108,17 @@ switch ($action) {
         $result = $service->hotStocks($page, $pageSize, $sort, $sortOrder);
         break;
 
+    case 'market_breadth':
+        $scope = SecurityAudit::getParam('scope', 'a_share', ['whitelist' => SecurityAudit::ALLOWED_MARKET_BREADTH_SCOPES]);
+        $includeLimitStats = SecurityAudit::getParam('include_limit_stats', 1, ['int' => true]) === 1;
+        $includeIndexQuotes = SecurityAudit::getParam('include_index_quotes', 1, ['int' => true]) === 1;
+        $result = $service->marketBreadth($scope, $includeLimitStats, $includeIndexQuotes);
+        break;
+
     default:
         echo json_encode([
             'success' => false,
-            'message' => '未知 action，支持: quote/kline/hot_stock/screener/fundx/stock_flow/sector_flow/hot_stocks',
+            'message' => '未知 action，支持: quote/kline/hot_stock/screener/fundx/stock_flow/sector_flow/hot_stocks/market_breadth',
         ], JSON_UNESCAPED_UNICODE);
         exit;
 }

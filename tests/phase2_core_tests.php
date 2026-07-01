@@ -113,5 +113,22 @@ $result = invoke_use_cache($service, 'quote', 'unit:blocked', function() use (&$
 $store->releaseLock($lockKey);
 assert_true($result->errorCode === 'cache_wait_timeout' && $blockedCalls === 0, 'MarketDataService degrades instead of stampeding on held lock');
 
+$marketBreadthCalls = 0;
+$marketBreadthResult = invoke_use_cache($service, 'market_breadth', 'unit:market_breadth', function() use (&$marketBreadthCalls) {
+    $marketBreadthCalls++;
+    return DataSourceResult::success('unit', 'market_breadth', [
+        'scope' => 'a_share',
+        'indices' => [],
+        'aggregate' => ['method' => 'full_a_share_scan'],
+        'limit_stats' => ['method' => 'approx_by_pct_threshold'],
+    ]);
+});
+assert_true($marketBreadthResult->hasData() && $marketBreadthCalls === 1, 'MarketDataService stores market breadth cache miss');
+$marketBreadthResult = invoke_use_cache($service, 'market_breadth', 'unit:market_breadth', function() use (&$marketBreadthCalls) {
+    $marketBreadthCalls++;
+    return DataSourceResult::error('unit', 'market_breadth', 'unexpected', 'should not fetch');
+});
+assert_true($marketBreadthResult->hasData() && $marketBreadthCalls === 1 && $marketBreadthResult->meta['cache'] === 'hit', 'MarketDataService reads market breadth cache hit');
+
 cleanup_dir($cacheDir);
 echo "Phase 2 core tests passed\n";

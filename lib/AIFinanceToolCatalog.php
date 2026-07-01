@@ -72,6 +72,15 @@ class AIFinanceToolCatalog
                     'order' => AIToolSchema::nullableInteger('Sort order: 1 descending in existing API conventions, -1 ascending when supported.', -1, 1),
                 ]
             ),
+            'fa_get_market_breadth' => AIToolSchema::tool(
+                'fa_get_market_breadth',
+                'Get A-share market breadth, major index overview, advance/decline counts, and optional approximate limit-up/limit-down breadth statistics.',
+                [
+                    'scope' => AIToolSchema::nullableEnum(['a_share', 'sh', 'sz', 'core_indices'], 'Market scope. Default a_share.'),
+                    'include_limit_stats' => ['type' => ['boolean', 'null'], 'description' => 'Whether to include approximate limit-up/limit-down statistics. Default true.'],
+                    'include_index_quotes' => ['type' => ['boolean', 'null'], 'description' => 'Whether to include major index quotes. Default true.'],
+                ]
+            ),
             'fa_get_xueqiu_hot_stock' => AIToolSchema::tool(
                 'fa_get_xueqiu_hot_stock',
                 'Get Xueqiu hot stock ranking for attention and sentiment context.',

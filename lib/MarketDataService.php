@@ -67,6 +67,7 @@ class MarketDataService
         'stock_flow' => 30,
         'sector_flow' => 60,
         'hot_stocks' => 30,
+        'market_breadth' => 20,
     ];
 
     /** @var int negative cache TTL (秒) */
@@ -242,6 +243,15 @@ class MarketDataService
 
         return $this->useCache('hot_stocks', $key, function() use ($page, $pageSize, $sortField, $sortOrder) {
             return $this->eastmoney()->hotStocks($page, $pageSize, $sortField, $sortOrder);
+        });
+    }
+
+    public function marketBreadth(string $scope = 'a_share', bool $includeLimitStats = true, bool $includeIndexQuotes = true): DataSourceResult
+    {
+        $key = $this->cacheKey('market_breadth', "{$scope}_" . ($includeLimitStats ? '1' : '0') . '_' . ($includeIndexQuotes ? '1' : '0'));
+
+        return $this->useCache('market_breadth', $key, function() use ($scope, $includeLimitStats, $includeIndexQuotes) {
+            return $this->eastmoney()->marketBreadth($scope, $includeLimitStats, $includeIndexQuotes);
         });
     }
 

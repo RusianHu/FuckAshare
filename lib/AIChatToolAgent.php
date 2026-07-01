@@ -235,6 +235,9 @@ class AIChatToolAgent
 
     public function streamPlain(array $messages, callable $emit, ?AIAgentState $state = null, string $stopReason = 'plain_stream'): void
     {
+        $profile = AIAgentProfile::resolve($messages, $this->options);
+        $messages = $this->prepareMessages($messages, $profile, false);
+
         if ($state === null) {
             $this->model->stream($this->model->payload($messages, true), function (string $data) use ($emit): void {
                 $emit($this->stream->sanitizeAssistantChunk($data));
@@ -258,22 +261,37 @@ class AIChatToolAgent
         }
     }
 
-    private function prepareMessages(array $messages, ?AIAgentProfile $profile = null): array
+    private function prepareMessages(array $messages, ?AIAgentProfile $profile = null, bool $includeToolInstructions = true): array
     {
         $prepared = [];
         $hasSystem = false;
         foreach ($messages as $message) {
             if (!is_array($message)) continue;
-            if (($message['role'] ?? '') === 'system') {
+            if (($message['role'] ?? '') === 'system' && !$hasSystem) {
                 $hasSystem = true;
-                $message['content'] = $this->systemPrompt($profile) . "\n\n" . (string)($message['content'] ?? '');
+                $message['content'] = $this->systemPrompt($profile, $includeToolInstructions) . "\n\n" . (string)($message['content'] ?? '');
+            } elseif (($message['role'] ?? '') === 'system') {
+                $hasSystem = true;
             }
             $prepared[] = $message;
         }
         if (!$hasSystem) {
-            array_unshift($prepared, ['role' => 'system', 'content' => $this->systemPrompt($profile)]);
+            array_unshift($prepared, ['role' => 'system', 'content' => $this->systemPrompt($profile, $includeToolInstructions)]);
         }
-        return $prepared;
+        return $this->withCurrentTimeAnchor($prepared);
+    }
+
+    private function withCurrentTimeAnchor(array $messages): array
+    {
+        $anchor = $this->currentTimeAnchorMessage();
+        for ($i = count($messages) - 1; $i >= 0; $i--) {
+            if (($messages[$i]['role'] ?? '') === 'user') {
+                array_splice($messages, $i, 0, [$anchor]);
+                return $messages;
+            }
+        }
+        $messages[] = $anchor;
+        return $messages;
     }
 
     private function requestedSortField(string $text): string
@@ -351,6 +369,14 @@ class AIChatToolAgent
                 'period' => $this->requestedFundRankPeriod($latestUser),
                 'page' => 1,
                 'page_size' => $this->requestedFundRankPageSize($latestUser),
+            ];
+        }
+
+        if ($name === 'fa_get_market_breadth' && $this->looksLikeMarketBreadthRequest($latestUser)) {
+            return [
+                'scope' => $this->requestedMarketBreadthScope($latestUser),
+                'include_limit_stats' => true,
+                'include_index_quotes' => true,
             ];
         }
 
@@ -439,7 +465,7 @@ class AIChatToolAgent
     private function shouldContinueAfterToolRound(array $toolCalls, array $originalMessages): bool
     {
         $latestUser = $this->latestUserContent($originalMessages);
-        if (!$this->looksLikeStockResearchRequest($latestUser) && !$this->looksLikeFundRequest($latestUser) && !$this->looksLikeMarketScanRequest($latestUser)) {
+        if (!$this->looksLikeStockResearchRequest($latestUser) && !$this->looksLikeFundRequest($latestUser) && !$this->looksLikeMarketScanRequest($latestUser) && !$this->looksLikeMarketBreadthRequest($latestUser)) {
             return false;
         }
 
@@ -449,6 +475,15 @@ class AIChatToolAgent
                 $name = (string)($call['function']['name'] ?? '');
                 $args = json_decode((string)($call['function']['arguments'] ?? '{}'), true);
                 if ($name === 'fa_get_hot_stocks' && is_array($args) && (string)($args['sort'] ?? '') === $prefetchSortField) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        if ($this->looksLikeMarketBreadthRequest($latestUser)) {
+            foreach ($toolCalls as $call) {
+                if (($call['function']['name'] ?? '') === 'fa_get_market_breadth') {
                     return false;
                 }
             }
@@ -495,6 +530,7 @@ class AIChatToolAgent
             'fa_get_fund_history',
             'fa_get_fund_rank',
             'fa_get_hot_stocks',
+            'fa_get_market_breadth',
             'fa_get_sector_flow',
             'fa_get_xueqiu_hot_stock',
             'fa_run_xueqiu_screener',
@@ -528,13 +564,35 @@ class AIChatToolAgent
         return (bool)preg_match('/(基金|净值|估值|基金经理|基金公司|申购|赎回|同类排行|同类排名|基金排行|基金排名|基金信息|基金资料|开放式基金|ETF|etf|QDII|qdii)/u', $text);
     }
 
+    private function looksLikeMarketBreadthRequest(string $text): bool
+    {
+        if ($this->looksLikeFundRequest($text)) {
+            return false;
+        }
+        return (bool)preg_match('/(大盘|市场宽度|涨跌家数|上涨家数|下跌家数|平盘家数|涨停|跌停|市场情绪|市场环境|普涨|普跌|赚钱效应|亏钱效应|宽度|advance|decline|breadth)/iu', $text);
+    }
+
+    private function requestedMarketBreadthScope(string $text): string
+    {
+        if (preg_match('/(沪市|上证|上海|科创)/u', $text)) {
+            return 'sh';
+        }
+        if (preg_match('/(深市|深证|深圳|创业板)/u', $text)) {
+            return 'sz';
+        }
+        if (preg_match('/(核心指数|指数概览|主要指数)/u', $text)) {
+            return 'core_indices';
+        }
+        return 'a_share';
+    }
+
     private function looksLikeMarketScanRequest(string $text): bool
     {
         if ($this->looksLikeFundRequest($text)) {
             return false;
         }
-        return preg_match('/(资金流入|净流入|主力流入|资金|资金榜|热股|热门股|候选|选股|筛选|前十|前10|top\s*10|排名|排行|涨(?:得|的)?(?:最)?多|涨幅|领涨|上涨(?:最)?多|涨幅榜)/iu', $text)
-            && preg_match('/(股票|个股|标的|市场|板块|综合评估|综合分析|评估|分析|今日|今天|最新)/u', $text);
+        return preg_match('/(资金流入|净流入|主力流入|资金|资金榜|热股|热门股|候选|选股|筛选|前十|前10|top\s*10|排名|排行|涨(?:得|的)?(?:最)?多|涨幅|领涨|上涨(?:最)?多|涨幅榜|大盘|市场宽度|涨跌家数|涨停|跌停|情绪|普涨|普跌)/iu', $text)
+            && preg_match('/(股票|个股|标的|市场|板块|综合评估|综合分析|评估|分析|今日|今天|最新|大盘|宽度|情绪)/u', $text);
     }
 
     private function extractStockCodes(string $text): array
@@ -549,23 +607,53 @@ class AIChatToolAgent
         return array_values(array_unique($matches[0] ?? []));
     }
 
-    private function systemPrompt(?AIAgentProfile $profile = null): string
+    private function currentTimeAnchorMessage(): array
+    {
+        $marketNow = new DateTimeImmutable('now', new DateTimeZone('Asia/Shanghai'));
+        $serverTz = date_default_timezone_get() ?: 'UTC';
+        $parts = [
+            '时间锚点：当前北京时间（Asia/Shanghai）为 ' . $marketNow->format('Y-m-d H:i') . '。',
+            '回答“今天/昨日/近半年”等相对时间问题时以此为准；如果用户询问现在时间或日期，可以直接回答，不要声称无法获取当前时间。',
+            '此时间仅用于日期锚定和交易时段判断；行情、资金流、基金净值、排行和新闻仍必须通过工具或实时数据源查询。',
+        ];
+        if ($serverTz !== 'Asia/Shanghai') {
+            $serverNow = new DateTimeImmutable('now', new DateTimeZone($serverTz));
+            $parts[] = '服务器默认时区：' . $serverTz . '，服务器当前时间：' . $serverNow->format('Y-m-d H:i') . '。';
+        }
+        return [
+            'role' => 'system',
+            'content' => implode('', $parts),
+        ];
+    }
+
+    private function systemPrompt(?AIAgentProfile $profile = null, bool $includeToolInstructions = true): string
     {
         $lines = [
             '你是一位专业、谨慎的金融研究助理，服务于 A 股、基金、板块资金和市场热度研究。',
-            '你可以使用服务端提供的只读工具查询行情、K线、资金流、基金、雪球热度和确定性技术指标。',
-            '优先用工具获取事实数据；不要编造实时价格、资金流、基金净值、排行或新闻。',
+            $includeToolInstructions
+                ? '你可以使用服务端提供的只读工具查询行情、K线、资金流、基金、雪球热度、市场宽度和确定性技术指标。'
+                : '当前渠道未启用正式工具调用；不要编造实时价格、资金流、基金净值、排行或新闻；如需实时事实，请说明需要通过服务端数据源查询。',
+            $includeToolInstructions
+                ? '优先用工具获取事实数据；不要编造实时价格、资金流、基金净值、排行或新闻。'
+                : '无法确认的实时价格、资金流、基金净值、排行或新闻不要编造；需要时说明必须通过实时数据源验证。',
             '回答时清晰区分：数据事实、基于数据的推断、不确定性和需要继续验证的信息。',
-            '涉及市场扫描、资金流入、今日涨幅排行、热门股票或候选标的时，必须优先调用 fa_get_hot_stocks；按涨幅排序使用 sort=f3，按主力净流入排序使用 sort=f62。',
-            '涉及基金排行、今日基金涨幅、基金最新信息或未指定代码的基金研究时，必须优先调用 fa_get_fund_rank；今日/涨幅问题使用 period=day，再按候选调用基金资料和估值工具。',
-            '所有档案下都暴露完整只读工具集；即使当前是基金研究档案，也可以在用户问题需要时调用股票行情、K线、资金流、板块、雪球热度和选股工具来交叉验证或比较。',
-            '工具选择只按用户问题和研究需要决定，不按“基金版本/股票版本”裁剪；但不要为了展示能力而调用与问题无关的工具。',
-            '在每轮正式调用工具前，assistant content 先用 1-3 句中文简要说明当前判断、接下来要查什么和为什么；随后再通过 tool_calls 调用工具。',
-            '只能通过正式 tools/tool_calls 协议调用工具；最终回答阶段不要输出 <function=...>、<parameter=...> 等伪工具标签。',
-            '不要给出保证收益、确定买卖点或个性化投资承诺。结尾必须提示：内容仅供研究参考，不构成投资建议。',
         ];
-        if ($profile !== null) {
+        if ($includeToolInstructions) {
+            $lines = array_merge($lines, [
+                '涉及大盘环境、市场情绪、市场宽度、涨跌家数、涨停跌停、普涨普跌或赚钱效应时，必须优先调用 fa_get_market_breadth。',
+                '涉及市场扫描、资金流入、今日涨幅排行、热门股票或候选标的时，先调用 fa_get_market_breadth 判断市场环境，再调用 fa_get_hot_stocks；按涨幅排序使用 sort=f3，按主力净流入排序使用 sort=f62。',
+                '涉及基金排行、今日基金涨幅、基金最新信息或未指定代码的基金研究时，必须优先调用 fa_get_fund_rank；今日/涨幅问题使用 period=day，再按候选调用基金资料和估值工具。',
+                '所有档案下都暴露完整只读工具集；即使当前是基金研究档案，也可以在用户问题需要时调用股票行情、K线、资金流、板块、雪球热度和选股工具来交叉验证或比较。',
+                '工具选择只按用户问题和研究需要决定，不按“基金版本/股票版本”裁剪；但不要为了展示能力而调用与问题无关的工具。',
+                '在每轮正式调用工具前，assistant content 先用 1-3 句中文简要说明当前判断、接下来要查什么和为什么；随后再通过 tool_calls 调用工具。',
+                '只能通过正式 tools/tool_calls 协议调用工具；最终回答阶段不要输出 <function=...>、<parameter=...> 等伪工具标签。',
+            ]);
+        }
+        $lines[] = '不要给出保证收益、确定买卖点或个性化投资承诺。结尾必须提示：内容仅供研究参考，不构成投资建议。';
+        if ($profile !== null && $includeToolInstructions) {
             $lines[] = $profile->systemPromptSuffix();
+        } elseif ($profile !== null) {
+            $lines[] = '当前智能体档案：' . $profile->name() . '（' . $profile->description() . '）。';
         }
         return implode("\n", $lines);
     }
@@ -734,6 +822,7 @@ class AIChatToolAgent
             'fa_get_stock_flow' => '个股资金流',
             'fa_get_sector_flow' => '板块资金流',
             'fa_get_hot_stocks' => '市场热榜',
+            'fa_get_market_breadth' => '市场宽度',
             'fa_get_xueqiu_hot_stock' => '雪球热股',
             'fa_run_xueqiu_screener' => '雪球选股',
             'fa_get_xueqiu_feed' => '雪球动态',
