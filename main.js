@@ -6,9 +6,11 @@
 const Icons = {
     star: '<span class="ui-icon" aria-hidden="true"><svg><use href="#icon-star"></use></svg></span>',
     close: '<span class="ui-icon" aria-hidden="true"><svg><use href="#icon-close"></use></svg></span>',
+    search: '<span class="ui-icon" aria-hidden="true"><svg><use href="#icon-search"></use></svg></span>',
     chart: '<span class="ui-icon" aria-hidden="true"><svg><use href="#icon-chart"></use></svg></span>',
     table: '<span class="ui-icon" aria-hidden="true"><svg><use href="#icon-table"></use></svg></span>',
     flow: '<span class="ui-icon" aria-hidden="true"><svg><use href="#icon-flow"></use></svg></span>',
+    hot: '<span class="ui-icon" aria-hidden="true"><svg><use href="#icon-hot"></use></svg></span>',
     warning: '<span class="ui-icon" aria-hidden="true"><svg><use href="#icon-warning"></use></svg></span>'
 };
 
@@ -2969,52 +2971,131 @@ const AIModule = {
         if (scrollContainer) scrollContainer.scrollTop = scrollContainer.scrollHeight;
     },
 
-    _appendToolStatus(botDiv, status) {
-        if (!botDiv || !status) return;
-        let trace = botDiv.querySelector('.tool-trace');
-        if (!trace) {
-            trace = document.createElement('div');
-            trace.className = 'tool-trace';
+    _appendProcessStatus(message, targetContainer) {
+        const text = String(message || '').trim();
+        if (!text) return null;
+        const container = targetContainer || APP.chatContainer;
+        if (!container) return null;
 
-            const head = document.createElement('div');
-            head.className = 'tool-trace-head';
-            head.textContent = status.trace_title || 'AI 工具调用';
+        const div = document.createElement('div');
+        div.className = 'message process-message';
+        const dot = document.createElement('span');
+        dot.className = 'process-dot';
+        dot.setAttribute('aria-hidden', 'true');
+        const content = document.createElement('span');
+        content.className = 'process-text';
+        content.textContent = text;
+        div.appendChild(dot);
+        div.appendChild(content);
+        container.appendChild(div);
+        container.scrollTop = container.scrollHeight;
 
-            const list = document.createElement('div');
-            list.className = 'tool-trace-list';
+        if (typeof gsap !== 'undefined') {
+            gsap.fromTo(div, { autoAlpha: 0, y: 4 }, { autoAlpha: 1, y: 0, duration: 0.2, ease: 'power2.out', clearProps: 'autoAlpha,transform' });
+        }
+        return div;
+    },
 
-            trace.appendChild(head);
-            trace.appendChild(list);
-            const reasoning = botDiv.querySelector('.reasoning-content');
-            if (reasoning && reasoning.nextSibling) {
-                botDiv.insertBefore(trace, reasoning.nextSibling);
-            } else if (reasoning) {
-                botDiv.appendChild(trace);
-            } else {
-                botDiv.insertBefore(trace, botDiv.firstChild);
+    _appendThoughtBubble(message, targetContainer) {
+        const text = String(message || '').trim();
+        if (!text) return null;
+        const container = targetContainer || APP.chatContainer;
+        if (!container) return null;
+
+        const div = document.createElement('div');
+        div.className = 'message thought-message';
+        const title = document.createElement('div');
+        title.className = 'thought-message-title';
+        title.textContent = '思考';
+        const body = document.createElement('div');
+        body.className = 'thought-message-body';
+        body.textContent = text;
+        div.appendChild(title);
+        div.appendChild(body);
+        container.appendChild(div);
+        container.scrollTop = container.scrollHeight;
+
+        if (typeof gsap !== 'undefined') {
+            gsap.fromTo(div, { autoAlpha: 0, y: 4 }, { autoAlpha: 1, y: 0, duration: 0.22, ease: 'power2.out', clearProps: 'autoAlpha,transform' });
+        }
+        return div;
+    },
+
+    _appendToolStatusBubble(status, targetContainer) {
+        if (!status) return null;
+        const container = targetContainer || APP.chatContainer;
+        if (!container) return null;
+
+        const div = document.createElement('div');
+        div.className = 'message tool-message';
+        div.dataset.origin = status.origin || 'model_tool_call';
+
+        const title = document.createElement('div');
+        title.className = 'tool-message-title';
+        title.textContent = status.trace_title || 'AI 模型正在调用工具';
+
+        const body = document.createElement('div');
+        body.className = 'tool-message-body';
+        body.textContent = status.message || '调用研究工具';
+
+        const meta = document.createElement('div');
+        meta.className = 'tool-message-meta';
+        const metaParts = [];
+        if (status.tool) metaParts.push(status.tool);
+        if (status.args_summary && Object.keys(status.args_summary).length) {
+            metaParts.push(Object.entries(status.args_summary)
+                .map(([k, v]) => `${k}: ${this._formatToolArgValue(v)}`)
+                .join(' / '));
+        }
+        meta.textContent = metaParts.join(' · ');
+
+        div.appendChild(title);
+        div.appendChild(body);
+        if (meta.textContent) div.appendChild(meta);
+        container.appendChild(div);
+        container.scrollTop = container.scrollHeight;
+
+        if (typeof gsap !== 'undefined') {
+            gsap.fromTo(div, { autoAlpha: 0, y: 5 }, { autoAlpha: 1, y: 0, duration: 0.22, ease: 'power2.out', clearProps: 'autoAlpha,transform' });
+        }
+        return div;
+    },
+
+    _formatToolArgValue(value) {
+        if (Array.isArray(value)) {
+            return value.map(item => this._formatToolArgValue(item)).join(', ');
+        }
+        if (value && typeof value === 'object') {
+            try {
+                const json = JSON.stringify(value);
+                return json.length > 120 ? json.slice(0, 117) + '...' : json;
+            } catch (e) {
+                return String(value);
             }
         }
+        return String(value);
+    },
 
-        const list = trace.querySelector('.tool-trace-list');
-        if (!list) return;
-        const head = trace.querySelector('.tool-trace-head');
-        if (head && status.trace_title && !head.textContent.includes(status.trace_title)) {
-            head.textContent = status.trace_title;
-        }
+    _agentStatusText(event) {
+        if (!event || typeof event !== 'object') return '';
+        const type = event.type || '';
+        if (type === 'run_started') return 'AI 已开始分析任务';
+        if (type === 'agent_status') return event.message || 'AI 正在分析';
+        if (type === 'tool_call_started') return `AI 模型正在调用工具：${event.tool || '研究工具'}`;
+        if (type === 'tool_call_finished') return `工具调用完成：${event.tool || '研究工具'}`;
+        if (type === 'checkpoint_created') return '已创建运行检查点';
+        if (type === 'final_answer_started') return '正在生成最终回答';
+        if (type === 'final_answer_finished') return '最终回答已完成';
+        if (type === 'run_finished') return 'AI 任务已完成';
+        if (type === 'run_failed') return event.message || 'AI 任务失败';
+        return '';
+    },
 
-        const item = document.createElement('div');
-        item.className = 'tool-trace-item';
-        item.dataset.origin = status.origin || 'model_tool_call';
-        const message = status.message || '调用研究工具';
-        const tool = status.tool || '';
-        const args = status.args_summary && Object.keys(status.args_summary).length
-            ? ' · ' + Object.entries(status.args_summary).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(',') : v}`).join(' / ')
-            : '';
-        item.textContent = `${message}${tool ? ` (${tool})` : ''}${args}`;
-        list.appendChild(item);
-
-        const scrollContainer = botDiv.closest('.chat-messages, .advisor-messages');
-        if (scrollContainer) scrollContainer.scrollTop = scrollContainer.scrollHeight;
+    _shouldDisplayAgentStatus(event, text) {
+        if (!event || event.type !== 'agent_status') return false;
+        const statusText = String(text || event.message || '').trim();
+        if (!statusText) return false;
+        return /JSON|参数|失败|超时|回退|错误|异常|上限|无法|中断|invalid|timeout|fallback/i.test(statusText);
     },
 
     async sendToAI(loadingMessage, timer, targetContainer) {
@@ -3045,10 +3126,15 @@ const AIModule = {
 
             const reader = response.body.getReader();
             const decoder = new TextDecoder('utf-8');
-            let botDiv = this.appendMessage('', '', 'bot-message', targetContainer);
+            let botDiv = null;
+            const ensureBotDiv = () => {
+                if (!botDiv) botDiv = this.appendMessage('', '', 'bot-message', targetContainer);
+                return botDiv;
+            };
             let fullResponse = '';
             let fullReasoning = '';
             let streamDone = false;
+            let lastProcessText = '';
 
             // SSE 行缓冲区：处理跨 chunk 的行分割
             let lineBuffer = '';
@@ -3083,10 +3169,29 @@ const AIModule = {
 
                             if (json.type === 'tool_status') {
                                 const label = json.message || '调用研究工具';
-                                loadingMessage.textContent = `${label}...`;
-                                this._appendToolStatus(botDiv, json);
+                                this._appendToolStatusBubble(json, targetContainer);
                                 if (typeof AdvisorModule !== 'undefined' && AdvisorModule._els?.status) {
                                     AdvisorModule._els.status.textContent = label + '...';
+                                }
+                                continue;
+                            }
+
+                            if (json.type === 'assistant_thought') {
+                                this._appendThoughtBubble(json.message || '', targetContainer);
+                                if (typeof AdvisorModule !== 'undefined' && AdvisorModule._els?.status) {
+                                    AdvisorModule._els.status.textContent = '思考中...';
+                                }
+                                continue;
+                            }
+
+                            const agentStatus = this._agentStatusText(json);
+                            if (agentStatus) {
+                                if (this._shouldDisplayAgentStatus(json, agentStatus) && agentStatus !== lastProcessText) {
+                                    this._appendProcessStatus(agentStatus, targetContainer);
+                                    lastProcessText = agentStatus;
+                                }
+                                if (typeof AdvisorModule !== 'undefined' && AdvisorModule._els?.status) {
+                                    AdvisorModule._els.status.textContent = agentStatus + '...';
                                 }
                                 continue;
                             }
@@ -3094,7 +3199,7 @@ const AIModule = {
                             // 错误响应
                             if (json.error) {
                                 fullResponse = `**错误:** ${json.error.message || JSON.stringify(json.error)}`;
-                                this._updateContent(botDiv, fullResponse);
+                                this._updateContent(ensureBotDiv(), fullResponse);
                                 continue;
                             }
 
@@ -3104,12 +3209,12 @@ const AIModule = {
                                 // 推理内容（reasoning 模型特有）
                                 if (delta.reasoning_content) {
                                     fullReasoning += delta.reasoning_content;
-                                    this._updateReasoning(botDiv, fullReasoning);
+                                    this._updateReasoning(ensureBotDiv(), fullReasoning);
                                 }
                                 // 正式回复内容
                                 if (delta.content) {
                                     fullResponse += delta.content;
-                                    this._updateContent(botDiv, fullResponse);
+                                    this._updateContent(ensureBotDiv(), fullResponse);
                                 }
                             }
                         } catch (e) {
@@ -3133,25 +3238,40 @@ const AIModule = {
                             const json = JSON.parse(jsonStr);
                             if (json.type === 'tool_status') {
                                 const label = json.message || '调用研究工具';
-                                loadingMessage.textContent = `${label}...`;
-                                this._appendToolStatus(botDiv, json);
+                                this._appendToolStatusBubble(json, targetContainer);
                                 if (typeof AdvisorModule !== 'undefined' && AdvisorModule._els?.status) {
                                     AdvisorModule._els.status.textContent = label + '...';
                                 }
-                            }
-                            if (json.error) {
-                                fullResponse = `**错误:** ${json.error.message || JSON.stringify(json.error)}`;
-                                this._updateContent(botDiv, fullResponse);
-                            }
-                            const delta = json.choices?.[0]?.delta;
-                            if (delta) {
-                                if (delta.reasoning_content) {
-                                    fullReasoning += delta.reasoning_content;
-                                    this._updateReasoning(botDiv, fullReasoning);
+                            } else if (json.type === 'assistant_thought') {
+                                this._appendThoughtBubble(json.message || '', targetContainer);
+                                if (typeof AdvisorModule !== 'undefined' && AdvisorModule._els?.status) {
+                                    AdvisorModule._els.status.textContent = '思考中...';
                                 }
-                                if (delta.content) {
-                                    fullResponse += delta.content;
-                                    this._updateContent(botDiv, fullResponse);
+                            } else {
+                                const agentStatus = this._agentStatusText(json);
+                                if (agentStatus) {
+                                    if (this._shouldDisplayAgentStatus(json, agentStatus) && agentStatus !== lastProcessText) {
+                                        this._appendProcessStatus(agentStatus, targetContainer);
+                                        lastProcessText = agentStatus;
+                                    }
+                                    if (typeof AdvisorModule !== 'undefined' && AdvisorModule._els?.status) {
+                                        AdvisorModule._els.status.textContent = agentStatus + '...';
+                                    }
+                                } else if (json.error) {
+                                    fullResponse = `**错误:** ${json.error.message || JSON.stringify(json.error)}`;
+                                    this._updateContent(ensureBotDiv(), fullResponse);
+                                } else {
+                                    const delta = json.choices?.[0]?.delta;
+                                    if (delta) {
+                                        if (delta.reasoning_content) {
+                                            fullReasoning += delta.reasoning_content;
+                                            this._updateReasoning(ensureBotDiv(), fullReasoning);
+                                        }
+                                        if (delta.content) {
+                                            fullResponse += delta.content;
+                                            this._updateContent(ensureBotDiv(), fullResponse);
+                                        }
+                                    }
                                 }
                             }
                         } catch (e) { /* ignore */ }
@@ -3167,7 +3287,7 @@ const AIModule = {
 
             // 如果有推理内容，渲染为 Markdown
             if (fullReasoning) {
-                const rd = botDiv.querySelector('.reasoning-content');
+                const rd = ensureBotDiv().querySelector('.reasoning-content');
                 if (rd) rd.innerHTML = DOMPurify.sanitize(marked.parse(fullReasoning));
             }
 
@@ -3180,9 +3300,9 @@ const AIModule = {
                 // 推理模型可能因超时只输出了推理过程而没有正式回复
                 // 将推理内容也记入历史，避免下次重发时丢失上下文
                 APP.messageHistory.push({ role: 'assistant', content: fullReasoning });
-                this._updateContent(botDiv, '> 模型思考超时，仅返回了推理过程，请重新发送以获取完整回复。');
+                this._updateContent(ensureBotDiv(), '> 模型思考超时，仅返回了推理过程，请重新发送以获取完整回复。');
             } else {
-                this._updateContent(botDiv, '**提示:** 服务器返回空响应，请检查网络或稍后重试。');
+                this._updateContent(ensureBotDiv(), '**提示:** 服务器返回空响应，请检查网络或稍后重试。');
             }
             if (typeof AdvisorModule !== 'undefined') AdvisorModule.updateContextMeter();
 

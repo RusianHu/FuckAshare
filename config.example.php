@@ -164,12 +164,21 @@ return [
             'enabled' => true,
             'max_tool_rounds' => 10,            // 单次用户请求最多工具调用轮次
             'max_tool_calls_per_round' => 8,    // 每轮最多执行的工具调用数
-            'tool_timeout' => 45,               // 工具握手耗时预算（秒）；失败会自动回退普通流式对话
+            'max_tool_calls_total' => 64,       // 单次请求最多真实执行工具数；防止循环或上下文膨胀
+            'max_deep_dive_candidates' => 10,   // 市场扫描类请求最多深挖候选数（每个候选会查行情/指标/资金流）
+            'tool_timeout' => 45,               // 非流式工具决策耗时预算（秒）；失败会回退普通流式对话
             'tool_output_char_limit' => 60000,  // 单个工具输出回填给模型的最大字符数
             'parallel_tool_calls' => true,      // 允许模型一次请求多个工具；服务端仍按顺序安全执行
             'expose_tool_trace' => true,        // 向前端发送 tool_status SSE 事件用于展示进度
-            'auto_prefetch' => true,            // 股票/基金分析请求先由服务端确定性预取核心工具数据
-            'stream_after_tool_round' => true,  // 模型主动选择一轮工具后直接生成最终回答，避免兼容端点多轮握手卡顿
+            'emit_agent_events' => true,        // 发送 run_started/tool_call_finished/run_finished 等结构化智能体事件
+            'suppress_reasoning_content' => false, // 默认向前端透传上游 reasoning_content 推理流；设为 true 可隐藏
+            'auto_prefetch' => false,           // 已废弃：禁止服务端自动兜底预取；工具调用只能由模型 tools/tool_calls 主动发起
+            'stream_after_tool_round' => true,  // 模型主动调用工具后，观察结果回填给模型继续自行决策或最终回答
+            'agent_profile' => '',              // 留空自动识别；可强制 advisor/market_scanner/fund_researcher/risk_reviewer
+            'trace_enabled' => false,           // 是否将每次 run 的 trace 落盘为 JSONL；默认关闭
+            'trace_log_path' => '',             // trace 落盘路径；留空时使用系统临时目录
+            'max_tokens' => 8192,               // 最终流式回答最大 token 数
+            'tool_decision_max_tokens' => 4096, // 非流式工具决策轮最大 token 数；防止模型在决策轮生成长回答而超时
         ],
 
         // ── 渠道定义 ──

@@ -17,6 +17,13 @@ function assert_contains(string $needle, string $haystack, string $message): voi
     assert_true(strpos($haystack, $needle) !== false, $message);
 }
 
+function assert_before(string $first, string $second, string $haystack, string $message): void
+{
+    $a = strpos($haystack, $first);
+    $b = strpos($haystack, $second);
+    assert_true($a !== false && $b !== false && $a < $b, $message);
+}
+
 function assert_strict_objects(array $schema, string $path): void
 {
     $type = $schema['type'] ?? null;
@@ -83,6 +90,72 @@ class FakeToolExecutor extends AIToolExecutor
     }
 }
 
+class MarketScanDeepDiveExecutor extends AIToolExecutor
+{
+    public $calls = [];
+
+    public function __construct()
+    {
+    }
+
+    public function executeForModel(string $name, array $args): string
+    {
+        $this->calls[] = [$name, $args];
+        $data = ['ok' => true, 'args' => $args];
+        if ($name === 'fa_get_hot_stocks') {
+            $data = [];
+            for ($i = 1; $i <= 10; $i++) {
+                $data[] = [
+                    'code' => sprintf('60%04d', $i),
+                    'name' => '候选' . $i,
+                    'f62' => 100000000 - $i * 1000000,
+                    'f3' => 1.0 + $i / 10,
+                ];
+            }
+        }
+        return json_encode([
+            'success' => true,
+            'source' => 'fake',
+            'action' => $name,
+            'data' => $data,
+            'meta' => ['updated_at' => '2026-01-01T00:00:00+00:00'],
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    }
+}
+
+class FundRankExecutor extends AIToolExecutor
+{
+    public $calls = [];
+
+    public function __construct()
+    {
+    }
+
+    public function executeForModel(string $name, array $args): string
+    {
+        $this->calls[] = [$name, $args];
+        $data = ['ok' => true, 'args' => $args];
+        if ($name === 'fa_get_fund_rank') {
+            $data = [];
+            for ($i = 1; $i <= 6; $i++) {
+                $data[] = [
+                    'code' => sprintf('00%04d', $i),
+                    'name' => '基金' . $i,
+                    'day_growth' => (string)(6.0 - $i / 10),
+                    'selected_growth' => (string)(6.0 - $i / 10),
+                ];
+            }
+        }
+        return json_encode([
+            'success' => true,
+            'source' => 'fake',
+            'action' => $name,
+            'data' => $data,
+            'meta' => ['updated_at' => '2026-01-01T00:00:00+00:00'],
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    }
+}
+
 $tools = AIToolRegistry::chatTools();
 assert_true(count($tools) >= 16, 'registry exposes planned tool set');
 foreach ($tools as $tool) {
@@ -95,6 +168,103 @@ foreach ($tools as $tool) {
     assert_true(isset($params['required']) && count($params['required']) === count($params['properties'] ?? []), 'strict schema requires every property');
     assert_strict_objects($params, $fn['name'] ?? 'tool');
 }
+
+$normalizedOptions = AIAgentOptions::normalize([
+    'max_tool_calls_total' => 0,
+    'max_deep_dive_candidates' => 5,
+    'emit_agent_events' => 1,
+]);
+assert_true($normalizedOptions['max_tool_calls_total'] === 1, 'agent options clamps numeric budgets to positive values');
+assert_true($normalizedOptions['max_deep_dive_candidates'] === 5, 'agent options preserves configured deep dive budget');
+assert_true($normalizedOptions['emit_agent_events'] === true, 'agent options normalizes booleans');
+assert_true($normalizedOptions['trace_enabled'] === false, 'agent options disables trace persistence by default');
+assert_true($normalizedOptions['auto_prefetch'] === false, 'agent options disables server auto-prefetch by default');
+
+$profile = AIAgentProfile::resolve([
+    ['role' => 'user', 'content' => '查询资金流向前10的股票，充分深入评估它们，给出建议'],
+], $normalizedOptions);
+assert_true($profile->name() === 'market_scanner', 'agent profile resolves market scanner for capital inflow scan');
+assert_true($profile->toolsAreFullyAvailable() === true, 'agent profile never hides the full tool set');
+assert_contains('全部只读研究工具都保持可用', $profile->systemPromptSuffix(), 'agent profile prompt keeps all tools available');
+
+$fundProfile = AIAgentProfile::resolve([
+    ['role' => 'user', 'content' => '从基金角度分析医药基金，同时对比 600519 的股票行情背景'],
+], $normalizedOptions);
+assert_true($fundProfile->name() === 'fund_researcher', 'agent profile resolves fund researcher for fund requests');
+assert_contains('也可以调用股票、板块和热度工具', $fundProfile->systemPromptSuffix(), 'fund profile explicitly allows cross-tool research');
+
+$capturedFundPayload = null;
+$fundToolExposureStream = '';
+$fundToolExposureAgent = new AIChatToolAgent(
+    ['api_url' => 'http://fake', 'api_key' => 'test', 'model' => 'fake-model'],
+    ['max_tool_rounds' => 1, 'expose_tool_trace' => true, 'auto_prefetch' => false],
+    new FakeToolExecutor(),
+    function(array $payload) use (&$capturedFundPayload): array {
+        $capturedFundPayload = $payload;
+        return [
+            'choices' => [[
+                'finish_reason' => 'stop',
+                'message' => ['role' => 'assistant', 'content' => 'final'],
+            ]],
+        ];
+    }
+);
+$fundToolExposureAgent->run([
+    ['role' => 'user', 'content' => '从基金角度分析医药基金，同时对比 600519 的股票行情背景'],
+], function(string $chunk) use (&$fundToolExposureStream): void {
+    $fundToolExposureStream .= $chunk;
+});
+$payloadToolNames = array_map(function($tool) {
+    return $tool['function']['name'] ?? '';
+}, $capturedFundPayload['tools'] ?? []);
+assert_true(in_array('fa_get_fund_rank', $payloadToolNames, true), 'fund profile payload includes fund tools');
+assert_true(in_array('fa_get_stock_quote', $payloadToolNames, true), 'fund profile payload still includes stock quote tool');
+assert_true(in_array('fa_get_hot_stocks', $payloadToolNames, true), 'fund profile payload still includes stock discovery tool');
+
+$streamEmitter = new AIAgentStreamEmitter($normalizedOptions);
+$sanitized = $streamEmitter->sanitizeAssistantChunk("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"secret\",\"content\":\"visible\"}}]}\n\n");
+assert_contains('visible', $sanitized, 'stream emitter preserves visible content');
+assert_contains('secret', $sanitized, 'stream emitter exposes reasoning_content by default');
+$suppressingEmitter = new AIAgentStreamEmitter(array_merge($normalizedOptions, ['suppress_reasoning_content' => true]));
+$suppressed = $suppressingEmitter->sanitizeAssistantChunk("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"secret\",\"content\":\"visible\"}}]}\n\n");
+assert_true(strpos($suppressed, 'secret') === false && strpos($suppressed, 'reasoning_content') === false, 'stream emitter can still suppress raw reasoning content when configured');
+$pseudoToolStream = '';
+$streamEmitter->syntheticContent(function(string $chunk) use (&$pseudoToolStream): void {
+    $pseudoToolStream .= $chunk;
+}, "<function=fa_get_hot_stocks>\n\n补充说明：已回退。");
+assert_true(strpos($pseudoToolStream, '<function=') === false, 'synthetic content strips pseudo tool markup');
+assert_contains('补充说明', $pseudoToolStream, 'synthetic content preserves user-facing fallback text');
+
+$trace = new AIAgentTraceRecorder('run_test', $normalizedOptions);
+$trace->record('tool_call_started', ['tool' => 'fa_get_hot_stocks']);
+$trace->record('tool_call_finished', ['tool' => 'fa_get_hot_stocks', 'success' => true]);
+$trace->record('run_finished', ['stop_reason' => 'final_answer']);
+$traceSummary = $trace->summary();
+assert_true($traceSummary['tool_call_started'] === 1, 'trace recorder counts started tool calls');
+assert_true($traceSummary['tool_call_finished'] === 1, 'trace recorder counts finished tool calls');
+assert_true($traceSummary['stop_reason'] === 'final_answer', 'trace recorder captures stop reason');
+
+$checkpointState = new AIAgentState('run_checkpoint_test');
+$checkpointTrace = new AIAgentTraceRecorder($checkpointState->runId, $normalizedOptions);
+$streamEmitter->setTraceRecorder($checkpointTrace);
+$checkpointStream = '';
+$checkpointManager = new AIAgentCheckpointManager($checkpointState, $streamEmitter, function(string $chunk) use (&$checkpointStream): void {
+    $checkpointStream .= $chunk;
+}, $checkpointTrace);
+$checkpoint = $checkpointManager->create('model_response', [
+    ['role' => 'system', 'content' => 's'],
+    ['role' => 'user', 'content' => 'u'],
+], ['tool_call_count' => 0]);
+assert_true($checkpoint['label'] === 'model_response', 'checkpoint manager creates labeled checkpoints');
+assert_contains('checkpoint_created', $checkpointStream, 'checkpoint manager emits checkpoint_created event');
+assert_true($checkpointTrace->summary()['checkpoints'] === 1, 'checkpoint events enter trace recorder');
+$streamEmitter->setTraceRecorder(null);
+
+$guardrail = new AIAgentGuardrailPolicy();
+$guardrailReview = $guardrail->reviewFinalText('这只股票一定上涨，必须满仓买入。');
+assert_true($guardrailReview['ok'] === false, 'guardrail detects unsafe deterministic financial advice');
+assert_contains('不构成投资建议', $guardrailReview['append_text'], 'guardrail corrective suffix includes required disclaimer');
+assert_true($guardrail->toolAccessIsReadOnly(['fa_get_stock_quote', 'fa_get_fund_info']) === true, 'guardrail accepts readonly project tools');
 
 $executor = new AIToolExecutor(new FakeMarketDataService(), null, 30000);
 $normalized = $executor->execute('fa_normalize_stock_code', ['code' => '600519']);
@@ -191,8 +361,10 @@ $agent->run([
     $stream .= $chunk;
 });
 
-assert_true(count($fakeExecutor->calls) === 1, 'agent executes model-requested tool once');
-assert_true(count($transportCalls) === 1, 'agent avoids second non-streaming handshake after first tool round');
+assert_true(count($fakeExecutor->calls) === 1, 'agent executes only the model-requested tool on main path');
+assert_true(count($transportCalls) === 2, 'agent performs a second non-streaming model turn after tool observation');
+assert_contains('assistant_thought', $stream, 'agent emits visible thought before tool calls');
+assert_true(strpos($stream, 'assistant_thought') < strpos($stream, 'tool_status'), 'visible thought is emitted before tool status');
 assert_contains('tool_status', $stream, 'agent emits optional tool status event');
 assert_contains('最终研究结论', $stream, 'agent emits final assistant content as SSE');
 assert_contains('data: [DONE]', $stream, 'agent terminates SSE stream');
@@ -205,6 +377,7 @@ $plainAgent = new AIChatToolAgent(
     null,
     function(array $payload, callable $emit): void {
         assert_true(($payload['stream'] ?? false) === true, 'plain fallback uses streaming payload');
+        $emit("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"hidden-reasoning\"}}]}\n\n");
         $emit("data: {\"choices\":[{\"delta\":{\"content\":\"plain\"}}]}\n\n");
         $emit("data: [DONE]\n\n");
     }
@@ -215,57 +388,298 @@ $plainAgent->streamPlain([
     $plainStream .= $chunk;
 });
 assert_contains('plain', $plainStream, 'plain streaming fallback works');
+assert_contains('hidden-reasoning', $plainStream, 'plain streaming exposes raw reasoning_content by default');
 
-$prefetchExecutor = new FakeToolExecutor();
-$prefetchStream = '';
-$prefetchAgent = new AIChatToolAgent(
+$noDoneStream = '';
+$noDoneAgent = new AIChatToolAgent(
     ['api_url' => 'http://fake', 'api_key' => 'test', 'model' => 'fake-model'],
-    ['expose_tool_trace' => true, 'auto_prefetch' => true],
-    $prefetchExecutor,
-    function(array $payload): array {
-        throw new RuntimeException('prefetch should stream final directly');
-    },
+    [],
+    $fakeExecutor,
+    null,
     function(array $payload, callable $emit): void {
-        $content = '';
-        foreach ($payload['messages'] as $message) {
-            $content .= (string)($message['content'] ?? '');
-        }
-        assert_true(strpos($content, 'fa_get_stock_quote') !== false, 'prefetch appends stock quote tool result context');
-        $emit("data: {\"choices\":[{\"delta\":{\"content\":\"prefetch-final\"}}]}\n\n");
-        $emit("data: [DONE]\n\n");
+        $emit("data: {\"choices\":[{\"delta\":{\"content\":\"没有DONE的最终回答\"}}]}\n\n");
     }
 );
-$prefetchAgent->run([
-    ['role' => 'user', 'content' => '请分析 sz002281 的行情和技术面'],
-], function(string $chunk) use (&$prefetchStream) {
-    $prefetchStream .= $chunk;
-});
-assert_contains('fa_get_stock_quote', $prefetchStream, 'prefetch emits visible stock quote tool status');
-assert_contains('fa_calculate_kline_indicators', $prefetchStream, 'prefetch emits visible indicator tool status');
-assert_contains('prefetch-final', $prefetchStream, 'prefetch streams final response');
+$noDoneAgent->streamPlain([
+    ['role' => 'user', 'content' => 'hello'],
+], function(string $chunk) use (&$noDoneStream) {
+    $noDoneStream .= $chunk;
+}, new AIAgentState('run_no_done'), 'plain_stream_no_done');
+assert_contains('没有DONE的最终回答', $noDoneStream, 'no-DONE upstream content is preserved');
+assert_contains('不构成投资建议', $noDoneStream, 'no-DONE upstream stream still gets guardrail/disclaimer suffix');
+assert_contains('run_finished', $noDoneStream, 'no-DONE upstream stream still emits run_finished');
+assert_contains('data: [DONE]', $noDoneStream, 'no-DONE upstream stream is completed by server');
 
-$marketScanExecutor = new FakeToolExecutor();
-$marketScanTransportCalls = 0;
-$marketScanStream = '';
-$marketScanAgent = new AIChatToolAgent(
+$directAnswerExecutor = new FakeToolExecutor();
+$directAnswerStream = '';
+$directAnswerAgent = new AIChatToolAgent(
     ['api_url' => 'http://fake', 'api_key' => 'test', 'model' => 'fake-model'],
-    ['max_tool_rounds' => 10, 'max_tool_calls_per_round' => 8, 'expose_tool_trace' => true, 'auto_prefetch' => true],
-    $marketScanExecutor,
-    function(array $payload) use (&$marketScanTransportCalls): array {
-        $marketScanTransportCalls++;
+    ['expose_tool_trace' => true, 'auto_prefetch' => true],
+    $directAnswerExecutor,
+    function(array $payload): array {
+        return [
+            'choices' => [[
+                'message' => [
+                    'role' => 'assistant',
+                    'content' => '常识性回答：可以直接解释概念，不需要查询行情。内容仅供研究参考，不构成投资建议。',
+                ],
+            ]],
+        ];
+    },
+    function(array $payload, callable $emit): void {
+        assert_true(false, 'direct answer must not enter final stream fallback');
+    }
+);
+$directAnswerAgent->run([
+    ['role' => 'user', 'content' => '什么是市盈率？'],
+], function(string $chunk) use (&$directAnswerStream) {
+    $directAnswerStream .= $chunk;
+});
+assert_true(count($directAnswerExecutor->calls) === 0, 'direct answer does not trigger server auto-prefetch even when option is true');
+assert_contains('常识性回答', $directAnswerStream, 'direct answer is emitted without tools');
+assert_true(strpos($directAnswerStream, '服务端数据预取') === false, 'direct answer exposes no server prefetch trace');
+
+$stockContinuationExecutor = new FakeToolExecutor();
+$stockContinuationStream = '';
+$stockContinuationTransportCalls = 0;
+$stockContinuationAgent = new AIChatToolAgent(
+    ['api_url' => 'http://fake', 'api_key' => 'test', 'model' => 'fake-model'],
+    ['max_tool_rounds' => 5, 'max_tool_calls_per_round' => 8, 'expose_tool_trace' => true, 'auto_prefetch' => true, 'stream_after_tool_round' => true],
+    $stockContinuationExecutor,
+    function(array $payload) use (&$stockContinuationTransportCalls): array {
+        $stockContinuationTransportCalls++;
+        if ($stockContinuationTransportCalls === 1) {
+            return [
+                'choices' => [[
+                    'message' => [
+                        'role' => 'assistant',
+                        'content' => null,
+                        'tool_calls' => [[
+                            'id' => 'normalize_1',
+                            'type' => 'function',
+                            'function' => [
+                                'name' => 'fa_normalize_stock_code',
+                                'arguments' => '{"code":"600519"}',
+                            ],
+                        ]],
+                    ],
+                ]],
+            ];
+        }
+        return [
+            'choices' => [[
+                'message' => [
+                    'role' => 'assistant',
+                    'content' => '准备性调用后模型没有继续请求研究工具。内容仅供研究参考，不构成投资建议。',
+                ],
+            ]],
+        ];
+    },
+    function(array $payload, callable $emit): void {
+        assert_true(false, 'setup-only model answer must be emitted directly without server planned final stream');
+    }
+);
+$stockContinuationAgent->run([
+    ['role' => 'user', 'content' => '分析 600519 的行情、技术面和资金流'],
+], function(string $chunk) use (&$stockContinuationStream) {
+    $stockContinuationStream .= $chunk;
+});
+$stockContinuationNames = array_map(function($call) { return $call[0]; }, $stockContinuationExecutor->calls);
+assert_true(count(array_filter($stockContinuationNames, function($name) { return $name === 'fa_normalize_stock_code'; })) === 1, 'stock continuation executes requested normalize once');
+assert_true(count(array_filter($stockContinuationNames, function($name) { return in_array($name, ['fa_get_stock_quote', 'fa_calculate_kline_indicators', 'fa_get_stock_flow'], true); })) === 0, 'stock continuation does not run server-planned research tools');
+assert_true(strpos($stockContinuationStream, '服务端规划深挖') === false, 'stock continuation exposes no server planned trace');
+assert_contains('准备性调用后模型没有继续请求研究工具', $stockContinuationStream, 'stock continuation emits model final answer directly');
+
+$partialArgsExecutor = new FakeToolExecutor();
+$partialArgsAgent = new AIChatToolAgent(
+    ['api_url' => 'http://fake', 'api_key' => 'test', 'model' => 'fake-model'],
+    ['max_tool_rounds' => 1, 'expose_tool_trace' => true, 'auto_prefetch' => false, 'stream_after_tool_round' => true],
+    $partialArgsExecutor,
+    function(array $payload): array {
         return [
             'choices' => [[
                 'message' => [
                     'role' => 'assistant',
                     'content' => null,
                     'tool_calls' => [[
-                        'id' => 'bad_hot_1',
+                        'id' => 'partial_rank_1',
                         'type' => 'function',
                         'function' => [
-                            'name' => 'fa_get_hot_stocks',
-                            'arguments' => '{"page": ',
+                            'name' => 'fa_get_fund_rank',
+                            'arguments' => '{"type":"all","period":"day"}',
                         ],
                     ]],
+                ],
+            ]],
+        ];
+    },
+    function(array $payload, callable $emit): void {
+        $emit("data: {\"choices\":[{\"delta\":{\"content\":\"partial-args-final\"}}]}\n\n");
+        $emit("data: [DONE]\n\n");
+    }
+);
+$partialArgsStream = '';
+$partialArgsAgent->run([
+    ['role' => 'user', 'content' => '查询今日基金涨幅排行'],
+], function(string $chunk) use (&$partialArgsStream) {
+    $partialArgsStream .= $chunk;
+});
+assert_true(array_key_exists('page', $partialArgsExecutor->calls[0][1]) && $partialArgsExecutor->calls[0][1]['page'] === null, 'tool runtime fills missing strict nullable page argument');
+assert_true(array_key_exists('page_size', $partialArgsExecutor->calls[0][1]) && $partialArgsExecutor->calls[0][1]['page_size'] === null, 'tool runtime fills missing strict nullable page_size argument');
+
+$invalidArgsExecutor = new FundRankExecutor();
+$invalidArgsStream = '';
+$invalidArgsTransportCalls = 0;
+$invalidArgsAgent = new AIChatToolAgent(
+    ['api_url' => 'http://fake', 'api_key' => 'test', 'model' => 'fake-model'],
+    ['max_tool_rounds' => 4, 'max_tool_calls_per_round' => 8, 'expose_tool_trace' => true, 'auto_prefetch' => true, 'stream_after_tool_round' => true],
+    $invalidArgsExecutor,
+    function(array $payload) use (&$invalidArgsTransportCalls): array {
+        $invalidArgsTransportCalls++;
+        if ($invalidArgsTransportCalls === 2) {
+            return [
+                'choices' => [[
+                    'message' => [
+                        'role' => 'assistant',
+                        'content' => null,
+                        'tool_calls' => [
+                            [
+                                'id' => 'fund_info_after_rank',
+                                'type' => 'function',
+                                'function' => [
+                                    'name' => 'fa_get_fund_info',
+                                    'arguments' => '{"codes":["000001","000002"]}',
+                                ],
+                            ],
+                            [
+                                'id' => 'fund_estimate_after_rank',
+                                'type' => 'function',
+                                'function' => [
+                                    'name' => 'fa_get_fund_estimate',
+                                    'arguments' => '{"codes":["000001","000002"]}',
+                                ],
+                            ],
+                        ],
+                    ],
+                ]],
+            ];
+        }
+        if ($invalidArgsTransportCalls >= 3) {
+            return [
+                'choices' => [[
+                    'message' => [
+                        'role' => 'assistant',
+                        'content' => '基金深入研究最终结论：已结合排行、资料和估值观察。内容仅供研究参考，不构成投资建议。',
+                    ],
+                ]],
+            ];
+        }
+        return [
+            'choices' => [[
+                'message' => [
+                    'role' => 'assistant',
+                    'content' => null,
+                    'tool_calls' => [[
+                        'id' => 'bad_fund_rank_1',
+                        'type' => 'function',
+                        'function' => [
+                            'name' => 'fa_get_fund_rank',
+                            'arguments' => '{"type": ',
+                        ],
+                    ]],
+                ],
+            ]],
+        ];
+    },
+    function(array $payload, callable $emit): void {
+        assert_true(false, 'repaired invalid args path should finish through model decision loop, not forced final stream');
+    }
+);
+$invalidArgsAgent->run([
+    ['role' => 'user', 'content' => '查询今天涨势最好的几只基金，深入研究分析它们，然后给出建议'],
+], function(string $chunk) use (&$invalidArgsStream) {
+    $invalidArgsStream .= $chunk;
+});
+assert_true($invalidArgsTransportCalls === 3, 'invalid args path repairs the selected tool call and continues model decision loop');
+assert_true(count($invalidArgsExecutor->calls) === 3, 'invalid args path executes repaired rank plus model-selected follow-up tools');
+assert_true($invalidArgsExecutor->calls[0][0] === 'fa_get_fund_rank', 'invalid args repair preserves the model-selected fund rank tool');
+assert_true(($invalidArgsExecutor->calls[0][1]['period'] ?? '') === 'day', 'invalid args repair infers day period for today top gainers');
+assert_true(($invalidArgsExecutor->calls[0][1]['type'] ?? '') === 'all', 'invalid args repair infers all fund type by default');
+assert_true(($invalidArgsExecutor->calls[0][1]['page_size'] ?? 0) === 10, 'invalid args repair uses compact default fund rank page size');
+assert_true(in_array('fa_get_fund_info', array_map(function($call) { return $call[0]; }, $invalidArgsExecutor->calls), true), 'invalid args path lets model continue to fund info');
+assert_true(in_array('fa_get_fund_estimate', array_map(function($call) { return $call[0]; }, $invalidArgsExecutor->calls), true), 'invalid args path lets model continue to fund estimate');
+assert_true(strpos($invalidArgsStream, '参数 JSON 不完整') !== false, 'invalid args repair exposes JSON repair status instead of hiding it');
+assert_true(strpos($invalidArgsStream, '服务端数据预取') === false, 'invalid args path exposes no server prefetch trace');
+assert_contains('基金深入研究最终结论', $invalidArgsStream, 'invalid args path emits final answer after follow-up tools');
+
+$modelLoopExecutor = new MarketScanDeepDiveExecutor();
+$modelLoopTransportCalls = 0;
+$modelLoopStream = '';
+$modelLoopAgent = new AIChatToolAgent(
+    ['api_url' => 'http://fake', 'api_key' => 'test', 'model' => 'fake-model'],
+    [
+        'max_tool_rounds' => 6,
+        'max_tool_calls_per_round' => 8,
+        'max_tool_calls_total' => 64,
+        'max_deep_dive_candidates' => 10,
+        'expose_tool_trace' => true,
+        'auto_prefetch' => true,
+        'stream_after_tool_round' => true,
+    ],
+    $modelLoopExecutor,
+    function(array $payload) use (&$modelLoopTransportCalls): array {
+        $modelLoopTransportCalls++;
+        if ($modelLoopTransportCalls === 1) {
+            return [
+                'choices' => [[
+                    'message' => [
+                        'role' => 'assistant',
+                        'content' => null,
+                        'tool_calls' => [[
+                            'id' => 'hot_1',
+                            'type' => 'function',
+                            'function' => [
+                                'name' => 'fa_get_hot_stocks',
+                                'arguments' => '{"page":1,"page_size":10,"sort":"f62","order":1}',
+                            ],
+                        ]],
+                    ],
+                ]],
+            ];
+        }
+        if ($modelLoopTransportCalls === 2) {
+            return [
+                'choices' => [[
+                    'message' => [
+                        'role' => 'assistant',
+                        'content' => null,
+                        'tool_calls' => [
+                            [
+                                'id' => 'quote_1',
+                                'type' => 'function',
+                                'function' => [
+                                    'name' => 'fa_get_stock_quote',
+                                    'arguments' => '{"codes":["600001","600002","600003"],"source":"auto","fallback":true}',
+                                ],
+                            ],
+                            [
+                                'id' => 'flow_1',
+                                'type' => 'function',
+                                'function' => [
+                                    'name' => 'fa_get_stock_flow',
+                                    'arguments' => '{"code":"600001","limit":30}',
+                                ],
+                            ],
+                        ],
+                    ],
+                ]],
+            ];
+        }
+        return [
+            'choices' => [[
+                'message' => [
+                    'role' => 'assistant',
+                    'content' => '多轮模型主路径最终结论：已根据热榜、行情和资金流观察继续决策。内容仅供研究参考，不构成投资建议。',
                 ],
             ]],
         ];
@@ -275,26 +689,26 @@ $marketScanAgent = new AIChatToolAgent(
         foreach ($payload['messages'] as $message) {
             $content .= (string)($message['content'] ?? '');
         }
-        assert_true(strpos($content, 'capital_inflow_candidates') !== false, 'market scan prefetch appends market scan context');
-        assert_true(strpos($content, 'fa_get_hot_stocks') !== false, 'market scan prefetch includes hot stocks result');
-        assert_true(strpos($content, 'fa_get_sector_flow') !== false, 'market scan prefetch includes sector flow result');
-        assert_true(strpos($content, 'fa_get_xueqiu_hot_stock') !== false, 'market scan prefetch includes xueqiu hot result');
-        $emit("data: {\"choices\":[{\"delta\":{\"content\":\"market-scan-final\"}}]}\n\n");
+        assert_true(strpos($content, 'fa_get_hot_stocks') !== false, 'multi-turn final context includes first model tool result');
+        assert_true(strpos($content, 'fa_get_stock_quote') !== false, 'multi-turn final context includes second model tool result');
+        assert_true(strpos($content, 'server_planned') === false, 'multi-turn main path does not use server planned tools');
+        $emit("data: {\"choices\":[{\"delta\":{\"content\":\"multi-turn-final\"}}]}\n\n");
         $emit("data: [DONE]\n\n");
     }
 );
-$marketScanAgent->run([
-    ['role' => 'user', 'content' => '分析前十资金流入的股票，综合评估'],
-], function(string $chunk) use (&$marketScanStream) {
-    $marketScanStream .= $chunk;
+$modelLoopAgent->run([
+    ['role' => 'user', 'content' => '查询资金流向前10的股票，充分深入评估它们，给出建议'],
+], function(string $chunk) use (&$modelLoopStream) {
+    $modelLoopStream .= $chunk;
 });
-assert_true($marketScanTransportCalls === 1, 'market scan does not loop indefinitely after malformed model tool call');
-assert_contains('AI 工具调用', $marketScanStream, 'market scan shows model attempted tool call');
-assert_contains('服务端数据预取', $marketScanStream, 'market scan shows server prefetch fallback separately');
-assert_contains('fa_get_hot_stocks', $marketScanStream, 'market scan emits hot stocks tool status');
-assert_contains('fa_get_sector_flow', $marketScanStream, 'market scan emits sector flow tool status');
-assert_contains('fa_get_xueqiu_hot_stock', $marketScanStream, 'market scan emits xueqiu hot tool status');
-assert_contains('market-scan-final', $marketScanStream, 'market scan streams final response');
+$modelLoopNames = array_map(function($call) { return $call[0]; }, $modelLoopExecutor->calls);
+assert_true($modelLoopTransportCalls === 3, 'multi-turn main path lets model decide again after tool observation');
+assert_true(in_array('fa_get_hot_stocks', $modelLoopNames, true), 'multi-turn executes first model discovery tool');
+assert_true(in_array('fa_get_stock_quote', $modelLoopNames, true), 'multi-turn executes second model quote tool');
+assert_true(in_array('fa_get_stock_flow', $modelLoopNames, true), 'multi-turn executes second model flow tool');
+assert_true(!in_array('fa_calculate_kline_indicators', $modelLoopNames, true), 'multi-turn main path avoids automatic server planned indicators');
+assert_contains('工具观察已回填，继续让 AI 决定下一步', $modelLoopStream, 'multi-turn stream exposes observe-then-act continuation');
+assert_contains('多轮模型主路径最终结论', $modelLoopStream, 'multi-turn main path emits model final answer');
 
 $fallbackStream = '';
 $fallbackAgent = new AIChatToolAgent(

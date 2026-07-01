@@ -1418,6 +1418,83 @@ tr:hover td { background: var(--bg-hover); }
     margin-right: auto; color: var(--text-muted);
     font-style: italic; padding: 8px 14px;
 }
+.process-message {
+    margin-right: auto;
+    max-width: 88%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 11px;
+    color: var(--text-secondary);
+    background: rgba(88, 166, 255, 0.08);
+    border: 1px solid rgba(88, 166, 255, 0.18);
+    border-radius: var(--radius-md);
+    font-size: 0.78rem;
+    line-height: 1.45;
+}
+.process-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--accent-blue);
+    box-shadow: 0 0 0 4px rgba(88, 166, 255, 0.12);
+    flex: 0 0 auto;
+}
+.process-text {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+.thought-message {
+    margin-right: auto;
+    max-width: 88%;
+    padding: 9px 12px;
+    color: var(--message-bot-text);
+    background: rgba(255, 255, 255, 0.68);
+    border: 1px solid rgba(91, 132, 91, 0.22);
+    border-left: 3px solid var(--accent-green);
+    border-radius: var(--radius-md);
+    font-size: 0.82rem;
+    line-height: 1.55;
+}
+.thought-message-title {
+    font-weight: 700;
+    font-size: 0.76rem;
+    margin-bottom: 4px;
+    color: var(--text-primary);
+}
+.thought-message-body {
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+}
+.tool-message {
+    margin-right: auto;
+    max-width: 88%;
+    padding: 9px 11px;
+    color: var(--message-bot-text);
+    background: linear-gradient(180deg, rgba(42, 123, 255, 0.1), rgba(42, 123, 255, 0.055));
+    border: 1px solid rgba(88, 166, 255, 0.22);
+    border-left: 3px solid var(--accent-blue);
+    border-radius: var(--radius-md);
+    font-size: 0.78rem;
+    line-height: 1.45;
+}
+.tool-message-title {
+    color: var(--text-secondary);
+    font-weight: 700;
+    margin-bottom: 4px;
+}
+.tool-message-body {
+    color: var(--text-primary);
+    overflow-wrap: anywhere;
+}
+.tool-message-meta {
+    margin-top: 5px;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+}
 .reasoning-content {
     color: var(--text-muted); font-size: 0.85em;
     margin-bottom: 6px; padding: 6px 8px;

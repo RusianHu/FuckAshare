@@ -5,6 +5,15 @@
 
 require_once __DIR__ . '/AIToolRegistry.php';
 require_once __DIR__ . '/AIToolExecutor.php';
+require_once __DIR__ . '/AIAgentOptions.php';
+require_once __DIR__ . '/AIAgentState.php';
+require_once __DIR__ . '/AIAgentStreamEmitter.php';
+require_once __DIR__ . '/AIAgentProfile.php';
+require_once __DIR__ . '/AIAgentTraceRecorder.php';
+require_once __DIR__ . '/AIAgentCheckpointManager.php';
+require_once __DIR__ . '/AIAgentGuardrailPolicy.php';
+require_once __DIR__ . '/AIToolRuntime.php';
+require_once __DIR__ . '/AIChatCompletionsAdapter.php';
 
 class AIChatToolAgent
 {
@@ -23,155 +32,192 @@ class AIChatToolAgent
     /** @var callable|null */
     private $streamTransport;
 
+    /** @var AIAgentStreamEmitter */
+    private $stream;
+
+    /** @var AIToolRuntime */
+    private $toolRuntime;
+
+    /** @var AIChatCompletionsAdapter */
+    private $model;
+
     public function __construct(array $channel, array $options = [], ?AIToolExecutor $executor = null, ?callable $transport = null, ?callable $streamTransport = null)
     {
         $this->channel = $channel;
-        $this->options = array_merge([
-            'max_tool_rounds' => 10,
-            'max_tool_calls_per_round' => 8,
-            'tool_timeout' => 45,
-            'tool_output_char_limit' => 60000,
-            'parallel_tool_calls' => true,
-            'expose_tool_trace' => true,
-            'auto_prefetch' => true,
-            'stream_after_tool_round' => true,
-            'timeout' => 300,
-            'connect_timeout' => 15,
-        ], $options);
+        $this->options = AIAgentOptions::normalize($options);
         $this->executor = $executor ?: new AIToolExecutor(null, null, (int)$this->options['tool_output_char_limit']);
         $this->transport = $transport;
         $this->streamTransport = $streamTransport;
+        $this->stream = new AIAgentStreamEmitter($this->options);
+        $this->stream->setGuardrailPolicy(new AIAgentGuardrailPolicy());
+        $this->toolRuntime = new AIToolRuntime($this->executor, $this->stream, $this->options);
+        $this->model = new AIChatCompletionsAdapter($this->channel, $this->options, $this->stream, $this->transport, $this->streamTransport);
     }
 
     public function run(array $messages, callable $emit): void
     {
+        $state = new AIAgentState();
+        $profile = AIAgentProfile::resolve($messages, $this->options);
+        $trace = new AIAgentTraceRecorder($state->runId, $this->options);
+        $this->stream->setTraceRecorder($trace);
+        $checkpointManager = new AIAgentCheckpointManager($state, $this->stream, $emit, $trace);
         $originalMessages = $messages;
-        $messages = $this->prepareMessages($messages);
+        $messages = $this->prepareMessages($messages, $profile);
         $tools = AIToolRegistry::chatTools();
-        $seenCalls = [];
-        $usedTools = false;
         $maxRounds = max(1, (int)$this->options['max_tool_rounds']);
+        $this->stream->agentEvent($emit, 'run_started', [
+            'run_id' => $state->runId,
+            'profile' => $profile->metadata(),
+            'max_rounds' => $maxRounds,
+            'max_tool_calls_total' => (int)$this->options['max_tool_calls_total'],
+        ]);
 
         for ($round = 1; $round <= $maxRounds; $round++) {
-            $payload = $this->basePayload($messages, false);
+            $state->round = $round;
+            $payload = $this->model->payload($messages, false);
             $payload['tools'] = $tools;
             $payload['tool_choice'] = 'auto';
             $payload['parallel_tool_calls'] = (bool)$this->options['parallel_tool_calls'];
 
+            $this->stream->agentEvent($emit, 'agent_status', [
+                'run_id' => $state->runId,
+                'round' => $round,
+                'message' => 'AI 正在分析任务并决定下一步是否调用工具。',
+            ]);
+
             try {
-                $response = $this->complete($payload);
+                $response = $this->model->complete($payload);
             } catch (Throwable $e) {
                 $reason = trim($e->getMessage());
-                if (!empty($this->options['auto_prefetch'])) {
-                    $prefetched = $this->prefetchResearchContext($originalMessages, $emit, 'server_prefetch');
-                    if (!empty($prefetched)) {
-                        $messages[] = $this->prefetchSystemMessage($prefetched);
-                        $this->streamFinal($messages, $emit);
-                        return;
-                    }
-                }
-
                 $message = '当前上游未能完成工具调用握手，已回退普通流式对话。';
                 if ($reason !== '') {
                     $message .= '原因：' . mb_substr($reason, 0, 160);
                 }
-                $this->emitFallbackStatus($emit, $message);
-                $this->streamPlain($originalMessages, $emit);
+                $this->stream->fallbackStatus($emit, $message);
+                $this->stream->agentEvent($emit, 'agent_status', [
+                    'run_id' => $state->runId,
+                    'message' => $message,
+                ]);
+                $this->streamPlain($originalMessages, $emit, $state, 'plain_stream_fallback');
                 return;
             }
             $assistant = $this->extractAssistantMessage($response);
             if ($assistant === null) {
-                $this->emitError($emit, '上游 AI 响应格式无效，未返回 assistant message。', 'invalid_upstream_response');
+                $this->stream->error($emit, '上游 AI 响应格式无效，未返回 assistant message。', 'invalid_upstream_response');
+                $this->stream->failRun($emit, $state, 'invalid_upstream_response', '上游 AI 响应格式无效，未返回 assistant message。');
+                return;
+            }
+
+            $finishReason = $response['choices'][0]['finish_reason'] ?? null;
+            if ($finishReason === 'length') {
+                $this->stream->agentEvent($emit, 'agent_status', [
+                    'run_id' => $state->runId,
+                    'round' => $round,
+                    'message' => '模型输出被截断(finish_reason=length)，工具调用参数可能不完整，跳过本轮工具调用。',
+                ]);
+                $content = $this->stripPseudoToolMarkup((string)($assistant['content'] ?? ''));
+                if ($content !== '') {
+                    $this->stream->syntheticContent($emit, $content, $state, 'truncated_fallback');
+                    return;
+                }
+                $this->stream->agentEvent($emit, 'final_answer_started', ['run_id' => $state->runId]);
+                $this->streamFinal($messages, $emit, $state, 'truncated_retry');
                 return;
             }
 
             $toolCalls = $this->extractToolCalls($assistant);
+            $checkpointManager->create('model_response', $messages, [
+                'round' => $round,
+                'tool_call_count' => count($toolCalls),
+                'assistant_content_chars' => mb_strlen((string)($assistant['content'] ?? '')),
+            ]);
             if (empty($toolCalls)) {
-                $content = (string)($assistant['content'] ?? '');
-                if ((!$usedTools || !$this->hasUsefulResearchToolResult($messages)) && !empty($this->options['auto_prefetch'])) {
-                    $prefetched = $this->prefetchResearchContext($originalMessages, $emit, 'server_prefetch');
-                    if (!empty($prefetched)) {
-                        $messages[] = $this->prefetchSystemMessage($prefetched);
-                        $this->streamFinal($messages, $emit);
-                        return;
-                    }
-                }
-                $this->emitSyntheticContent($emit, $content);
+                $this->stream->agentEvent($emit, 'assistant_delta', [
+                    'run_id' => $state->runId,
+                    'round' => $round,
+                    'content_summary' => mb_substr($this->stripPseudoToolMarkup((string)($assistant['content'] ?? '')), 0, 160),
+                ]);
+                $content = $this->stripPseudoToolMarkup((string)($assistant['content'] ?? ''));
+                $this->stream->agentEvent($emit, 'final_answer_started', ['run_id' => $state->runId]);
+                $this->stream->syntheticContent($emit, $content, $state, 'final_answer');
                 return;
             }
 
-            $usedTools = true;
+            $this->stream->assistantThought($emit, $this->visibleThoughtForToolCalls($assistant, $toolCalls), $round, $state);
             $messages[] = $this->compactAssistantMessage($assistant, $toolCalls);
             $toolLimit = max(1, (int)$this->options['max_tool_calls_per_round']);
             $toolCalls = array_slice($toolCalls, 0, $toolLimit);
-
-            foreach ($toolCalls as $toolCall) {
-                $name = (string)($toolCall['function']['name'] ?? '');
-                $callId = (string)($toolCall['id'] ?? uniqid('call_', true));
-                $argsJson = (string)($toolCall['function']['arguments'] ?? '{}');
-                $args = json_decode($argsJson, true);
-                if (!is_array($args)) {
-                    $args = [];
-                    $this->emitToolStatus($emit, $round, $name, ['invalid_arguments_json' => $argsJson], 'model_tool_call');
-                    $result = json_encode([
-                        'success' => false,
-                        'source' => 'ai_tool',
-                        'action' => $name,
-                        'code' => 'invalid_arguments_json',
-                        'message' => '工具参数不是有效 JSON',
-                        'meta' => ['updated_at' => date('c')],
-                    ], JSON_UNESCAPED_UNICODE);
-                } else {
-                    $signature = $name . ':' . md5(json_encode($args, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
-                    if (isset($seenCalls[$signature])) {
-                        $result = json_encode([
-                            'success' => false,
-                            'source' => 'ai_tool',
-                            'action' => $name,
-                            'code' => 'duplicate_tool_call',
-                            'message' => '本次请求中已执行过相同工具和参数，已跳过去重。',
-                            'meta' => ['updated_at' => date('c')],
-                        ], JSON_UNESCAPED_UNICODE);
-                    } else {
-                        $seenCalls[$signature] = true;
-                        $this->emitToolStatus($emit, $round, $name, $args, 'model_tool_call');
-                        $result = $this->executor->executeForModel($name, $args);
-                    }
-                }
-
-                $messages[] = [
-                    'role' => 'tool',
-                    'tool_call_id' => $callId,
-                    'name' => $name,
-                    'content' => $result,
-                ];
+            $toolCalls = $this->repairMalformedToolArguments($toolCalls, $originalMessages, $state, $emit, $round);
+            $toolMessages = [];
+            foreach ($this->toolRuntime->executeToolCalls($toolCalls, $state, $emit, $round, 'model_tool_call') as $message) {
+                $messages[] = $message;
+                $toolMessages[] = $message;
             }
+            $checkpointManager->create('tool_batch_complete', $messages, [
+                'round' => $round,
+                'origin' => 'model_tool_call',
+                'requested_tool_calls' => count($toolCalls),
+            ]);
 
-            if ($this->shouldContinueAfterToolRound($toolCalls, $originalMessages) && !empty($this->options['auto_prefetch'])) {
-                $prefetched = $this->prefetchResearchContext($originalMessages, $emit, 'server_prefetch');
-                if (!empty($prefetched)) {
-                    $messages[] = $this->prefetchSystemMessage($prefetched);
-                    $this->streamFinal($messages, $emit);
-                    return;
-                }
-            }
-
-            if (!$this->hasUsefulResearchToolResult($messages) && !empty($this->options['auto_prefetch'])) {
-                $prefetched = $this->prefetchResearchContext($originalMessages, $emit, 'server_prefetch');
-                if (!empty($prefetched)) {
-                    $messages[] = $this->prefetchSystemMessage($prefetched);
-                    $this->streamFinal($messages, $emit);
-                    return;
-                }
-            }
-
-            if (!empty($this->options['stream_after_tool_round'])) {
+            if ($this->toolBatchHasOnlyInvalidArguments($toolMessages)) {
                 $messages[] = [
                     'role' => 'system',
-                    'content' => '已执行上一条 assistant 消息中模型主动请求的工具。请基于 tool 结果直接给出最终研究结论；不要再次请求工具。若数据不足，请明确说明。',
+                    'content' => '模型工具参数不是有效 JSON，且服务端无法在不改变模型工具意图的前提下安全补齐。请停止请求工具，基于已有上下文直接回答；如无法确认实时数据，明确说明缺少有效工具结果。',
                 ];
-                $this->streamFinal($messages, $emit);
+                $checkpointManager->create('ready_for_final_answer', $messages, [
+                    'round' => $round,
+                    'stop_reason' => 'invalid_tool_arguments',
+                ]);
+                $this->stream->agentEvent($emit, 'final_answer_started', ['run_id' => $state->runId]);
+                $this->streamFinal($messages, $emit, $state, 'invalid_tool_arguments');
                 return;
+            }
+
+            if (!$this->hasUsefulResearchToolResult($messages) && $this->shouldContinueAfterToolRound($toolCalls, $originalMessages)) {
+                if (empty($state->flags['setup_only_model_retry_done']) && $round < $maxRounds) {
+                    $state->flags['setup_only_model_retry_done'] = true;
+                    $messages[] = [
+                        'role' => 'system',
+                        'content' => '当前只完成了代码规范化等准备性工具调用。请观察结果后继续调用行情、指标、资金流或基金估值/历史/排行等必要只读研究工具；如已足够再给最终结论。',
+                    ];
+                    $this->stream->agentEvent($emit, 'agent_status', [
+                        'run_id' => $state->runId,
+                        'round' => $round,
+                        'message' => '准备性工具结果已回填，继续让 AI 决定下一步研究工具。',
+                    ]);
+                    continue;
+                }
+            }
+
+            if ($state->toolCalls >= (int)$this->options['max_tool_calls_total']) {
+                $messages[] = [
+                    'role' => 'system',
+                    'content' => '工具调用总次数已达到预算上限。请基于已经返回的工具数据给出阶段性研究结论，明确说明仍然缺失或不确定的信息。',
+                ];
+                $checkpointManager->create('ready_for_final_answer', $messages, [
+                    'round' => $round,
+                    'stop_reason' => 'max_tool_calls',
+                ]);
+                $this->stream->agentEvent($emit, 'final_answer_started', ['run_id' => $state->runId]);
+                $this->streamFinal($messages, $emit, $state, 'max_tool_calls');
+                return;
+            }
+
+            if ($round < $maxRounds) {
+                $continuationContent = '工具观察结果已回填。请基于最新观察继续判断下一步：如仍缺少关键事实，请继续调用只读工具；如信息足够，请给出最终研究结论。';
+                if ($this->shouldEncourageFundDeepDive($toolCalls, $originalMessages)) {
+                    $continuationContent = '基金排行候选已返回。若用户要求深入研究或给出建议，请从候选中选择少量代表性基金，继续调用基金资料、估值或历史净值等只读工具；如信息已经足够，再给最终结论。';
+                }
+                $messages[] = [
+                    'role' => 'system',
+                    'content' => $continuationContent,
+                ];
+                $this->stream->agentEvent($emit, 'agent_status', [
+                    'run_id' => $state->runId,
+                    'round' => $round,
+                    'message' => '工具观察已回填，继续让 AI 决定下一步。',
+                ]);
+                continue;
             }
         }
 
@@ -179,15 +225,40 @@ class AIChatToolAgent
             'role' => 'system',
             'content' => '工具调用轮次已达上限。请基于已经返回的工具数据给出阶段性研究结论，明确说明仍然缺失或不确定的信息。',
         ];
-        $this->streamFinal($messages, $emit);
+        $checkpointManager->create('ready_for_final_answer', $messages, [
+            'round' => $state->round,
+            'stop_reason' => 'max_rounds',
+        ]);
+        $this->stream->agentEvent($emit, 'final_answer_started', ['run_id' => $state->runId]);
+        $this->streamFinal($messages, $emit, $state, 'max_rounds');
     }
 
-    public function streamPlain(array $messages, callable $emit): void
+    public function streamPlain(array $messages, callable $emit, ?AIAgentState $state = null, string $stopReason = 'plain_stream'): void
     {
-        $this->streamPayload($this->basePayload($messages, true), $emit);
+        if ($state === null) {
+            $this->model->stream($this->model->payload($messages, true), function (string $data) use ($emit): void {
+                $emit($this->stream->sanitizeAssistantChunk($data));
+            });
+            return;
+        }
+
+        $finished = false;
+        $finalText = '';
+        $wrappedEmit = $this->stream->wrapFinalStream($emit, $state, $stopReason, $finished, $finalText);
+
+        $this->model->stream($this->model->payload($messages, true), $wrappedEmit);
+        if (!$finished) {
+            $this->stream->riskDisclaimerIfMissing($emit, $finalText, $state);
+            $this->stream->agentEvent($emit, 'final_answer_finished', [
+                'run_id' => $state->runId,
+                'chars' => mb_strlen($finalText),
+            ]);
+            $this->stream->finishRun($emit, $state, $stopReason);
+            $emit("data: [DONE]\n\n");
+        }
     }
 
-    private function prepareMessages(array $messages): array
+    private function prepareMessages(array $messages, ?AIAgentProfile $profile = null): array
     {
         $prepared = [];
         $hasSystem = false;
@@ -195,143 +266,25 @@ class AIChatToolAgent
             if (!is_array($message)) continue;
             if (($message['role'] ?? '') === 'system') {
                 $hasSystem = true;
-                $message['content'] = $this->systemPrompt() . "\n\n" . (string)($message['content'] ?? '');
+                $message['content'] = $this->systemPrompt($profile) . "\n\n" . (string)($message['content'] ?? '');
             }
             $prepared[] = $message;
         }
         if (!$hasSystem) {
-            array_unshift($prepared, ['role' => 'system', 'content' => $this->systemPrompt()]);
+            array_unshift($prepared, ['role' => 'system', 'content' => $this->systemPrompt($profile)]);
         }
         return $prepared;
     }
 
-    private function prefetchResearchContext(array $messages, callable $emit, string $origin): array
+    private function requestedSortField(string $text): string
     {
-        $latestUser = $this->latestUserContent($messages);
-        if ($latestUser === '') return [];
-
-        $contexts = [];
-        if ($this->looksLikeFundRequest($latestUser)) {
-            $fundCodes = $this->extractFundCodes($latestUser);
-            foreach (array_slice($fundCodes, 0, 2) as $code) {
-                $contexts[] = [
-                    'asset_type' => 'fund',
-                    'code' => $code,
-                    'tool_results' => [
-                        'fa_get_fund_info' => $this->executePrefetchTool($emit, 'fa_get_fund_info', ['codes' => [$code]], $origin),
-                        'fa_get_fund_estimate' => $this->executePrefetchTool($emit, 'fa_get_fund_estimate', ['codes' => [$code]], $origin),
-                        'fa_get_fund_history' => $this->executePrefetchTool($emit, 'fa_get_fund_history', ['code' => $code, 'page' => 1, 'page_size' => 40], $origin),
-                        'fa_get_fund_rank' => $this->executePrefetchTool($emit, 'fa_get_fund_rank', ['type' => 'all', 'period' => 'year', 'page' => 1, 'page_size' => 30], $origin),
-                    ],
-                ];
-            }
-            return $contexts;
+        if (preg_match('/(涨(?:得|的)?(?:最)?多|涨幅|领涨|涨得最好|上涨(?:最)?多|涨幅榜)/u', $text)) {
+            return 'f3';
         }
-
-        if ($this->looksLikeMarketScanRequest($latestUser)) {
-            $hotStocks = $this->executePrefetchTool($emit, 'fa_get_hot_stocks', [
-                'page' => 1,
-                'page_size' => $this->requestedTopN($latestUser, 10),
-                'sort' => 'f62',
-                'order' => 1,
-            ], $origin);
-            $sectorFlow = $this->executePrefetchTool($emit, 'fa_get_sector_flow', [
-                'key' => 'f62',
-                'type' => 'industry',
-            ], $origin);
-            $xueqiuHot = $this->executePrefetchTool($emit, 'fa_get_xueqiu_hot_stock', [
-                'type' => '10',
-                'size' => 20,
-            ], $origin);
-
-            $candidateTools = [];
-            foreach ($this->candidateCodesFromHotStocks($hotStocks, 3) as $code) {
-                $candidateTools[$code] = [
-                    'fa_get_stock_quote' => $this->executePrefetchTool($emit, 'fa_get_stock_quote', ['codes' => [$code], 'source' => 'auto', 'fallback' => true], $origin),
-                    'fa_calculate_kline_indicators' => $this->executePrefetchTool($emit, 'fa_calculate_kline_indicators', ['code' => $code, 'frequency' => '1d', 'count' => 120, 'source' => 'auto'], $origin),
-                    'fa_get_stock_flow' => $this->executePrefetchTool($emit, 'fa_get_stock_flow', ['code' => $code, 'limit' => 30], $origin),
-                ];
-            }
-
-            return [[
-                'asset_type' => 'market_scan',
-                'topic' => 'capital_inflow_candidates',
-                'tool_results' => [
-                    'fa_get_hot_stocks' => $hotStocks,
-                    'fa_get_sector_flow' => $sectorFlow,
-                    'fa_get_xueqiu_hot_stock' => $xueqiuHot,
-                ],
-                'candidate_deep_dive' => $candidateTools,
-            ]];
+        if (preg_match('/(成交额|成交金额|放量|成交量)/u', $text)) {
+            return 'f6';
         }
-
-        if ($this->looksLikeStockResearchRequest($latestUser)) {
-            $stockCodes = $this->extractStockCodes($latestUser);
-            foreach (array_slice($stockCodes, 0, 2) as $code) {
-                $contexts[] = [
-                    'asset_type' => 'stock',
-                    'code' => $code,
-                    'tool_results' => [
-                        'fa_get_stock_quote' => $this->executePrefetchTool($emit, 'fa_get_stock_quote', ['codes' => [$code], 'source' => 'auto', 'fallback' => true], $origin),
-                        'fa_calculate_kline_indicators' => $this->executePrefetchTool($emit, 'fa_calculate_kline_indicators', ['code' => $code, 'frequency' => '1d', 'count' => 120, 'source' => 'auto'], $origin),
-                        'fa_get_stock_flow' => $this->executePrefetchTool($emit, 'fa_get_stock_flow', ['code' => $code, 'limit' => 30], $origin),
-                    ],
-                ];
-            }
-        }
-
-        return $contexts;
-    }
-
-    private function candidateCodesFromHotStocks(array $hotStocks, int $limit): array
-    {
-        if (($hotStocks['success'] ?? false) !== true || !is_array($hotStocks['data'] ?? null)) {
-            return [];
-        }
-        $codes = [];
-        foreach ($hotStocks['data'] as $item) {
-            if (!is_array($item)) continue;
-            $code = (string)($item['dm'] ?? $item['code'] ?? '');
-            if ($code !== '' && preg_match('/^(sh|sz|SH|SZ)?\d{6}$/', $code)) {
-                $codes[] = $code;
-            }
-            if (count($codes) >= $limit) break;
-        }
-        return array_values(array_unique($codes));
-    }
-
-    private function requestedTopN(string $text, int $default): int
-    {
-        if (preg_match('/(?:前|top\s*)(\d{1,2})/iu', $text, $m)) {
-            return max(5, min(30, (int)$m[1]));
-        }
-        if (preg_match('/(\d{1,2})(?:只|个)?(?:股票|标的|候选)/u', $text, $m)) {
-            return max(5, min(30, (int)$m[1]));
-        }
-        return $default;
-    }
-
-    private function prefetchSystemMessage(array $prefetched): array
-    {
-        return [
-            'role' => 'system',
-            'content' => "以下是服务端兜底预取本地只读研究工具得到的数据。请只基于这些数据和用户上下文进行分析；如果数据不足，明确说明不足，不要编造实时数据。\n" .
-                json_encode($prefetched, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
-        ];
-    }
-
-    private function executePrefetchTool(callable $emit, string $name, array $args, string $origin): array
-    {
-        $this->emitToolStatus($emit, 1, $name, $args, $origin);
-        $json = $this->executor->executeForModel($name, $args);
-        $decoded = json_decode($json, true);
-        return is_array($decoded) ? $decoded : [
-            'success' => false,
-            'source' => 'ai_tool',
-            'action' => $name,
-            'code' => 'invalid_tool_json',
-            'message' => '工具结果无法解析为 JSON',
-        ];
+        return 'f62';
     }
 
     private function latestUserContent(array $messages): string
@@ -344,11 +297,162 @@ class AIChatToolAgent
         return '';
     }
 
+    private function toolBatchHasOnlyInvalidArguments(array $toolMessages): bool
+    {
+        if (empty($toolMessages)) {
+            return false;
+        }
+        foreach ($toolMessages as $message) {
+            $decoded = json_decode((string)($message['content'] ?? ''), true);
+            if (!is_array($decoded) || ($decoded['code'] ?? '') !== 'invalid_arguments_json') {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private function repairMalformedToolArguments(array $toolCalls, array $originalMessages, AIAgentState $state, callable $emit, int $round): array
+    {
+        $latestUser = $this->latestUserContent($originalMessages);
+        if ($latestUser === '') {
+            return $toolCalls;
+        }
+
+        foreach ($toolCalls as $index => $call) {
+            $name = (string)($call['function']['name'] ?? '');
+            $argsJson = (string)($call['function']['arguments'] ?? '{}');
+            if (is_array(json_decode($argsJson, true))) {
+                continue;
+            }
+
+            $repaired = $this->inferArgumentsForRequestedTool($name, $latestUser);
+            if ($repaired === null) {
+                continue;
+            }
+
+            $toolCalls[$index]['function']['arguments'] = json_encode($repaired, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            $state->flags['repaired_tool_arguments_round'] = $round;
+            $this->stream->agentEvent($emit, 'agent_status', [
+                'run_id' => $state->runId,
+                'round' => $round,
+                'message' => '模型工具参数 JSON 不完整，已按同一工具意图补齐必要参数继续执行。',
+                'tool' => $name,
+            ]);
+        }
+
+        return $toolCalls;
+    }
+
+    private function inferArgumentsForRequestedTool(string $name, string $latestUser): ?array
+    {
+        if ($name === 'fa_get_fund_rank' && $this->looksLikeFundRequest($latestUser)) {
+            return [
+                'type' => $this->requestedFundRankType($latestUser),
+                'period' => $this->requestedFundRankPeriod($latestUser),
+                'page' => 1,
+                'page_size' => $this->requestedFundRankPageSize($latestUser),
+            ];
+        }
+
+        if ($name === 'fa_get_hot_stocks' && $this->looksLikeMarketScanRequest($latestUser)) {
+            return [
+                'page' => 1,
+                'page_size' => $this->requestedTopN($latestUser, 10),
+                'sort' => $this->requestedSortField($latestUser),
+                'order' => 1,
+            ];
+        }
+
+        if ($name === 'fa_get_stock_quote' && $this->looksLikeStockResearchRequest($latestUser)) {
+            $codes = array_slice($this->extractStockCodes($latestUser), 0, 5);
+            if (!empty($codes)) {
+                return [
+                    'codes' => $codes,
+                    'source' => 'auto',
+                    'fallback' => true,
+                ];
+            }
+        }
+
+        if (in_array($name, ['fa_get_fund_info', 'fa_get_fund_estimate'], true) && $this->looksLikeFundRequest($latestUser)) {
+            $codes = array_slice($this->extractFundCodes($latestUser), 0, 5);
+            if (!empty($codes)) {
+                return ['codes' => $codes];
+            }
+        }
+
+        if ($name === 'fa_get_fund_history' && $this->looksLikeFundRequest($latestUser)) {
+            $codes = array_slice($this->extractFundCodes($latestUser), 0, 1);
+            if (!empty($codes)) {
+                return [
+                    'code' => $codes[0],
+                    'page' => 1,
+                    'page_size' => 40,
+                ];
+            }
+        }
+
+        return null;
+    }
+
+    private function requestedTopN(string $text, int $default): int
+    {
+        if (preg_match('/(?:前|top\s*)(\d{1,2})/iu', $text, $m)) {
+            return max(1, min(30, (int)$m[1]));
+        }
+        if (preg_match('/(\d{1,2})(?:只|个)?(?:股票|标的|候选|基金|产品)/u', $text, $m)) {
+            return max(1, min(30, (int)$m[1]));
+        }
+        return $default;
+    }
+
+    private function requestedFundRankPageSize(string $text): int
+    {
+        return max(5, min(30, $this->requestedTopN($text, 10)));
+    }
+
+    private function requestedFundRankPeriod(string $text): string
+    {
+        if (preg_match('/(今天|今日|日涨|涨(?:得|的)?(?:最)?多|涨幅|领涨|上涨(?:最)?多|最新)/u', $text)) return 'day';
+        if (preg_match('/(近一周|一周|本周|周)/u', $text)) return 'week';
+        if (preg_match('/(近一月|一个月|1月|月)/u', $text)) return 'month';
+        if (preg_match('/(近三月|三个月|3月|季度)/u', $text)) return 'quarter';
+        if (preg_match('/(近半年|半年|6月)/u', $text)) return 'half_year';
+        if (preg_match('/(今年|本年|年内)/u', $text)) return 'this_year';
+        if (preg_match('/(近两年|两年|2年)/u', $text)) return 'two_year';
+        if (preg_match('/(近三年|三年|3年)/u', $text)) return 'three_year';
+        if (preg_match('/(成立以来|以来)/u', $text)) return 'since';
+        return 'year';
+    }
+
+    private function requestedFundRankType(string $text): string
+    {
+        if (preg_match('/(股票型|股票基金|主动权益)/u', $text)) return 'stock';
+        if (preg_match('/(混合型|混合基金)/u', $text)) return 'mixed';
+        if (preg_match('/(债券型|债券基金|债基)/u', $text)) return 'bond';
+        if (preg_match('/(指数型|指数基金|ETF|etf)/u', $text)) return 'index';
+        if (preg_match('/(QDII|qdii|海外|港股|美股)/u', $text)) return 'qdii';
+        if (preg_match('/(FOF|fof)/u', $text)) return 'fof';
+        return 'all';
+    }
+
     private function shouldContinueAfterToolRound(array $toolCalls, array $originalMessages): bool
     {
         $latestUser = $this->latestUserContent($originalMessages);
         if (!$this->looksLikeStockResearchRequest($latestUser) && !$this->looksLikeFundRequest($latestUser) && !$this->looksLikeMarketScanRequest($latestUser)) {
             return false;
+        }
+
+        if ($this->looksLikeMarketScanRequest($latestUser)) {
+            $prefetchSortField = $this->requestedSortField($latestUser);
+            foreach ($toolCalls as $call) {
+                $name = (string)($call['function']['name'] ?? '');
+                $args = json_decode((string)($call['function']['arguments'] ?? '{}'), true);
+                if ($name === 'fa_get_hot_stocks' && is_array($args) && (string)($args['sort'] ?? '') === $prefetchSortField) {
+                    return false;
+                }
+            }
+            return true;
         }
 
         $names = [];
@@ -360,6 +464,23 @@ class AIChatToolAgent
 
         $setupOnly = ['fa_normalize_stock_code'];
         return count(array_diff($names, $setupOnly)) === 0;
+    }
+
+    private function shouldEncourageFundDeepDive(array $toolCalls, array $originalMessages): bool
+    {
+        $latestUser = $this->latestUserContent($originalMessages);
+        if (!$this->looksLikeFundRequest($latestUser)) {
+            return false;
+        }
+        if (!preg_match('/(深入|研究|分析|评估|建议|推荐|筛选|最好|涨势|涨幅|排行|排名)/u', $latestUser)) {
+            return false;
+        }
+        foreach ($toolCalls as $call) {
+            if (($call['function']['name'] ?? '') === 'fa_get_fund_rank') {
+                return true;
+            }
+        }
+        return false;
     }
 
     private function hasUsefulResearchToolResult(array $messages): bool
@@ -392,6 +513,9 @@ class AIChatToolAgent
 
     private function looksLikeStockResearchRequest(string $text): bool
     {
+        if ($this->looksLikeFundRequest($text)) {
+            return false;
+        }
         if (preg_match('/\b(?:sh|sz|SH|SZ)\d{6}\b|\b\d{6}\.(?:XSHG|XSHE)\b/u', $text)) {
             return true;
         }
@@ -401,14 +525,16 @@ class AIChatToolAgent
 
     private function looksLikeFundRequest(string $text): bool
     {
-        return preg_match('/(基金|净值|估值|基金经理|基金公司|申购|赎回|同类排行)/u', $text)
-            && preg_match('/\b\d{6}\b/u', $text);
+        return (bool)preg_match('/(基金|净值|估值|基金经理|基金公司|申购|赎回|同类排行|同类排名|基金排行|基金排名|基金信息|基金资料|开放式基金|ETF|etf|QDII|qdii)/u', $text);
     }
 
     private function looksLikeMarketScanRequest(string $text): bool
     {
-        return preg_match('/(资金流入|净流入|主力流入|资金榜|热股|热门股|候选|选股|筛选|前十|前10|top\s*10|排名|排行)/iu', $text)
-            && preg_match('/(股票|个股|标的|市场|板块|综合评估|综合分析|评估|分析)/u', $text);
+        if ($this->looksLikeFundRequest($text)) {
+            return false;
+        }
+        return preg_match('/(资金流入|净流入|主力流入|资金|资金榜|热股|热门股|候选|选股|筛选|前十|前10|top\s*10|排名|排行|涨(?:得|的)?(?:最)?多|涨幅|领涨|上涨(?:最)?多|涨幅榜)/iu', $text)
+            && preg_match('/(股票|个股|标的|市场|板块|综合评估|综合分析|评估|分析|今日|今天|最新)/u', $text);
     }
 
     private function extractStockCodes(string $text): array
@@ -423,82 +549,57 @@ class AIChatToolAgent
         return array_values(array_unique($matches[0] ?? []));
     }
 
-    private function systemPrompt(): string
+    private function systemPrompt(?AIAgentProfile $profile = null): string
     {
-        return implode("\n", [
+        $lines = [
             '你是一位专业、谨慎的金融研究助理，服务于 A 股、基金、板块资金和市场热度研究。',
             '你可以使用服务端提供的只读工具查询行情、K线、资金流、基金、雪球热度和确定性技术指标。',
             '优先用工具获取事实数据；不要编造实时价格、资金流、基金净值、排行或新闻。',
             '回答时清晰区分：数据事实、基于数据的推断、不确定性和需要继续验证的信息。',
+            '涉及市场扫描、资金流入、今日涨幅排行、热门股票或候选标的时，必须优先调用 fa_get_hot_stocks；按涨幅排序使用 sort=f3，按主力净流入排序使用 sort=f62。',
+            '涉及基金排行、今日基金涨幅、基金最新信息或未指定代码的基金研究时，必须优先调用 fa_get_fund_rank；今日/涨幅问题使用 period=day，再按候选调用基金资料和估值工具。',
+            '所有档案下都暴露完整只读工具集；即使当前是基金研究档案，也可以在用户问题需要时调用股票行情、K线、资金流、板块、雪球热度和选股工具来交叉验证或比较。',
+            '工具选择只按用户问题和研究需要决定，不按“基金版本/股票版本”裁剪；但不要为了展示能力而调用与问题无关的工具。',
+            '在每轮正式调用工具前，assistant content 先用 1-3 句中文简要说明当前判断、接下来要查什么和为什么；随后再通过 tool_calls 调用工具。',
+            '只能通过正式 tools/tool_calls 协议调用工具；最终回答阶段不要输出 <function=...>、<parameter=...> 等伪工具标签。',
             '不要给出保证收益、确定买卖点或个性化投资承诺。结尾必须提示：内容仅供研究参考，不构成投资建议。',
-        ]);
-    }
-
-    private function basePayload(array $messages, bool $stream): array
-    {
-        return [
-            'model' => (string)$this->channel['model'],
-            'messages' => $messages,
-            'stream' => $stream,
         ];
+        if ($profile !== null) {
+            $lines[] = $profile->systemPromptSuffix();
+        }
+        return implode("\n", $lines);
     }
 
-    private function complete(array $payload): array
+    private function streamFinal(array $messages, callable $emit, ?AIAgentState $state = null, string $stopReason = 'final_answer'): void
     {
-        if ($this->transport) {
-            $result = call_user_func($this->transport, $payload);
-            if (!is_array($result)) {
-                throw new RuntimeException('测试 transport 必须返回数组');
-            }
-            return $result;
-        }
-
-        $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, $this->channel['api_url']);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_POST, true);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, [
-            'Authorization: Bearer ' . $this->channel['api_key'],
-            'Content-Type: application/json',
-            'Accept: application/json',
-        ]);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
-        curl_setopt($ch, CURLOPT_TIMEOUT, max(3, (int)$this->options['tool_timeout']));
-        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, (int)$this->options['connect_timeout']);
-
-        $body = curl_exec($ch);
-        $errno = curl_errno($ch);
-        $error = curl_error($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
-
-        if ($errno) {
-            throw new RuntimeException("API请求失败: {$error}", $httpCode ?: $errno);
-        }
-        $json = json_decode((string)$body, true);
-        if (!is_array($json)) {
-            throw new RuntimeException('上游 AI 返回非 JSON 响应: ' . json_last_error_msg(), $httpCode ?: 0);
-        }
-        if (isset($json['error'])) {
-            $message = is_array($json['error']) ? ($json['error']['message'] ?? json_encode($json['error'], JSON_UNESCAPED_UNICODE)) : (string)$json['error'];
-            throw new RuntimeException($message, $httpCode ?: 0);
-        }
-        return $json;
-    }
-
-    private function streamFinal(array $messages, callable $emit): void
-    {
-        $payload = $this->basePayload($this->messagesForFinalStream($messages), true);
+        $payload = $this->model->payload($this->messagesForFinalStream($messages), true);
         $payload['tool_choice'] = 'none';
-        $this->streamPayload($payload, $emit);
+        if ($state === null) {
+            $this->model->stream($payload, $emit);
+            return;
+        }
+
+        $finished = false;
+        $finalText = '';
+        $wrappedEmit = $this->stream->wrapFinalStream($emit, $state, $stopReason, $finished, $finalText);
+
+        $this->model->stream($payload, $wrappedEmit);
+        if (!$finished) {
+            $this->stream->riskDisclaimerIfMissing($emit, $finalText, $state);
+            $this->stream->agentEvent($emit, 'final_answer_finished', [
+                'run_id' => $state->runId,
+                'chars' => mb_strlen($finalText),
+            ]);
+            $this->stream->finishRun($emit, $state, $stopReason);
+            $emit("data: [DONE]\n\n");
+        }
     }
 
     private function messagesForFinalStream(array $messages): array
     {
         $final = [];
         $toolResults = [];
+        $guardrailPolicy = new AIAgentGuardrailPolicy();
 
         foreach ($messages as $message) {
             if (!is_array($message)) continue;
@@ -532,56 +633,34 @@ class AIChatToolAgent
         if (!empty($toolResults)) {
             $final[] = [
                 'role' => 'system',
-                'content' => "以下是本轮已经真实执行的工具调用和工具结果。请基于这些结果回答，不要声称无法访问数据；如果某个工具失败，请说明失败项。\n" .
+                'content' => "以下是本轮已经真实执行的工具调用和工具结果。请基于这些结果回答，不要声称无法访问数据；如果某个工具失败，请说明失败项。不要输出 <function=...>、<parameter=...> 等伪工具标签。\n" .
                     json_encode($toolResults, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
             ];
         }
+        $final[] = [
+            'role' => 'system',
+            'content' => '最终输出必须是面向用户的自然语言研究结论；禁止输出伪工具调用标签，例如 <function=...>、</function>、<parameter=...>。',
+        ];
+        $final[] = $guardrailPolicy->finalSystemMessage();
 
         return $final;
-    }
-
-    private function streamPayload(array $payload, callable $emit): void
-    {
-        if ($this->streamTransport) {
-            call_user_func($this->streamTransport, $payload, $emit);
-            return;
-        }
-
-        $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, $this->channel['api_url']);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, false);
-        curl_setopt($ch, CURLOPT_POST, true);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, [
-            'Authorization: Bearer ' . $this->channel['api_key'],
-            'Content-Type: application/json',
-            'Accept: text/event-stream',
-        ]);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
-        curl_setopt($ch, CURLOPT_TIMEOUT, (int)$this->options['timeout']);
-        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, (int)$this->options['connect_timeout']);
-        curl_setopt($ch, CURLOPT_WRITEFUNCTION, function ($ch, $data) use ($emit) {
-            if (connection_aborted()) {
-                return 0;
-            }
-            $emit($data);
-            return strlen($data);
-        });
-
-        $result = curl_exec($ch);
-        if ($result === false && curl_errno($ch)) {
-            $message = curl_error($ch);
-            $code = curl_getinfo($ch, CURLINFO_HTTP_CODE) ?: curl_errno($ch);
-            $this->emitError($emit, "API请求失败: {$message}", 'proxy_error', $code);
-        }
-        curl_close($ch);
     }
 
     private function extractAssistantMessage(array $response): ?array
     {
         $message = $response['choices'][0]['message'] ?? null;
         return is_array($message) ? $message : null;
+    }
+
+    private function stripPseudoToolMarkup(string $content): string
+    {
+        if ($content === '' || strpos($content, '<function=') === false) {
+            return $content;
+        }
+
+        $content = preg_replace('/<function=[^>]*>.*?(?:<\/function>|\n\s*\n|$)/su', '', $content);
+        $content = preg_replace('/<\/?parameter(?:=[^>]*)?>[^\n]*/u', '', (string)$content);
+        return trim((string)$content);
     }
 
     private function extractToolCalls(array $assistant): array
@@ -620,100 +699,53 @@ class AIChatToolAgent
         return $message;
     }
 
-    private function emitToolStatus(callable $emit, int $round, string $name, array $args, string $origin = 'model_tool_call'): void
+    private function visibleThoughtForToolCalls(array $assistant, array $toolCalls): string
     {
-        if (empty($this->options['expose_tool_trace'])) return;
-        $isPrefetch = $origin === 'server_prefetch';
+        $content = $this->stripPseudoToolMarkup((string)($assistant['content'] ?? ''));
+        if (trim($content) !== '') {
+            return $content;
+        }
+
         $labels = AIToolRegistry::descriptions();
-        $payload = [
-            'type' => 'tool_status',
-            'round' => $round,
-            'tool' => $name,
-            'origin' => $origin,
-            'trace_title' => $isPrefetch ? '服务端数据预取' : 'AI 工具调用',
-            'message' => ($isPrefetch ? '预取数据：' : '') . $this->toolStatusText($name),
-            'description' => $labels[$name] ?? '',
-            'args_summary' => $this->summarizeArgs($args),
-        ];
-        $emit("event: tool_status\n");
-        $emit('data: ' . json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n\n");
+        $names = [];
+        foreach ($toolCalls as $call) {
+            $name = (string)($call['function']['name'] ?? '');
+            if ($name === '') continue;
+            $label = $labels[$name] ?? $name;
+            $names[] = $this->shortToolPurpose($name, $label);
+        }
+        $names = array_values(array_unique(array_filter($names)));
+        if (empty($names)) {
+            return '我需要先获取必要的实时数据，再基于结果继续判断。';
+        }
+        $summary = implode('、', array_slice($names, 0, 4));
+        if (count($names) > 4) {
+            $summary .= '等数据';
+        }
+        return '我会先获取' . $summary . '，再基于工具结果继续判断下一步。';
     }
 
-    private function emitFallbackStatus(callable $emit, string $message): void
-    {
-        if (empty($this->options['expose_tool_trace'])) return;
-        $payload = [
-            'type' => 'tool_status',
-            'round' => 0,
-            'tool' => 'fallback_plain_stream',
-            'message' => $message,
-            'description' => 'Tool calling fallback',
-            'args_summary' => [],
-        ];
-        $emit("event: tool_status\n");
-        $emit('data: ' . json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n\n");
-    }
-
-    private function toolStatusText(string $name): string
+    private function shortToolPurpose(string $name, string $fallback): string
     {
         $map = [
-            'fa_get_stock_quote' => '查询实时行情',
-            'fa_get_stock_kline' => '获取K线数据',
-            'fa_get_stock_flow' => '获取个股资金流',
-            'fa_get_sector_flow' => '获取板块资金流',
-            'fa_get_hot_stocks' => '查询资金热榜',
-            'fa_get_xueqiu_hot_stock' => '查询雪球热度',
-            'fa_run_xueqiu_screener' => '运行条件选股',
-            'fa_get_xueqiu_feed' => '获取雪球动态',
-            'fa_search_funds' => '搜索基金',
-            'fa_get_fund_info' => '获取基金资料',
-            'fa_get_fund_estimate' => '获取基金估值',
-            'fa_get_fund_history' => '获取基金历史净值',
-            'fa_get_fund_rank' => '获取基金同类排行',
-            'fa_calculate_kline_indicators' => '计算技术指标',
-            'fa_compare_candidates' => '排序候选标的',
+            'fa_normalize_stock_code' => '股票代码格式',
+            'fa_get_stock_quote' => '股票实时行情',
+            'fa_get_stock_kline' => '股票K线',
+            'fa_get_stock_flow' => '个股资金流',
+            'fa_get_sector_flow' => '板块资金流',
+            'fa_get_hot_stocks' => '市场热榜',
+            'fa_get_xueqiu_hot_stock' => '雪球热股',
+            'fa_run_xueqiu_screener' => '雪球选股',
+            'fa_get_xueqiu_feed' => '雪球动态',
+            'fa_search_funds' => '基金搜索结果',
+            'fa_get_fund_info' => '基金资料',
+            'fa_get_fund_estimate' => '基金估值',
+            'fa_get_fund_history' => '基金历史净值',
+            'fa_get_fund_rank' => '基金排行',
+            'fa_calculate_kline_indicators' => '技术指标',
+            'fa_compare_candidates' => '候选排序',
         ];
-        return $map[$name] ?? '调用研究工具';
+        return $map[$name] ?? $fallback;
     }
 
-    private function summarizeArgs(array $args): array
-    {
-        $summary = [];
-        foreach ($args as $key => $value) {
-            if (is_array($value)) {
-                $summary[$key] = count($value) > 5 ? array_slice($value, 0, 5) + ['_more' => count($value) - 5] : $value;
-            } else {
-                $summary[$key] = $value;
-            }
-        }
-        return $summary;
-    }
-
-    private function emitSyntheticContent(callable $emit, string $content): void
-    {
-        if ($content === '') {
-            $this->emitError($emit, '服务器返回空响应，请稍后重试。', 'empty_response');
-            $emit("data: [DONE]\n\n");
-            return;
-        }
-        $payload = [
-            'choices' => [[
-                'delta' => ['content' => $content],
-                'finish_reason' => null,
-            ]],
-        ];
-        $emit('data: ' . json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n\n");
-        $emit("data: [DONE]\n\n");
-    }
-
-    private function emitError(callable $emit, string $message, string $type, int $code = 0): void
-    {
-        $emit('data: ' . json_encode([
-            'error' => [
-                'message' => $message,
-                'type' => $type,
-                'code' => $code,
-            ],
-        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n\n");
-    }
 }
