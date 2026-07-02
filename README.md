@@ -4,7 +4,7 @@
 
 FuckAshare 是一个基于PHP和Python的全功能股票数据查询与AI分析平台，专为A股投资者设计。集成了K线图表、技术指标分析、实时行情看板、板块资金流向、基金估值追踪、AI智能分析等核心功能，帮助投资者快速获取行情数据并获得专业的投资参考。
 
-![image](https://github.com/user-attachments/assets/4264dc74-e581-46ee-a002-37a6adf563b6)
+<img width="1219" height="1083" alt="image" src="https://github.com/user-attachments/assets/fc5edccb-750b-4122-bcdc-19ee3c9cd403" />
 
 ⚠️ **免责声明**：本系统仅供娱乐和研究，不构成任何投资建议。股市有风险，投资需谨慎。
 
