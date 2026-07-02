@@ -1165,4 +1165,134 @@ $limitedToolAgent->run([
 assert_true($limitedToolTransportCalls === 2, 'per-round tool cap continues with valid next model request');
 assert_contains('每轮上限', $limitedToolStream, 'per-round tool cap exposes capped execution status');
 
+$fundEnoughExecutor = new FakeToolExecutor();
+$fundEnoughCompleteCalls = 0;
+$fundEnoughStream = '';
+$fundEnoughAgent = new AIChatToolAgent(
+    ['api_url' => 'http://fake', 'api_key' => 'test', 'model' => 'fake-model'],
+    ['max_tool_rounds' => 8, 'max_tool_calls_per_round' => 4, 'expose_tool_trace' => true],
+    $fundEnoughExecutor,
+    function(array $payload) use (&$fundEnoughCompleteCalls): array {
+        $fundEnoughCompleteCalls++;
+        switch ($fundEnoughCompleteCalls) {
+            case 1:
+                return [
+                    'choices' => [[
+                        'message' => [
+                            'role' => 'assistant',
+                            'content' => '先看市场环境。',
+                            'tool_calls' => [[
+                                'id' => 'fund_enough_breadth',
+                                'type' => 'function',
+                                'function' => [
+                                    'name' => 'fa_get_market_breadth',
+                                    'arguments' => '{"scope":"a_share","include_limit_stats":true,"include_index_quotes":true}',
+                                ],
+                            ]],
+                        ],
+                    ]],
+                ];
+            case 2:
+                return [
+                    'choices' => [[
+                        'message' => [
+                            'role' => 'assistant',
+                            'content' => '先拿候选排行。',
+                            'tool_calls' => [[
+                                'id' => 'fund_enough_rank',
+                                'type' => 'function',
+                                'function' => [
+                                    'name' => 'fa_get_fund_rank',
+                                    'arguments' => '{"type":"index","period":"year","page":1,"page_size":20}',
+                                ],
+                            ]],
+                        ],
+                    ]],
+                ];
+            case 3:
+                return [
+                    'choices' => [[
+                        'message' => [
+                            'role' => 'assistant',
+                            'content' => '补一个关键词搜索。',
+                            'tool_calls' => [[
+                                'id' => 'fund_enough_search',
+                                'type' => 'function',
+                                'function' => [
+                                    'name' => 'fa_search_funds',
+                                    'arguments' => '{"keyword":"红利"}',
+                                ],
+                            ]],
+                        ],
+                    ]],
+                ];
+            case 4:
+                return [
+                    'choices' => [[
+                        'message' => [
+                            'role' => 'assistant',
+                            'content' => '查看基金资料。',
+                            'tool_calls' => [[
+                                'id' => 'fund_enough_info',
+                                'type' => 'function',
+                                'function' => [
+                                    'name' => 'fa_get_fund_info',
+                                    'arguments' => '{"codes":["090010","515180"]}',
+                                ],
+                            ]],
+                        ],
+                    ]],
+                ];
+            case 5:
+                return [
+                    'choices' => [[
+                        'message' => [
+                            'role' => 'assistant',
+                            'content' => '补齐表现和风格依据。',
+                            'tool_calls' => [
+                                [
+                                    'id' => 'fund_enough_history',
+                                    'type' => 'function',
+                                    'function' => [
+                                        'name' => 'fa_get_fund_history',
+                                        'arguments' => '{"code":"090010","page":1,"page_size":30}',
+                                    ],
+                                ],
+                                [
+                                    'id' => 'fund_enough_profile',
+                                    'type' => 'function',
+                                    'function' => [
+                                        'name' => 'fa_get_index_profile',
+                                        'arguments' => '{"code":"090010"}',
+                                    ],
+                                ],
+                            ],
+                        ],
+                    ]],
+                ];
+            default:
+                assert_true(false, 'fund research with sufficient evidence should not request another model decision round');
+        }
+    },
+    function(array $payload, callable $emit): void {
+        $systemContent = '';
+        foreach ($payload['messages'] as $message) {
+            if (($message['role'] ?? '') === 'system') {
+                $systemContent .= (string)($message['content'] ?? '');
+            }
+        }
+        assert_contains('停止继续搜索', $systemContent, 'fund sufficient path adds final-answer system directive');
+        $emit("data: {\"choices\":[{\"delta\":{\"content\":\"fund-enough-final\"}}]}\n\n");
+        $emit("data: [DONE]\n\n");
+    }
+);
+$fundEnoughAgent->run([
+    ['role' => 'user', 'content' => '帮我找一个潜力最好的 红利型 基金，散户可买入的，综合研究并给出理由'],
+], function(string $chunk) use (&$fundEnoughStream): void {
+    $fundEnoughStream .= $chunk;
+});
+assert_true($fundEnoughCompleteCalls === 5, 'fund research stops after enough evidence is collected');
+assert_contains('fund_research_sufficient', $fundEnoughStream, 'fund research sufficient path finishes with dedicated stop reason');
+assert_contains('fund-enough-final', $fundEnoughStream, 'fund research sufficient path emits final streamed answer');
+
 echo "AI tool agent tests passed\n";

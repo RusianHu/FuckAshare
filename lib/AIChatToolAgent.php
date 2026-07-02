@@ -232,10 +232,24 @@ class AIChatToolAgent
                 return;
             }
 
+            if ($this->shouldFinalizeFundResearch($messages, $originalMessages, $round)) {
+                $messages[] = [
+                    'role' => 'system',
+                    'content' => '当前基金研究已经拿到候选池、基金资料、历史表现以及风格或分红依据。除非仍缺少关键事实，请停止继续搜索或重复查询，直接给出最终研究结论，明确推荐对象、比较依据、适合的投资者和主要不确定性。',
+                ];
+                $checkpointManager->create('ready_for_final_answer', $messages, [
+                    'round' => $round,
+                    'stop_reason' => 'fund_research_sufficient',
+                ]);
+                $this->stream->agentEvent($emit, 'final_answer_started', ['run_id' => $state->runId]);
+                $this->streamFinal($messages, $emit, $state, 'fund_research_sufficient');
+                return;
+            }
+
             if ($round < $maxRounds) {
                 $continuationContent = '工具观察结果已回填。请基于最新观察继续判断下一步：如仍缺少关键事实，请继续调用只读工具；如信息足够，请给出最终研究结论。';
                 if ($this->shouldEncourageFundDeepDive($toolCalls, $originalMessages)) {
-                    $continuationContent = '基金排行候选已返回。若用户要求深入研究或给出建议，请从候选中选择少量代表性基金，继续调用基金资料、估值或历史净值等只读工具；如信息已经足够，再给最终结论。';
+                    $continuationContent = '基金排行候选已返回。若用户要求深入研究或给出建议，请从候选中选择不超过 3 只代表性基金，继续调用基金资料、估值、历史净值、指数画像或分红历史等必要只读工具；当已拿到候选池、基金资料、历史表现以及风格或分红依据后，停止继续搜索并直接给最终结论。';
                 }
                 $messages[] = [
                     'role' => 'system',
@@ -590,6 +604,45 @@ class AIChatToolAgent
         return false;
     }
 
+    private function shouldFinalizeFundResearch(array $messages, array $originalMessages, int $round): bool
+    {
+        if ($round < 5) {
+            return false;
+        }
+        $latestUser = $this->latestUserContent($originalMessages);
+        if (!$this->looksLikeFundRequest($latestUser)) {
+            return false;
+        }
+
+        $toolStats = $this->successfulToolStats($messages);
+        $hasCandidates = ($toolStats['fa_get_fund_rank'] ?? 0) > 0 || ($toolStats['fa_search_funds'] ?? 0) > 0;
+        $hasInfo = ($toolStats['fa_get_fund_info'] ?? 0) > 0;
+        $hasPerformance = ($toolStats['fa_get_fund_history'] ?? 0) > 0 || ($toolStats['fa_get_fund_estimate'] ?? 0) > 0;
+        $hasStyleOrDividend = ($toolStats['fa_get_index_profile'] ?? 0) > 0 || ($toolStats['fa_get_fund_dividend_history'] ?? 0) > 0;
+
+        return $hasCandidates && $hasInfo && $hasPerformance && $hasStyleOrDividend;
+    }
+
+    private function successfulToolStats(array $messages): array
+    {
+        $stats = [];
+        foreach ($messages as $message) {
+            if (($message['role'] ?? '') !== 'tool') {
+                continue;
+            }
+            $decoded = json_decode((string)($message['content'] ?? ''), true);
+            if (!is_array($decoded) || ($decoded['success'] ?? false) !== true) {
+                continue;
+            }
+            $name = (string)($message['name'] ?? '');
+            if ($name === '') {
+                continue;
+            }
+            $stats[$name] = (int)($stats[$name] ?? 0) + 1;
+        }
+        return $stats;
+    }
+
     private function hasUsefulResearchToolResult(array $messages): bool
     {
         $useful = [
@@ -721,6 +774,8 @@ class AIChatToolAgent
                 '涉及基金风格、是否红利型/指数型、跟踪指数、业绩基准或投资策略依据时，必须优先调用 fa_get_index_profile。',
                 '涉及基金分红、派息、收益分配或最近是否分红时，必须调用 fa_get_fund_dividend_history。',
                 '涉及基金合同、招募说明书、产品资料概要、季报/年报、公告或需要文档证据时，必须调用 fa_get_fund_documents；如果正文/PDF 解析不可用，最终回答要说明数据缺口。',
+                '基金研究中的候选深挖应控制在少量代表性基金，优先选择不超过 3 只；避免为了穷举而重复搜索同义词、重复查多期排行或重复查相同类型资料。',
+                '当已经拿到候选池、基金资料、历史表现以及风格或分红依据后，应停止继续搜索并直接给出结论；不要为了“更完整”而无止境追加工具调用。',
                 '所有档案下都暴露完整只读工具集；即使当前是基金研究档案，也可以在用户问题需要时调用股票行情、K线、资金流、板块、雪球热度和选股工具来交叉验证或比较。',
                 '工具选择只按用户问题和研究需要决定，不按“基金版本/股票版本”裁剪；但不要为了展示能力而调用与问题无关的工具。',
                 '在每轮正式调用工具前，assistant content 先用 1-3 句中文简要说明当前判断、接下来要查什么和为什么；随后再通过 tool_calls 调用工具。',

@@ -127,14 +127,18 @@ class AIAgentStreamEmitter
         $emit("data: [DONE]\n\n");
     }
 
-    public function error(callable $emit, string $message, string $type, int $code = 0): void
+    public function error(callable $emit, string $message, string $type, int $code = 0, array $details = []): void
     {
+        $payload = [
+            'message' => $message,
+            'type' => $type,
+            'code' => $code,
+        ];
+        if (!empty($details)) {
+            $payload['details'] = $details;
+        }
         $emit('data: ' . json_encode([
-            'error' => [
-                'message' => $message,
-                'type' => $type,
-                'code' => $code,
-            ],
+            'error' => $payload,
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n\n");
     }
 
@@ -321,6 +325,18 @@ class AIAgentStreamEmitter
         ];
         if (isset($decoded['code'])) {
             $summary['code'] = $decoded['code'];
+        }
+        if (isset($decoded['message']) && is_string($decoded['message']) && $decoded['message'] !== '') {
+            $summary['message'] = mb_substr($decoded['message'], 0, 160);
+        }
+        $meta = is_array($decoded['meta'] ?? null) ? $decoded['meta'] : [];
+        foreach (['provider_status', 'duration_ms', 'cache', 'capability_level', 'partial'] as $key) {
+            if (array_key_exists($key, $meta)) {
+                $summary[$key] = $meta[$key];
+            }
+        }
+        if (isset($meta['failures']) && is_array($meta['failures'])) {
+            $summary['failures_count'] = count($meta['failures']);
         }
         $data = $decoded['data'] ?? null;
         if (is_array($data)) {

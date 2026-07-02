@@ -3092,13 +3092,14 @@ const AIModule = {
             const ok = event.success === false ? '失败' : '完成';
             const rows = event.output_summary?.rows;
             const rowsText = typeof rows === 'number' ? ` · ${rows} 项` : '';
-            return `工具调用${ok}：${event.tool || '研究工具'}${duration ? ' · ' + duration : ''}${rowsText}`;
+            const codeText = event.output_summary?.code ? ` · ${event.output_summary.code}` : '';
+            return `工具调用${ok}：${event.tool || '研究工具'}${duration ? ' · ' + duration : ''}${rowsText}${codeText}`;
         }
         if (type === 'checkpoint_created') return '已创建运行检查点';
         if (type === 'final_answer_started') return '正在生成最终回答';
         if (type === 'final_answer_finished') return '最终回答已完成';
         if (type === 'run_finished') return `AI 任务已完成${duration || event.elapsed_ms ? ' · ' + this._formatDuration(event.elapsed_ms || event.duration_ms) : ''}`;
-        if (type === 'run_failed') return event.message || 'AI 任务失败';
+        if (type === 'run_failed') return `${event.message || 'AI 任务失败'}${event.stop_reason ? ' · ' + event.stop_reason : ''}`;
         return '';
     },
 
@@ -3125,6 +3126,44 @@ const AIModule = {
         if (!Number.isFinite(value) || value < 0) return '';
         if (value < 1000) return `${Math.round(value)}ms`;
         return `${(value / 1000).toFixed(value < 10000 ? 2 : 1)}s`;
+    },
+
+    _formatAIErrorPayload(error, diagnostics = {}) {
+        const parts = [];
+        const message = String(error?.message || '未知错误').trim();
+        parts.push(`**错误:** ${message}`);
+
+        const extra = [];
+        if (error?.type) extra.push(`type=${error.type}`);
+        if (error?.code !== undefined && error?.code !== null && error?.code !== '') extra.push(`code=${error.code}`);
+        if (diagnostics?.runId) extra.push(`run_id=${diagnostics.runId}`);
+        if (diagnostics?.lastRound !== null && diagnostics?.lastRound !== undefined) extra.push(`round=${diagnostics.lastRound}`);
+        if (diagnostics?.lastTool) extra.push(`tool=${diagnostics.lastTool}`);
+        if (diagnostics?.lastEventType) extra.push(`event=${diagnostics.lastEventType}`);
+
+        const details = error?.details || {};
+        if (details.duration_ms !== undefined) extra.push(`duration=${this._formatDuration(details.duration_ms)}`);
+        if (details.http_code) extra.push(`http=${details.http_code}`);
+        if (details.curl_errno) extra.push(`curl_errno=${details.curl_errno}`);
+        if (details.phase) extra.push(`phase=${details.phase}`);
+
+        if (extra.length) {
+            parts.push('');
+            parts.push('```text');
+            parts.push(extra.join(' | '));
+            parts.push('```');
+        }
+        return parts.join('\n');
+    },
+
+    _formatStreamDiagnostics(diagnostics = {}, reason = 'stream_interrupted') {
+        const items = [`reason=${reason}`];
+        if (diagnostics.runId) items.push(`run_id=${diagnostics.runId}`);
+        if (diagnostics.lastEventType) items.push(`event=${diagnostics.lastEventType}`);
+        if (diagnostics.lastRound !== null && diagnostics.lastRound !== undefined) items.push(`round=${diagnostics.lastRound}`);
+        if (diagnostics.lastTool) items.push(`tool=${diagnostics.lastTool}`);
+        if (diagnostics.lastAgentMessage) items.push(`status=${diagnostics.lastAgentMessage}`);
+        return `**错误:** AI 响应流提前结束\n\n\`\`\`text\n${items.join(' | ')}\n\`\`\``;
     },
 
     async sendToAI(loadingMessage, timer, targetContainer) {
@@ -3164,6 +3203,14 @@ const AIModule = {
             let fullReasoning = '';
             let streamDone = false;
             let lastProcessText = '';
+            const diagnostics = {
+                runId: '',
+                lastEventType: '',
+                lastRound: null,
+                lastTool: '',
+                lastAgentMessage: '',
+                lastError: null
+            };
 
             // SSE 行缓冲区：处理跨 chunk 的行分割
             let lineBuffer = '';
@@ -3195,6 +3242,13 @@ const AIModule = {
                         if (!jsonStr) continue;
                         try {
                             const json = JSON.parse(jsonStr);
+                            if (json && typeof json === 'object') {
+                                diagnostics.lastEventType = String(json.type || diagnostics.lastEventType || '');
+                                if (json.run_id) diagnostics.runId = json.run_id;
+                                if (json.round !== undefined && json.round !== null) diagnostics.lastRound = json.round;
+                                if (json.tool) diagnostics.lastTool = json.tool;
+                                if (json.message) diagnostics.lastAgentMessage = json.message;
+                            }
 
                             if (json.type === 'tool_status') {
                                 const label = json.message || '调用研究工具';
@@ -3227,7 +3281,8 @@ const AIModule = {
 
                             // 错误响应
                             if (json.error) {
-                                fullResponse = `**错误:** ${json.error.message || JSON.stringify(json.error)}`;
+                                diagnostics.lastError = json.error;
+                                fullResponse = this._formatAIErrorPayload(json.error, diagnostics);
                                 this._updateContent(ensureBotDiv(), fullResponse);
                                 continue;
                             }
@@ -3265,6 +3320,13 @@ const AIModule = {
                     if (jsonStr) {
                         try {
                             const json = JSON.parse(jsonStr);
+                            if (json && typeof json === 'object') {
+                                diagnostics.lastEventType = String(json.type || diagnostics.lastEventType || '');
+                                if (json.run_id) diagnostics.runId = json.run_id;
+                                if (json.round !== undefined && json.round !== null) diagnostics.lastRound = json.round;
+                                if (json.tool) diagnostics.lastTool = json.tool;
+                                if (json.message) diagnostics.lastAgentMessage = json.message;
+                            }
                             if (json.type === 'tool_status') {
                                 const label = json.message || '调用研究工具';
                                 this._appendToolStatusBubble(json, targetContainer);
@@ -3287,7 +3349,8 @@ const AIModule = {
                                         AdvisorModule._els.status.textContent = agentStatus + '...';
                                     }
                                 } else if (json.error) {
-                                    fullResponse = `**错误:** ${json.error.message || JSON.stringify(json.error)}`;
+                                    diagnostics.lastError = json.error;
+                                    fullResponse = this._formatAIErrorPayload(json.error, diagnostics);
                                     this._updateContent(ensureBotDiv(), fullResponse);
                                 } else {
                                     const delta = json.choices?.[0]?.delta;
@@ -3306,6 +3369,15 @@ const AIModule = {
                         } catch (e) { /* ignore */ }
                     }
                 }
+            }
+
+            if (!streamDone && requestVersion === APP.advisorRequestVersion) {
+                const interruption = this._formatStreamDiagnostics(
+                    diagnostics,
+                    diagnostics.lastError ? 'upstream_error_before_done' : 'stream_ended_without_done'
+                );
+                fullResponse = fullResponse ? `${fullResponse}\n\n${interruption}` : interruption;
+                this._updateContent(ensureBotDiv(), fullResponse);
             }
 
             // 流结束：清理 loading 状态
@@ -3344,7 +3416,7 @@ const AIModule = {
                 return;
             }
             if (requestVersion === APP.advisorRequestVersion) {
-                this.appendMessage(`**错误:** ${error.message}`, null, 'bot-message', targetContainer);
+                this.appendMessage(`**错误:** ${error.message}\n\n\`\`\`text\nstage=frontend_fetch\n\`\`\``, null, 'bot-message', targetContainer);
             }
             if (typeof AdvisorModule !== 'undefined') AdvisorModule.setThinking(false);
             if (typeof AdvisorModule !== 'undefined') AdvisorModule.updateContextMeter();

@@ -101,6 +101,7 @@ class AIChatCompletionsAdapter
             return;
         }
 
+        $started = microtime(true);
         $ch = curl_init();
         curl_setopt($ch, CURLOPT_URL, $this->channel['api_url']);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, false);
@@ -126,8 +127,15 @@ class AIChatCompletionsAdapter
         $result = curl_exec($ch);
         if ($result === false && curl_errno($ch)) {
             $message = curl_error($ch);
-            $code = curl_getinfo($ch, CURLINFO_HTTP_CODE) ?: curl_errno($ch);
-            $this->stream->error($emit, "API请求失败: {$message}", 'proxy_error', $code);
+            $errno = curl_errno($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $code = $httpCode ?: $errno;
+            $this->stream->error($emit, "API请求失败: {$message}", 'proxy_error', $code, [
+                'phase' => 'stream',
+                'curl_errno' => $errno,
+                'http_code' => $httpCode,
+                'duration_ms' => (int)round((microtime(true) - $started) * 1000),
+            ]);
             $emit("data: [DONE]\n\n");
         }
         curl_close($ch);
