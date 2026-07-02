@@ -418,7 +418,45 @@ class AIChatToolAgent
             }
         }
 
+        if (in_array($name, ['fa_get_index_profile', 'fa_get_fund_dividend_history', 'fa_get_fund_documents'], true) && $this->looksLikeFundRequest($latestUser)) {
+            $codes = array_slice($this->extractFundCodes($latestUser), 0, 1);
+            if (!empty($codes)) {
+                if ($name === 'fa_get_index_profile') {
+                    return ['code' => $codes[0]];
+                }
+                if ($name === 'fa_get_fund_dividend_history') {
+                    return [
+                        'code' => $codes[0],
+                        'page' => 1,
+                        'page_size' => 100,
+                    ];
+                }
+                return [
+                    'code' => $codes[0],
+                    'page' => 1,
+                    'page_size' => 20,
+                    'doc_type' => $this->requestedFundDocumentType($latestUser),
+                    'include_content' => $this->requestedFundDocumentContent($latestUser),
+                    'content_limit' => 6000,
+                ];
+            }
+        }
+
         return null;
+    }
+
+    private function requestedFundDocumentType(string $text): string
+    {
+        if (preg_match('/(季报|季度报告|半年报|中期报告|年报|年度报告|定期报告)/u', $text)) return 'periodic_report';
+        if (preg_match('/(招募|招募说明书|产品资料概要)/u', $text)) return 'prospectus';
+        if (preg_match('/(基金合同|合同|托管协议)/u', $text)) return 'contract';
+        if (preg_match('/(分红|派息|收益分配)/u', $text)) return 'dividend';
+        return 'all';
+    }
+
+    private function requestedFundDocumentContent(string $text): bool
+    {
+        return (bool)preg_match('/(正文|原文|内容|依据|证据|条款|详细|摘录|摘要)/u', $text);
     }
 
     private function requestedTopN(string $text, int $default): int
@@ -529,6 +567,9 @@ class AIChatToolAgent
             'fa_get_fund_estimate',
             'fa_get_fund_history',
             'fa_get_fund_rank',
+            'fa_get_index_profile',
+            'fa_get_fund_dividend_history',
+            'fa_get_fund_documents',
             'fa_get_hot_stocks',
             'fa_get_market_breadth',
             'fa_get_sector_flow',
@@ -561,7 +602,7 @@ class AIChatToolAgent
 
     private function looksLikeFundRequest(string $text): bool
     {
-        return (bool)preg_match('/(基金|净值|估值|基金经理|基金公司|申购|赎回|同类排行|同类排名|基金排行|基金排名|基金信息|基金资料|开放式基金|ETF|etf|QDII|qdii)/u', $text);
+        return (bool)preg_match('/(基金|净值|估值|基金经理|基金公司|申购|赎回|同类排行|同类排名|基金排行|基金排名|基金信息|基金资料|开放式基金|ETF|etf|QDII|qdii|红利型|红利策略|分红|派息|收益分配|跟踪指数|业绩基准|招募说明书|基金合同|产品资料概要|季报|年报|公告)/u', $text);
     }
 
     private function looksLikeMarketBreadthRequest(string $text): bool
@@ -643,6 +684,9 @@ class AIChatToolAgent
                 '涉及大盘环境、市场情绪、市场宽度、涨跌家数、涨停跌停、普涨普跌或赚钱效应时，必须优先调用 fa_get_market_breadth。',
                 '涉及市场扫描、资金流入、今日涨幅排行、热门股票或候选标的时，先调用 fa_get_market_breadth 判断市场环境，再调用 fa_get_hot_stocks；按涨幅排序使用 sort=f3，按主力净流入排序使用 sort=f62。',
                 '涉及基金排行、今日基金涨幅、基金最新信息或未指定代码的基金研究时，必须优先调用 fa_get_fund_rank；今日/涨幅问题使用 period=day，再按候选调用基金资料和估值工具。',
+                '涉及基金风格、是否红利型/指数型、跟踪指数、业绩基准或投资策略依据时，必须优先调用 fa_get_index_profile。',
+                '涉及基金分红、派息、收益分配或最近是否分红时，必须调用 fa_get_fund_dividend_history。',
+                '涉及基金合同、招募说明书、产品资料概要、季报/年报、公告或需要文档证据时，必须调用 fa_get_fund_documents；如果正文/PDF 解析不可用，最终回答要说明数据缺口。',
                 '所有档案下都暴露完整只读工具集；即使当前是基金研究档案，也可以在用户问题需要时调用股票行情、K线、资金流、板块、雪球热度和选股工具来交叉验证或比较。',
                 '工具选择只按用户问题和研究需要决定，不按“基金版本/股票版本”裁剪；但不要为了展示能力而调用与问题无关的工具。',
                 '在每轮正式调用工具前，assistant content 先用 1-3 句中文简要说明当前判断、接下来要查什么和为什么；随后再通过 tool_calls 调用工具。',
@@ -831,6 +875,9 @@ class AIChatToolAgent
             'fa_get_fund_estimate' => '基金估值',
             'fa_get_fund_history' => '基金历史净值',
             'fa_get_fund_rank' => '基金排行',
+            'fa_get_index_profile' => '基金指数画像',
+            'fa_get_fund_dividend_history' => '基金分红历史',
+            'fa_get_fund_documents' => '基金文档',
             'fa_calculate_kline_indicators' => '技术指标',
             'fa_compare_candidates' => '候选排序',
         ];

@@ -45,6 +45,9 @@ class FundService
         'search'      => 600,   // 基金搜索：10 分钟
         'rank'        => 300,    // 基金排行：5 分钟
         'history'     => 300,    // 历史净值：5 分钟
+        'index_profile' => 3600, // 基金跟踪指数画像：1 小时
+        'dividend_history' => 300,
+        'documents'   => 1800,   // 基金公告列表：30 分钟
     ];
 
     /** @var int negative cache TTL (秒) */
@@ -384,6 +387,179 @@ class FundService
         });
     }
 
+    /**
+     * 基金跟踪指数画像（由基金详情反推，不承诺完整指数编制细则）
+     */
+    public function indexProfile(string $code): DataSourceResult
+    {
+        $key = $this->cacheKey('index_profile', $code);
+
+        return $this->useCache('index_profile', $key, function() use ($code) {
+            return $this->withBreaker('index_profile', function() use ($code) {
+                $detail = $this->fetchFundDetail($code);
+                if ($detail === null) {
+                    return DataSourceResult::error(self::SOURCE_NAME, 'index_profile', 'empty_data', '基金详情未返回指数画像数据');
+                }
+
+                $strategy = (string)($detail['investment_strategy'] ?? '');
+                $constraint = $this->extractTrackingConstraint($strategy);
+                $hasIndex = ($detail['index_code'] ?? '') !== '' || ($detail['index_name'] ?? '') !== '';
+
+                return DataSourceResult::success(self::SOURCE_NAME, 'index_profile', [
+                    'fund_code' => $detail['code'] ?? $code,
+                    'fund_name' => $detail['name'] ?? '',
+                    'fund_full_name' => $detail['full_name'] ?? '',
+                    'fund_type' => $detail['type'] ?? '',
+                    'index_code' => $detail['index_code'] ?? '',
+                    'index_name' => $detail['index_name'] ?? '',
+                    'index_exchange' => $detail['index_exchange'] ?? '',
+                    'benchmark' => $detail['benchmark'] ?? '',
+                    'performance_compare' => $detail['performance_compare'] ?? '',
+                    'investment_target' => $detail['investment_target'] ?? '',
+                    'investment_strategy' => $strategy,
+                    'tracking_error_constraint' => $constraint,
+                    'scope_note' => 'v1 画像来自基金详情/业绩基准/投资策略字段，不代表完整指数官网编制细则或全量成分权重。',
+                ], [
+                    'code' => $code,
+                    'capability_level' => $hasIndex ? 'fund_derived_index_profile' : 'fund_detail_only',
+                    'partial' => !$hasIndex,
+                ]);
+            });
+        });
+    }
+
+    /**
+     * 基金历史分红记录（从历史净值分红送配列提取）
+     */
+    public function dividendHistory(string $code, int $page = 1, int $pageSize = 100): DataSourceResult
+    {
+        $page = max(1, min($page, 200));
+        $pageSize = max(1, min($pageSize, 100));
+        $key = $this->cacheKey('dividend_history', "{$code}:{$page}:{$pageSize}");
+
+        return $this->useCache('dividend_history', $key, function() use ($code, $page, $pageSize) {
+            return $this->withBreaker('dividend_history', function() use ($code, $page, $pageSize) {
+                $url = 'https://fundf10.eastmoney.com/F10DataApi.aspx?' . http_build_query([
+                    'type' => 'lsjz',
+                    'code' => $code,
+                    'page' => $page,
+                    'per'  => $pageSize,
+                    'sdate' => '',
+                    'edate' => '',
+                    'rt' => sprintf('%.6f', microtime(true)),
+                ]);
+
+                $resp = $this->http->get($url, [
+                    'Referer' => "https://fundf10.eastmoney.com/jjjz_{$code}.html",
+                    'Accept'  => '*/*',
+                ]);
+
+                if ($resp['error'] || $resp['http_code'] !== 200) {
+                    return DataSourceResult::error(self::SOURCE_NAME, 'dividend_history', 'network_error', '请求失败: ' . ($resp['error'] ?: "HTTP {$resp['http_code']}"));
+                }
+
+                $parsed = $this->parseHistoryResponse($resp['body']);
+                if ($parsed === null) {
+                    return DataSourceResult::error(self::SOURCE_NAME, 'dividend_history', 'parse_error', '解析基金分红历史失败');
+                }
+
+                $items = [];
+                foreach ($parsed['items'] as $row) {
+                    $dividend = trim((string)($row['dividend'] ?? ''));
+                    if ($dividend === '') continue;
+                    $items[] = [
+                        'date' => $row['date'] ?? '',
+                        'nav' => $row['nav'] ?? '',
+                        'acc_nav' => $row['acc_nav'] ?? '',
+                        'growth_rate' => $row['growth_rate'] ?? '',
+                        'dividend' => $dividend,
+                        'cash_per_unit' => $this->parseCashDividendPerUnit($dividend),
+                        'purchase_status' => $row['purchase_status'] ?? '',
+                        'redeem_status' => $row['redeem_status'] ?? '',
+                    ];
+                    if (count($items) >= $pageSize) {
+                        break;
+                    }
+                }
+
+                return DataSourceResult::success(self::SOURCE_NAME, 'dividend_history', $items, [
+                    'code' => $code,
+                    'page' => $parsed['page'],
+                    'page_size' => $pageSize,
+                    'records' => $parsed['records'],
+                    'pages' => $parsed['pages'],
+                    'dividend_records_in_page' => count($items),
+                    'source_note' => '记录来自历史净值表的分红送配列。',
+                ]);
+            });
+        });
+    }
+
+    /**
+     * 基金公告/报告/合同文档
+     */
+    public function fundDocuments(string $code, int $page = 1, int $pageSize = 20, string $docType = 'all', bool $includeContent = false, int $contentLimit = 6000): DataSourceResult
+    {
+        $page = max(1, min($page, 200));
+        $pageSize = max(1, min($pageSize, 100));
+        $docType = $docType === '' ? 'all' : $docType;
+        $contentLimit = max(1000, min($contentLimit, 20000));
+        $key = $this->cacheKey('documents', implode(':', [$code, $page, $pageSize, $docType, $includeContent ? 1 : 0, $contentLimit]));
+
+        return $this->useCache('documents', $key, function() use ($code, $page, $pageSize, $docType, $includeContent, $contentLimit) {
+            return $this->withBreaker('documents', function() use ($code, $page, $pageSize, $docType, $includeContent, $contentLimit) {
+                $url = 'https://fundf10.eastmoney.com/F10DataApi.aspx?' . http_build_query([
+                    'type' => 'jjgg',
+                    'code' => $code,
+                    'page' => $page,
+                    'per'  => $pageSize,
+                    'rt' => sprintf('%.6f', microtime(true)),
+                ]);
+
+                $resp = $this->http->get($url, [
+                    'Referer' => "https://fundf10.eastmoney.com/jjgg_{$code}.html",
+                    'Accept'  => '*/*',
+                ]);
+
+                if ($resp['error'] || $resp['http_code'] !== 200) {
+                    return DataSourceResult::error(self::SOURCE_NAME, 'documents', 'network_error', '请求失败: ' . ($resp['error'] ?: "HTTP {$resp['http_code']}"));
+                }
+
+                $parsed = $this->parseDocumentsResponse($resp['body']);
+                if ($parsed === null) {
+                    return DataSourceResult::error(self::SOURCE_NAME, 'documents', 'parse_error', '解析基金公告列表失败');
+                }
+
+                $items = [];
+                foreach ($parsed['items'] as $item) {
+                    $item['doc_type'] = $this->classifyDocument($item['title'] ?? '', $item['announcement_type'] ?? '');
+                    if ($docType !== 'all' && $item['doc_type'] !== $docType) {
+                        continue;
+                    }
+                    if ($includeContent) {
+                        $item = $this->attachDocumentContent($item, $contentLimit);
+                    }
+                    $items[] = $item;
+                    if (count($items) >= $pageSize) {
+                        break;
+                    }
+                }
+
+                return DataSourceResult::success(self::SOURCE_NAME, 'documents', $items, [
+                    'code' => $code,
+                    'doc_type' => $docType,
+                    'include_content' => $includeContent,
+                    'content_limit' => $includeContent ? $contentLimit : 0,
+                    'page' => $parsed['page'],
+                    'page_size' => $pageSize,
+                    'records' => $parsed['records'],
+                    'pages' => $parsed['pages'],
+                    'returned' => count($items),
+                ]);
+            });
+        });
+    }
+
     // ── 缓存层 (Phase 2 重构) ──
 
     /**
@@ -635,6 +811,11 @@ class FundService
             'custody_fee'   => $item['TRUSTEXP'] ?? '',
             'benchmark'     => $item['BENCH'] ?? $item['PERFCMP'] ?? '',
             'investment_target' => $item['INVTGT'] ?? '',
+            'investment_strategy' => $item['INVSTRA'] ?? '',
+            'index_code'     => $item['INDEXCODE'] ?? '',
+            'index_name'     => $item['INDEXNAME'] ?? '',
+            'index_exchange' => $item['INDEXTEXCH'] ?? $item['NEWINDEXTEXCH'] ?? '',
+            'performance_compare' => $item['PERFCMP'] ?? '',
         ];
     }
 
@@ -780,6 +961,207 @@ class FundService
             'pages' => $pages,
             'page' => $page,
         ];
+    }
+
+    private function parseDocumentsResponse(string $body): ?array
+    {
+        if (!preg_match('/content:\s*"([\s\S]*?)"\s*,\s*records:/', $body, $contentMatch)) {
+            return null;
+        }
+
+        $html = stripcslashes($contentMatch[1]);
+        $records = 0;
+        $pages = 0;
+        $page = 1;
+        if (preg_match('/records\s*:\s*(\d+)/', $body, $m)) $records = (int)$m[1];
+        if (preg_match('/pages\s*:\s*(\d+)/', $body, $m)) $pages = (int)$m[1];
+        if (preg_match('/curpage\s*:\s*(\d+)/', $body, $m)) $page = (int)$m[1];
+
+        preg_match_all('/<tr>(.*?)<\/tr>/is', $html, $rowMatches);
+        $items = [];
+        foreach ($rowMatches[1] as $row) {
+            preg_match_all('/<td[^>]*>(.*?)<\/td>/is', $row, $cellMatches);
+            if (count($cellMatches[1]) < 3) {
+                continue;
+            }
+            $titleCell = $cellMatches[1][0] ?? '';
+            $announcementUrl = $this->extractFirstHref($titleCell, false);
+            $pdfUrl = $this->extractFirstHref($titleCell, true);
+            $items[] = [
+                'title' => $this->cleanHtmlCell($titleCell),
+                'announcement_type' => $this->cleanHtmlCell($cellMatches[1][1] ?? ''),
+                'date' => $this->cleanHtmlCell($cellMatches[1][2] ?? ''),
+                'url' => $announcementUrl,
+                'pdf_url' => $pdfUrl,
+            ];
+        }
+
+        return [
+            'items' => $items,
+            'records' => $records,
+            'pages' => $pages,
+            'page' => $page,
+        ];
+    }
+
+    private function extractFirstHref(string $html, bool $pdf): string
+    {
+        preg_match_all('/<a\b[^>]*href=[\'"]([^\'"]+)[\'"][^>]*>/i', $html, $matches);
+        foreach ($matches[1] ?? [] as $href) {
+            $isPdf = stripos($href, '.pdf') !== false || stripos($href, 'pdf.dfcfw.com') !== false;
+            if ($pdf !== $isPdf) continue;
+            if (strpos($href, '//') === 0) return 'https:' . $href;
+            if (strpos($href, 'http://') === 0) return 'https://' . substr($href, 7);
+            if (strpos($href, 'https://') === 0) return $href;
+            return 'https://fund.eastmoney.com' . (strpos($href, '/') === 0 ? $href : '/' . $href);
+        }
+        return '';
+    }
+
+    private function classifyDocument(string $title, string $announcementType): string
+    {
+        $text = $title . ' ' . $announcementType;
+        if (preg_match('/(季度报告|中期报告|年度报告|定期报告|季报|半年报|年报)/u', $text)) return 'periodic_report';
+        if (preg_match('/(招募说明书|招募说明书更新|基金产品资料概要)/u', $text)) return 'prospectus';
+        if (preg_match('/(基金合同|托管协议)/u', $text)) return 'contract';
+        if (preg_match('/(分红|收益分配|派息)/u', $text)) return 'dividend';
+        return 'other';
+    }
+
+    private function attachDocumentContent(array $item, int $contentLimit): array
+    {
+        $item['content_status'] = 'not_available';
+        $item['content'] = '';
+        $url = (string)($item['url'] ?? '');
+        if ($url !== '') {
+            $htmlContent = $this->fetchAnnouncementHtmlText($url, $contentLimit);
+            if ($htmlContent !== '') {
+                $item['content_status'] = 'html_extracted';
+                $item['content'] = $htmlContent;
+                return $item;
+            }
+        }
+
+        $pdfUrl = (string)($item['pdf_url'] ?? '');
+        if ($pdfUrl !== '') {
+            $pdf = $this->extractPdfText($pdfUrl, $contentLimit);
+            $item['content_status'] = $pdf['status'];
+            $item['content'] = $pdf['content'];
+            if (!empty($pdf['message'])) {
+                $item['content_message'] = $pdf['message'];
+            }
+        }
+
+        return $item;
+    }
+
+    private function fetchAnnouncementHtmlText(string $url, int $limit): string
+    {
+        $resp = $this->http->get($url, [
+            'Referer' => 'https://fund.eastmoney.com/',
+            'Accept'  => 'text/html,*/*',
+        ]);
+        if ($resp['error'] || $resp['http_code'] !== 200 || $resp['body'] === '') {
+            return '';
+        }
+        $body = $resp['body'];
+        $body = preg_replace('/<script\b[^>]*>[\s\S]*?<\/script>/i', ' ', $body);
+        $body = preg_replace('/<style\b[^>]*>[\s\S]*?<\/style>/i', ' ', $body);
+        $text = $this->cleanHtmlCell($body);
+        if (mb_strlen($text) < 80) {
+            return '';
+        }
+        return mb_substr($text, 0, $limit);
+    }
+
+    private function extractPdfText(string $pdfUrl, int $limit): array
+    {
+        if (!function_exists('exec') || !function_exists('shell_exec')) {
+            return [
+                'status' => 'parser_unavailable',
+                'content' => '',
+                'message' => 'PHP 命令执行函数不可用，未抽取 PDF 正文。',
+            ];
+        }
+        if (!$this->pythonHasPypdf()) {
+            return [
+                'status' => 'parser_unavailable',
+                'content' => '',
+                'message' => 'Python pypdf 依赖不可用，未抽取 PDF 正文。',
+            ];
+        }
+
+        $tmp = tempnam(sys_get_temp_dir(), 'fa_pdf_');
+        if ($tmp === false) {
+            return ['status' => 'tempfile_failed', 'content' => '', 'message' => '临时文件创建失败'];
+        }
+
+        $resp = $this->http->get($pdfUrl, [
+            'Referer' => 'https://fund.eastmoney.com/',
+            'Accept' => 'application/pdf,*/*',
+        ]);
+        if ($resp['error'] || $resp['http_code'] !== 200 || $resp['body'] === '') {
+            @unlink($tmp);
+            return ['status' => 'download_failed', 'content' => '', 'message' => $resp['error'] ?: "HTTP {$resp['http_code']}"];
+        }
+        file_put_contents($tmp, $resp['body']);
+
+        $script = 'import sys,json; from pypdf import PdfReader; r=PdfReader(sys.argv[1]); limit=int(sys.argv[2]); text="";' .
+            "\n" . 'for p in r.pages[:20]:' .
+            "\n" . '    text += (p.extract_text() or "") + "\n"' .
+            "\n" . '    if len(text) >= limit: break' .
+            "\n" . 'print(json.dumps({"text": text[:limit]}, ensure_ascii=False))';
+        $cmd = 'python -c ' . escapeshellarg($script) . ' ' . escapeshellarg($tmp) . ' ' . escapeshellarg((string)$limit);
+        $out = shell_exec($cmd);
+        @unlink($tmp);
+
+        $decoded = json_decode((string)$out, true);
+        $text = is_array($decoded) ? trim((string)($decoded['text'] ?? '')) : '';
+        if ($text === '') {
+            return ['status' => 'pdf_extract_empty', 'content' => '', 'message' => 'PDF 正文为空或解析失败'];
+        }
+        return ['status' => 'pdf_extracted', 'content' => $text, 'message' => ''];
+    }
+
+    private function pythonHasPypdf(): bool
+    {
+        if (!function_exists('exec')) {
+            return false;
+        }
+        $cmd = 'python -c ' . escapeshellarg('import importlib.util,sys; sys.exit(0 if importlib.util.find_spec("pypdf") else 1)');
+        exec($cmd, $out, $code);
+        return $code === 0;
+    }
+
+    private function parseCashDividendPerUnit(string $text): ?float
+    {
+        if (preg_match('/每份派现金\s*([0-9.]+)\s*元/u', $text, $m)) {
+            return (float)$m[1];
+        }
+        if (preg_match('/派现金\s*([0-9.]+)\s*元/u', $text, $m)) {
+            return (float)$m[1];
+        }
+        return null;
+    }
+
+    private function extractTrackingConstraint(string $strategy): array
+    {
+        $result = [
+            'daily_tracking_deviation' => null,
+            'annual_tracking_error' => null,
+            'raw_text' => '',
+        ];
+        if ($strategy === '') return $result;
+        if (preg_match('/日均跟踪偏离度不超过\s*([0-9.]+%)/u', $strategy, $m)) {
+            $result['daily_tracking_deviation'] = $m[1];
+        }
+        if (preg_match('/年跟踪误差不超过\s*([0-9.]+%)/u', $strategy, $m)) {
+            $result['annual_tracking_error'] = $m[1];
+        }
+        if ($result['daily_tracking_deviation'] !== null || $result['annual_tracking_error'] !== null) {
+            $result['raw_text'] = mb_substr($strategy, 0, 260);
+        }
+        return $result;
     }
 
     private function cleanHtmlCell(string $html): string

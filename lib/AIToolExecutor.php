@@ -38,6 +38,9 @@ class AIToolExecutor
         'fa_get_fund_estimate' => 'executeFundEstimate',
         'fa_get_fund_history' => 'executeFundHistory',
         'fa_get_fund_rank' => 'executeFundRank',
+        'fa_get_index_profile' => 'executeIndexProfile',
+        'fa_get_fund_dividend_history' => 'executeFundDividendHistory',
+        'fa_get_fund_documents' => 'executeFundDocuments',
         'fa_calculate_kline_indicators' => 'calculateIndicators',
         'fa_compare_candidates' => 'compareCandidates',
     ];
@@ -216,6 +219,32 @@ class AIToolExecutor
             $this->enum($args['period'] ?? null, ['day', 'week', 'month', 'quarter', 'half_year', 'year', 'two_year', 'three_year', 'this_year', 'since'], 'year'),
             $this->int($args['page'] ?? null, 1, 1000, 1),
             $this->int($args['page_size'] ?? null, 5, 100, 30)
+        ), $started);
+    }
+
+    private function executeIndexProfile(array $args, float $started): array
+    {
+        return $this->fromResult($this->fund->indexProfile($this->fundCode($args['code'] ?? '')), $started);
+    }
+
+    private function executeFundDividendHistory(array $args, float $started): array
+    {
+        return $this->fromResult($this->fund->dividendHistory(
+            $this->fundCode($args['code'] ?? ''),
+            $this->int($args['page'] ?? null, 1, 200, 1),
+            $this->int($args['page_size'] ?? null, 1, 100, 100)
+        ), $started);
+    }
+
+    private function executeFundDocuments(array $args, float $started): array
+    {
+        return $this->fromResult($this->fund->fundDocuments(
+            $this->fundCode($args['code'] ?? ''),
+            $this->int($args['page'] ?? null, 1, 200, 1),
+            $this->int($args['page_size'] ?? null, 1, 100, 20),
+            $this->enum($args['doc_type'] ?? null, ['all', 'periodic_report', 'prospectus', 'contract', 'dividend', 'other'], 'all'),
+            $this->bool($args['include_content'] ?? null, false),
+            $this->int($args['content_limit'] ?? null, 1000, 20000, 6000)
         ), $started);
     }
 

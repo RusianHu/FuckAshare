@@ -209,6 +209,54 @@ class FundRankExecutor extends AIToolExecutor
     }
 }
 
+class FakeFundServiceForNewTools extends FundService
+{
+    public function __construct()
+    {
+    }
+
+    public function indexProfile(string $code): DataSourceResult
+    {
+        if ($code !== '008163') {
+            return DataSourceResult::error('fake_fund', 'index_profile', 'invalid_code', 'unexpected code');
+        }
+        return DataSourceResult::success('fake_fund', 'index_profile', [
+            'fund_code' => '008163',
+            'fund_name' => '南方标普红利低波50ETF联接A',
+            'index_code' => 'SPCLLHCP',
+            'index_name' => '标普中国A股大盘红利低波50指数',
+            'benchmark' => '标普中国A股大盘红利低波50指数收益率*95%+银行活期存款利率(税后)*5%',
+            'investment_strategy' => '日均跟踪偏离度不超过0.35%,年跟踪误差不超过4%。',
+        ]);
+    }
+
+    public function dividendHistory(string $code, int $page = 1, int $pageSize = 100): DataSourceResult
+    {
+        return DataSourceResult::success('fake_fund', 'dividend_history', [[
+            'date' => '2026-07-02',
+            'nav' => '0.9932',
+            'acc_nav' => '1.6922',
+            'growth_rate' => '1.13',
+            'dividend' => '每份派现金0.0040元',
+            'cash_per_unit' => 0.004,
+        ]], ['code' => $code, 'page' => $page, 'page_size' => $pageSize]);
+    }
+
+    public function fundDocuments(string $code, int $page = 1, int $pageSize = 20, string $docType = 'all', bool $includeContent = false, int $contentLimit = 6000): DataSourceResult
+    {
+        return DataSourceResult::success('fake_fund', 'documents', [[
+            'title' => '南方标普中国A股大盘红利低波50交易型开放式指数证券投资基金联接基金2022年第3季度报告',
+            'announcement_type' => '定期报告',
+            'date' => '2022-10-26',
+            'url' => 'https://fund.eastmoney.com/gonggao/008163,AN202210261579469610.html',
+            'pdf_url' => 'https://pdf.dfcfw.com/pdf/H2_AN202210261579469610_1.pdf',
+            'doc_type' => 'periodic_report',
+            'content_status' => $includeContent ? 'parser_unavailable' : 'not_requested',
+            'content' => '',
+        ]], ['code' => $code, 'doc_type' => $docType, 'include_content' => $includeContent, 'content_limit' => $contentLimit]);
+    }
+}
+
 $tools = AIToolRegistry::chatTools();
 assert_true(count($tools) >= 17, 'registry exposes planned tool set');
 foreach ($tools as $tool) {
@@ -271,6 +319,9 @@ $payloadToolNames = array_map(function($tool) {
     return $tool['function']['name'] ?? '';
 }, $capturedFundPayload['tools'] ?? []);
 assert_true(in_array('fa_get_fund_rank', $payloadToolNames, true), 'fund profile payload includes fund tools');
+assert_true(in_array('fa_get_index_profile', $payloadToolNames, true), 'fund profile payload includes index profile tool');
+assert_true(in_array('fa_get_fund_dividend_history', $payloadToolNames, true), 'fund profile payload includes dividend history tool');
+assert_true(in_array('fa_get_fund_documents', $payloadToolNames, true), 'fund profile payload includes fund documents tool');
 assert_true(in_array('fa_get_stock_quote', $payloadToolNames, true), 'fund profile payload still includes stock quote tool');
 assert_true(in_array('fa_get_hot_stocks', $payloadToolNames, true), 'fund profile payload still includes stock discovery tool');
 assert_true(in_array('fa_get_market_breadth', $payloadToolNames, true), 'fund profile payload still includes market breadth tool');
@@ -371,6 +422,57 @@ $compare = $executor->execute('fa_compare_candidates', [
     ],
 ]);
 assert_true($compare['data']['items'][0]['code'] === 'B', 'candidate comparison sorts deterministically');
+
+$fundToolExecutor = new AIToolExecutor(new FakeMarketDataService(), new FakeFundServiceForNewTools(), 30000);
+$indexProfile = $fundToolExecutor->execute('fa_get_index_profile', ['code' => '008163']);
+assert_true($indexProfile['success'] === true, 'index profile tool succeeds');
+assert_true(($indexProfile['data']['index_code'] ?? '') === 'SPCLLHCP', 'index profile returns index code');
+assert_contains('标普中国A股大盘红利低波50指数', (string)($indexProfile['data']['index_name'] ?? ''), 'index profile returns index name');
+
+$dividendHistory = $fundToolExecutor->execute('fa_get_fund_dividend_history', [
+    'code' => '008163',
+    'page' => 1,
+    'page_size' => 100,
+]);
+assert_true($dividendHistory['success'] === true, 'dividend history tool succeeds');
+assert_contains('每份派现金0.0040元', (string)($dividendHistory['data'][0]['dividend'] ?? ''), 'dividend history returns cash dividend text');
+assert_true(($dividendHistory['data'][0]['cash_per_unit'] ?? 0) == 0.004, 'dividend history parses cash per unit');
+
+$fundDocuments = $fundToolExecutor->execute('fa_get_fund_documents', [
+    'code' => '008163',
+    'page' => 1,
+    'page_size' => 20,
+    'doc_type' => 'periodic_report',
+    'include_content' => true,
+    'content_limit' => 6000,
+]);
+assert_true($fundDocuments['success'] === true, 'fund documents tool succeeds');
+assert_contains('季度报告', (string)($fundDocuments['data'][0]['title'] ?? ''), 'fund documents returns report title');
+assert_contains('.pdf', (string)($fundDocuments['data'][0]['pdf_url'] ?? ''), 'fund documents returns pdf url');
+assert_true(($fundDocuments['data'][0]['content_status'] ?? '') === 'parser_unavailable', 'fund documents exposes parser unavailable status');
+
+$invalidFundCode = $fundToolExecutor->execute('fa_get_index_profile', ['code' => '00816x']);
+assert_true($invalidFundCode['success'] === false && $invalidFundCode['code'] === 'tool_error', 'invalid fund code is rejected');
+
+$invalidDocType = $fundToolExecutor->execute('fa_get_fund_documents', [
+    'code' => '008163',
+    'page' => 1,
+    'page_size' => 20,
+    'doc_type' => 'bad',
+    'include_content' => false,
+    'content_limit' => 6000,
+]);
+assert_true($invalidDocType['success'] === false && $invalidDocType['code'] === 'tool_error', 'invalid document type is rejected');
+
+$invalidContentLimit = $fundToolExecutor->execute('fa_get_fund_documents', [
+    'code' => '008163',
+    'page' => 1,
+    'page_size' => 20,
+    'doc_type' => 'all',
+    'include_content' => false,
+    'content_limit' => 50000,
+]);
+assert_true($invalidContentLimit['success'] === false && $invalidContentLimit['code'] === 'tool_error', 'oversized document content limit is rejected');
 
 $smallExecutor = new AIToolExecutor(new FakeMarketDataService(), null, 180);
 $longOutput = $smallExecutor->executeForModel('fa_compare_candidates', [
@@ -698,6 +800,92 @@ assert_true(in_array('fa_get_fund_estimate', array_map(function($call) { return 
 assert_true(strpos($invalidArgsStream, '参数 JSON 不完整') !== false, 'invalid args repair exposes JSON repair status instead of hiding it');
 assert_true(strpos($invalidArgsStream, '服务端数据预取') === false, 'invalid args path exposes no server prefetch trace');
 assert_contains('基金深入研究最终结论', $invalidArgsStream, 'invalid args path emits final answer after follow-up tools');
+
+$newFundToolExecutor = new FakeToolExecutor();
+$newFundToolStream = '';
+$newFundToolTransportCalls = 0;
+$newFundToolAgent = new AIChatToolAgent(
+    ['api_url' => 'http://fake', 'api_key' => 'test', 'model' => 'fake-model'],
+    ['max_tool_rounds' => 5, 'max_tool_calls_per_round' => 4, 'expose_tool_trace' => true, 'auto_prefetch' => false],
+    $newFundToolExecutor,
+    function(array $payload) use (&$newFundToolTransportCalls): array {
+        $newFundToolTransportCalls++;
+        if ($newFundToolTransportCalls === 1) {
+            $prompt = '';
+            foreach ($payload['messages'] as $message) {
+                $prompt .= (string)($message['content'] ?? '');
+            }
+            assert_contains('fa_get_index_profile', $prompt, 'system prompt mentions index profile tool');
+            assert_contains('fa_get_fund_dividend_history', $prompt, 'system prompt mentions dividend history tool');
+            assert_contains('fa_get_fund_documents', $prompt, 'system prompt mentions fund documents tool');
+            return [
+                'choices' => [[
+                    'message' => [
+                        'role' => 'assistant',
+                        'content' => null,
+                        'tool_calls' => [[
+                            'id' => 'index_profile_1',
+                            'type' => 'function',
+                            'function' => [
+                                'name' => 'fa_get_index_profile',
+                                'arguments' => '{"code":"008163"}',
+                            ],
+                        ]],
+                    ],
+                ]],
+            ];
+        }
+        if ($newFundToolTransportCalls === 2) {
+            return [
+                'choices' => [[
+                    'message' => [
+                        'role' => 'assistant',
+                        'content' => null,
+                        'tool_calls' => [
+                            [
+                                'id' => 'dividend_history_1',
+                                'type' => 'function',
+                                'function' => [
+                                    'name' => 'fa_get_fund_dividend_history',
+                                    'arguments' => '{"code":"008163","page":1,"page_size":100}',
+                                ],
+                            ],
+                            [
+                                'id' => 'documents_1',
+                                'type' => 'function',
+                                'function' => [
+                                    'name' => 'fa_get_fund_documents',
+                                    'arguments' => '{"code":"008163","page":1,"page_size":20,"doc_type":"contract","include_content":true,"content_limit":6000}',
+                                ],
+                            ],
+                        ],
+                    ],
+                ]],
+            ];
+        }
+        return [
+            'choices' => [[
+                'message' => [
+                    'role' => 'assistant',
+                    'content' => '基金工具最终结论：已结合指数画像、分红历史和基金文档观察。内容仅供研究参考，不构成投资建议。',
+                ],
+            ]],
+        ];
+    },
+    function(array $payload, callable $emit): void {
+        assert_true(false, 'new fund tool path should finish directly through model decision loop');
+    }
+);
+$newFundToolAgent->run([
+    ['role' => 'user', 'content' => '008163 是红利型基金吗？最近分红了吗？找基金合同依据。'],
+], function(string $chunk) use (&$newFundToolStream) {
+    $newFundToolStream .= $chunk;
+});
+$newFundToolNames = array_map(function($call) { return $call[0]; }, $newFundToolExecutor->calls);
+assert_true(in_array('fa_get_index_profile', $newFundToolNames, true), 'agent path can call index profile tool');
+assert_true(in_array('fa_get_fund_dividend_history', $newFundToolNames, true), 'agent path can call dividend history tool');
+assert_true(in_array('fa_get_fund_documents', $newFundToolNames, true), 'agent path can call fund documents tool');
+assert_contains('基金工具最终结论', $newFundToolStream, 'agent path emits final answer after new fund tools');
 
 $marketBreadthExecutor = new FakeToolExecutor();
 $marketBreadthTransportCalls = 0;

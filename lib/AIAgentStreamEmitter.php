@@ -348,6 +348,9 @@ class AIAgentStreamEmitter
             'fa_get_fund_estimate' => '获取基金估值',
             'fa_get_fund_history' => '获取基金历史净值',
             'fa_get_fund_rank' => '获取基金同类排行',
+            'fa_get_index_profile' => '获取基金指数画像',
+            'fa_get_fund_dividend_history' => '获取基金分红历史',
+            'fa_get_fund_documents' => '获取基金文档',
             'fa_calculate_kline_indicators' => '计算技术指标',
             'fa_compare_candidates' => '排序候选标的',
         ];

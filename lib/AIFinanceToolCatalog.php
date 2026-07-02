@@ -152,6 +152,32 @@ class AIFinanceToolCatalog
                     'page_size' => AIToolSchema::nullableInteger('Page size.', 5, 100),
                 ]
             ),
+            'fa_get_index_profile' => AIToolSchema::tool(
+                'fa_get_index_profile',
+                'Get fund-derived tracking index profile, benchmark, investment target, and strategy evidence for a fund.',
+                ['code' => $fundCode]
+            ),
+            'fa_get_fund_dividend_history' => AIToolSchema::tool(
+                'fa_get_fund_dividend_history',
+                'Get fund dividend/distribution records parsed from historical NAV dividend cells.',
+                [
+                    'code' => $fundCode,
+                    'page' => AIToolSchema::nullableInteger('Page number.', 1, 200),
+                    'page_size' => AIToolSchema::nullableInteger('Page size.', 1, 100),
+                ]
+            ),
+            'fa_get_fund_documents' => AIToolSchema::tool(
+                'fa_get_fund_documents',
+                'Get fund announcements, reports, contracts, prospectus, dividend notices, and optional extracted document text.',
+                [
+                    'code' => $fundCode,
+                    'page' => AIToolSchema::nullableInteger('Page number.', 1, 200),
+                    'page_size' => AIToolSchema::nullableInteger('Page size.', 1, 100),
+                    'doc_type' => AIToolSchema::nullableEnum(['all', 'periodic_report', 'prospectus', 'contract', 'dividend', 'other'], 'Document type filter. Default all.'),
+                    'include_content' => ['type' => ['boolean', 'null'], 'description' => 'Whether to extract announcement/PDF text. Default false.'],
+                    'content_limit' => AIToolSchema::nullableInteger('Maximum extracted text chars per document. Default 6000, max 20000.', 1000, 20000),
+                ]
+            ),
         ];
     }
 
