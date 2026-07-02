@@ -3079,23 +3079,52 @@ const AIModule = {
     _agentStatusText(event) {
         if (!event || typeof event !== 'object') return '';
         const type = event.type || '';
+        const duration = this._formatDuration(event.duration_ms);
         if (type === 'run_started') return 'AI 已开始分析任务';
         if (type === 'agent_status') return event.message || 'AI 正在分析';
+        if (type === 'model_request_started') return `模型决策请求开始：第 ${event.round || '-'} 轮`;
+        if (type === 'model_request_finished') return `模型决策请求完成：第 ${event.round || '-'} 轮${duration ? ' · ' + duration : ''}`;
+        if (type === 'model_request_failed') return `模型决策请求失败：第 ${event.round || '-'} 轮${duration ? ' · ' + duration : ''}${event.message ? ' · ' + event.message : ''}`;
+        if (type === 'model_stream_started') return `模型流式生成开始：${event.phase || 'stream'}`;
+        if (type === 'model_stream_finished') return `模型流式生成结束${duration ? ' · ' + duration : ''}`;
         if (type === 'tool_call_started') return `AI 模型正在调用工具：${event.tool || '研究工具'}`;
-        if (type === 'tool_call_finished') return `工具调用完成：${event.tool || '研究工具'}`;
+        if (type === 'tool_call_finished') {
+            const ok = event.success === false ? '失败' : '完成';
+            const rows = event.output_summary?.rows;
+            const rowsText = typeof rows === 'number' ? ` · ${rows} 项` : '';
+            return `工具调用${ok}：${event.tool || '研究工具'}${duration ? ' · ' + duration : ''}${rowsText}`;
+        }
         if (type === 'checkpoint_created') return '已创建运行检查点';
         if (type === 'final_answer_started') return '正在生成最终回答';
         if (type === 'final_answer_finished') return '最终回答已完成';
-        if (type === 'run_finished') return 'AI 任务已完成';
+        if (type === 'run_finished') return `AI 任务已完成${duration || event.elapsed_ms ? ' · ' + this._formatDuration(event.elapsed_ms || event.duration_ms) : ''}`;
         if (type === 'run_failed') return event.message || 'AI 任务失败';
         return '';
     },
 
     _shouldDisplayAgentStatus(event, text) {
-        if (!event || event.type !== 'agent_status') return false;
+        if (!event) return false;
+        if ([
+            'model_request_finished',
+            'model_request_failed',
+            'tool_call_finished',
+            'model_stream_finished',
+            'run_finished',
+            'run_failed'
+        ].includes(event.type)) {
+            return true;
+        }
+        if (event.type !== 'agent_status') return false;
         const statusText = String(text || event.message || '').trim();
         if (!statusText) return false;
         return /JSON|参数|失败|超时|回退|错误|异常|上限|无法|中断|invalid|timeout|fallback/i.test(statusText);
+    },
+
+    _formatDuration(ms) {
+        const value = Number(ms);
+        if (!Number.isFinite(value) || value < 0) return '';
+        if (value < 1000) return `${Math.round(value)}ms`;
+        return `${(value / 1000).toFixed(value < 10000 ? 2 : 1)}s`;
     },
 
     async sendToAI(loadingMessage, timer, targetContainer) {

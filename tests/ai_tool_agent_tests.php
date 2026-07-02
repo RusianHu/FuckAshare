@@ -1087,4 +1087,82 @@ $fallbackAgent->run([
 assert_contains('fallback_plain_stream', $fallbackStream, 'tool handshake failure emits fallback status');
 assert_contains('fallback-ok', $fallbackStream, 'tool handshake failure falls back to plain stream');
 
+$limitedToolExecutor = new FakeToolExecutor();
+$limitedToolTransportCalls = 0;
+$limitedToolAgent = new AIChatToolAgent(
+    ['api_url' => 'http://fake', 'api_key' => 'test', 'model' => 'fake-model'],
+    ['max_tool_rounds' => 2, 'max_tool_calls_per_round' => 2, 'expose_tool_trace' => true],
+    $limitedToolExecutor,
+    function(array $payload) use (&$limitedToolTransportCalls): array {
+        $limitedToolTransportCalls++;
+        if ($limitedToolTransportCalls === 1) {
+            return [
+                'choices' => [[
+                    'message' => [
+                        'role' => 'assistant',
+                        'content' => null,
+                        'tool_calls' => [
+                            [
+                                'id' => 'limit_quote_1',
+                                'type' => 'function',
+                                'function' => [
+                                    'name' => 'fa_get_stock_quote',
+                                    'arguments' => '{"codes":["600001"],"source":"auto","fallback":true}',
+                                ],
+                            ],
+                            [
+                                'id' => 'limit_quote_2',
+                                'type' => 'function',
+                                'function' => [
+                                    'name' => 'fa_get_stock_quote',
+                                    'arguments' => '{"codes":["600002"],"source":"auto","fallback":true}',
+                                ],
+                            ],
+                            [
+                                'id' => 'limit_quote_3',
+                                'type' => 'function',
+                                'function' => [
+                                    'name' => 'fa_get_stock_quote',
+                                    'arguments' => '{"codes":["600003"],"source":"auto","fallback":true}',
+                                ],
+                            ],
+                        ],
+                    ],
+                ]],
+            ];
+        }
+
+        $assistantToolCalls = [];
+        $toolMessages = [];
+        foreach ($payload['messages'] as $message) {
+            if (($message['role'] ?? '') === 'assistant' && isset($message['tool_calls'])) {
+                $assistantToolCalls = $message['tool_calls'];
+            }
+            if (($message['role'] ?? '') === 'tool') {
+                $toolMessages[] = $message;
+            }
+        }
+        assert_true(count($assistantToolCalls) === 2, 'per-round tool cap stores only executed assistant tool calls');
+        assert_true(count($toolMessages) === 2, 'per-round tool cap stores matching tool messages');
+        assert_true(($assistantToolCalls[0]['id'] ?? '') === ($toolMessages[0]['tool_call_id'] ?? ''), 'first capped tool call has matching tool response');
+        assert_true(($assistantToolCalls[1]['id'] ?? '') === ($toolMessages[1]['tool_call_id'] ?? ''), 'second capped tool call has matching tool response');
+        return [
+            'choices' => [[
+                'message' => [
+                    'role' => 'assistant',
+                    'content' => '工具上限回归测试完成。内容仅供研究参考，不构成投资建议。',
+                ],
+            ]],
+        ];
+    }
+);
+$limitedToolStream = '';
+$limitedToolAgent->run([
+    ['role' => 'user', 'content' => '分析 600001 600002 600003'],
+], function(string $chunk) use (&$limitedToolStream): void {
+    $limitedToolStream .= $chunk;
+});
+assert_true($limitedToolTransportCalls === 2, 'per-round tool cap continues with valid next model request');
+assert_contains('每轮上限', $limitedToolStream, 'per-round tool cap exposes capped execution status');
+
 echo "AI tool agent tests passed\n";

@@ -85,10 +85,31 @@ class AIChatToolAgent
                 'message' => 'AI 正在分析任务并决定下一步是否调用工具。',
             ]);
 
+            $modelStarted = microtime(true);
+            $this->stream->agentEvent($emit, 'model_request_started', [
+                'run_id' => $state->runId,
+                'round' => $round,
+                'phase' => 'tool_decision',
+                'message_count' => count($payload['messages'] ?? []),
+                'tool_count' => count($tools),
+            ]);
             try {
                 $response = $this->model->complete($payload);
+                $this->stream->agentEvent($emit, 'model_request_finished', [
+                    'run_id' => $state->runId,
+                    'round' => $round,
+                    'phase' => 'tool_decision',
+                    'duration_ms' => (int)round((microtime(true) - $modelStarted) * 1000),
+                ]);
             } catch (Throwable $e) {
                 $reason = trim($e->getMessage());
+                $this->stream->agentEvent($emit, 'model_request_failed', [
+                    'run_id' => $state->runId,
+                    'round' => $round,
+                    'phase' => 'tool_decision',
+                    'duration_ms' => (int)round((microtime(true) - $modelStarted) * 1000),
+                    'message' => mb_substr($reason, 0, 220),
+                ]);
                 $message = '当前上游未能完成工具调用握手，已回退普通流式对话。';
                 if ($reason !== '') {
                     $message .= '原因：' . mb_substr($reason, 0, 160);
@@ -144,10 +165,18 @@ class AIChatToolAgent
             }
 
             $this->stream->assistantThought($emit, $this->visibleThoughtForToolCalls($assistant, $toolCalls), $round, $state);
-            $messages[] = $this->compactAssistantMessage($assistant, $toolCalls);
             $toolLimit = max(1, (int)$this->options['max_tool_calls_per_round']);
+            $requestedToolCallCount = count($toolCalls);
             $toolCalls = array_slice($toolCalls, 0, $toolLimit);
+            if ($requestedToolCallCount > count($toolCalls)) {
+                $this->stream->agentEvent($emit, 'agent_status', [
+                    'run_id' => $state->runId,
+                    'round' => $round,
+                    'message' => "模型本轮请求 {$requestedToolCallCount} 个工具，已按每轮上限执行前 " . count($toolCalls) . ' 个。',
+                ]);
+            }
             $toolCalls = $this->repairMalformedToolArguments($toolCalls, $originalMessages, $state, $emit, $round);
+            $messages[] = $this->compactAssistantMessage($assistant, $toolCalls);
             $toolMessages = [];
             foreach ($this->toolRuntime->executeToolCalls($toolCalls, $state, $emit, $round, 'model_tool_call') as $message) {
                 $messages[] = $message;
@@ -245,6 +274,11 @@ class AIChatToolAgent
             return;
         }
 
+        $this->stream->agentEvent($emit, 'model_stream_started', [
+            'run_id' => $state->runId,
+            'phase' => 'plain_stream',
+            'message_count' => count($messages),
+        ]);
         $finished = false;
         $finalText = '';
         $wrappedEmit = $this->stream->wrapFinalStream($emit, $state, $stopReason, $finished, $finalText);
@@ -715,6 +749,11 @@ class AIChatToolAgent
         $finalText = '';
         $wrappedEmit = $this->stream->wrapFinalStream($emit, $state, $stopReason, $finished, $finalText);
 
+        $this->stream->agentEvent($emit, 'model_stream_started', [
+            'run_id' => $state->runId,
+            'phase' => 'final_answer',
+            'message_count' => count($payload['messages'] ?? []),
+        ]);
         $this->model->stream($payload, $wrappedEmit);
         if (!$finished) {
             $this->stream->riskDisclaimerIfMissing($emit, $finalText, $state);

@@ -16,6 +16,8 @@ class EastmoneyClient
     const PUSH2_URL = 'https://push2.eastmoney.com';
     const PUSH2_DELAY_URL = 'https://push2delay.eastmoney.com';
     const PUSH2HIS_URL = 'https://push2his.eastmoney.com';
+    const MARKET_BREADTH_SCAN_PAGE_SIZE = 100;
+    const MARKET_BREADTH_SCAN_CONCURRENCY = 32;
 
     /** @var HttpClient */
     private $http;
@@ -485,13 +487,14 @@ class EastmoneyClient
 
     private function scanMarketBreadth(string $scope, array &$failures): ?array
     {
+        $scanStarted = microtime(true);
         $fs = $this->marketBreadthFs($scope);
         if ($fs === null) {
             $failures[] = ['stage' => 'market_scan', 'code' => 'unsupported_scope', 'message' => "scope={$scope} 不执行全市场扫描"];
             return null;
         }
 
-        $pageSize = 200;
+        $pageSize = self::MARKET_BREADTH_SCAN_PAGE_SIZE;
         $maxPages = 80;
         $first = $this->fetchMarketBreadthPage($fs, 1, $pageSize, $failures);
         if ($first === null) {
@@ -523,14 +526,45 @@ class EastmoneyClient
         $this->accumulateMarketBreadthRows($first['diff'], $stats);
         $pagesScanned++;
 
-        for ($page = 2; $page <= $pages; $page++) {
-            $pageData = $this->fetchMarketBreadthPage($fs, $page, $pageSize, $failures);
-            if ($pageData === null) {
-                $partial = true;
-                break;
+        $parallelMeta = [
+            'parallel_pages_ms' => 0,
+            'parallel_concurrency' => self::MARKET_BREADTH_SCAN_CONCURRENCY,
+            'parallel_pages_requested' => max(0, $pages - 1),
+            'parallel_pages_failed' => 0,
+        ];
+        if ($pages >= 2) {
+            $parallel = $this->fetchMarketBreadthPagesParallel($fs, 2, $pages, $pageSize, $failures);
+            $parallelPages = $parallel['pages'];
+            $parallelMeta = array_merge($parallelMeta, $parallel['meta']);
+            for ($page = 2; $page <= $pages; $page++) {
+                if (!isset($parallelPages[$page])) {
+                    $partial = true;
+                    continue;
+                }
+                $this->accumulateMarketBreadthRows($parallelPages[$page]['diff'], $stats);
+                $pagesScanned++;
             }
-            $this->accumulateMarketBreadthRows($pageData['diff'], $stats);
-            $pagesScanned++;
+        }
+
+        if ($pagesScanned < $pages) {
+            $partial = true;
+        }
+
+        if ($pagesScanned <= 1 && $pages > 1) {
+            $fallbackStarted = microtime(true);
+            for ($page = 2; $page <= $pages; $page++) {
+                $pageData = $this->fetchMarketBreadthPage($fs, $page, $pageSize, $failures);
+                if ($pageData === null) {
+                    $partial = true;
+                    break;
+                }
+                $this->accumulateMarketBreadthRows($pageData['diff'], $stats);
+                $pagesScanned++;
+            }
+            $parallelMeta['sequential_fallback_ms'] = (int)round((microtime(true) - $fallbackStarted) * 1000);
+            if ($pagesScanned < $pages) {
+                $partial = true;
+            }
         }
 
         $method = $scope === 'a_share' ? 'full_a_share_scan' : 'scoped_a_share_scan';
@@ -564,32 +598,130 @@ class EastmoneyClient
                 'pages_scanned' => $pagesScanned,
                 'max_pages' => $maxPages,
                 'upstream_total' => $total,
+                'performance' => array_merge([
+                    'market_scan_total_ms' => (int)round((microtime(true) - $scanStarted) * 1000),
+                    'first_page_ms' => (int)($first['duration_ms'] ?? 0),
+                ], $parallelMeta),
             ],
         ];
     }
 
     private function fetchMarketBreadthPage(string $fs, int $page, int $pageSize, array &$failures): ?array
     {
-        $fields = 'f2,f3,f12,f13,f14';
-        $path = "/api/qt/clist/get?pn={$page}&pz={$pageSize}&po=1&np=1&fltt=2&invt=2&fid=f3&fs=" . urlencode($fs) . "&fields={$fields}&_=" . (time() * 1000);
+        $path = $this->marketBreadthPagePath($fs, $page, $pageSize);
         $resp = $this->getPush2($path, [self::PUSH2_URL, self::PUSH2_DELAY_URL], [
             'Referer: https://data.eastmoney.com/',
         ]);
 
+        return $this->decodeMarketBreadthPageResponse($resp, $page, $failures);
+    }
+
+    private function fetchMarketBreadthPagesParallel(string $fs, int $startPage, int $endPage, int $pageSize, array &$failures): array
+    {
+        $started = microtime(true);
+        $pages = [];
+        $failed = 0;
+        $requested = max(0, $endPage - $startPage + 1);
+        $queue = range($startPage, $endPage);
+
+        while (!empty($queue)) {
+            $mh = curl_multi_init();
+            $handles = [];
+            $batch = array_splice($queue, 0, self::MARKET_BREADTH_SCAN_CONCURRENCY);
+            foreach ($batch as $page) {
+                $ch = curl_init();
+                curl_setopt($ch, CURLOPT_URL, self::PUSH2_URL . $this->marketBreadthPagePath($fs, $page, $pageSize));
+                curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+                curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+                curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 5);
+                curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+                curl_setopt($ch, CURLOPT_MAXREDIRS, 3);
+                curl_setopt($ch, CURLOPT_ENCODING, '');
+                curl_setopt($ch, CURLOPT_HTTPHEADER, [
+                    'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Referer: https://data.eastmoney.com/',
+                    'Accept: application/json,text/plain,*/*',
+                ]);
+                curl_multi_add_handle($mh, $ch);
+                $handles[] = ['page' => $page, 'handle' => $ch, 'started' => microtime(true)];
+            }
+
+            $running = null;
+            do {
+                $status = curl_multi_exec($mh, $running);
+                if ($running) {
+                    curl_multi_select($mh, 1.0);
+                }
+            } while ($running && $status === CURLM_OK);
+
+            foreach ($handles as $item) {
+                $page = (int)$item['page'];
+                $ch = $item['handle'];
+                $body = curl_multi_getcontent($ch);
+                $resp = [
+                    'body' => $body ?: '',
+                    'http_code' => curl_getinfo($ch, CURLINFO_HTTP_CODE),
+                    'error' => curl_error($ch) ?: null,
+                    'content_type' => curl_getinfo($ch, CURLINFO_CONTENT_TYPE) ?: '',
+                    'duration_ms' => (int)round((microtime(true) - (float)$item['started']) * 1000),
+                ];
+                $decoded = $this->decodeMarketBreadthPageResponse($resp, $page, $failures, false);
+                if ($decoded === null) {
+                    $retryResp = $this->getPush2($this->marketBreadthPagePath($fs, $page, $pageSize), [self::PUSH2_DELAY_URL], [
+                        'Referer: https://data.eastmoney.com/',
+                    ]);
+                    $decoded = $this->decodeMarketBreadthPageResponse($retryResp, $page, $failures, true);
+                }
+                if ($decoded === null) {
+                    $failed++;
+                } else {
+                    $pages[$page] = $decoded;
+                }
+                curl_multi_remove_handle($mh, $ch);
+                curl_close($ch);
+            }
+            curl_multi_close($mh);
+        }
+
+        ksort($pages);
+        return [
+            'pages' => $pages,
+            'meta' => [
+                'parallel_pages_ms' => (int)round((microtime(true) - $started) * 1000),
+                'parallel_concurrency' => self::MARKET_BREADTH_SCAN_CONCURRENCY,
+                'parallel_pages_requested' => $requested,
+                'parallel_pages_failed' => $failed,
+            ],
+        ];
+    }
+
+    private function marketBreadthPagePath(string $fs, int $page, int $pageSize): string
+    {
+        $fields = 'f2,f3,f12,f13,f14';
+        return "/api/qt/clist/get?pn={$page}&pz={$pageSize}&po=1&np=1&fltt=2&invt=2&fid=f3&fs=" . urlencode($fs) . "&fields={$fields}&_=" . (time() * 1000);
+    }
+
+    private function decodeMarketBreadthPageResponse(array $resp, int $page, array &$failures, bool $recordFailure = true): ?array
+    {
         if ($resp['error'] || $resp['http_code'] !== 200) {
-            $failures[] = ['stage' => 'market_scan', 'page' => $page, 'code' => 'network_error', 'message' => $resp['error'] ?: "HTTP {$resp['http_code']}"];
+            if ($recordFailure) {
+                $failures[] = ['stage' => 'market_scan', 'page' => $page, 'code' => 'network_error', 'message' => $resp['error'] ?: "HTTP {$resp['http_code']}"];
+            }
             return null;
         }
 
         $parsed = HttpClient::parseJson($resp['body']);
         if (!$parsed['ok'] || !isset($parsed['data']['data']['diff']) || !is_array($parsed['data']['data']['diff'])) {
-            $failures[] = ['stage' => 'market_scan', 'page' => $page, 'code' => 'parse_error', 'message' => '全市场扫描 JSON 解析失败或缺少 diff 字段'];
+            if ($recordFailure) {
+                $failures[] = ['stage' => 'market_scan', 'page' => $page, 'code' => 'parse_error', 'message' => '全市场扫描 JSON 解析失败或缺少 diff 字段'];
+            }
             return null;
         }
 
         return [
             'total' => $parsed['data']['data']['total'] ?? null,
             'diff' => $parsed['data']['data']['diff'],
+            'duration_ms' => (int)round(($resp['duration_ms'] ?? ($this->http->lastDuration * 1000))),
         ];
     }
 

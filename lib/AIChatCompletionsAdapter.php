@@ -57,6 +57,7 @@ class AIChatCompletionsAdapter
             return $result;
         }
 
+        $started = microtime(true);
         $ch = curl_init();
         curl_setopt($ch, CURLOPT_URL, $this->channel['api_url']);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
@@ -77,17 +78,18 @@ class AIChatCompletionsAdapter
         $error = curl_error($ch);
         $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         curl_close($ch);
+        $durationMs = (int)round((microtime(true) - $started) * 1000);
 
         if ($errno) {
-            throw new RuntimeException("API请求失败: {$error}", $httpCode ?: $errno);
+            throw new RuntimeException("API请求失败(errno={$errno}, duration_ms={$durationMs}): {$error}", $httpCode ?: $errno);
         }
         $json = json_decode((string)$body, true);
         if (!is_array($json)) {
-            throw new RuntimeException('上游 AI 返回非 JSON 响应: ' . json_last_error_msg(), $httpCode ?: 0);
+            throw new RuntimeException("上游 AI 返回非 JSON 响应(HTTP {$httpCode}, duration_ms={$durationMs}): " . json_last_error_msg(), $httpCode ?: 0);
         }
         if (isset($json['error'])) {
             $message = is_array($json['error']) ? ($json['error']['message'] ?? json_encode($json['error'], JSON_UNESCAPED_UNICODE)) : (string)$json['error'];
-            throw new RuntimeException($message, $httpCode ?: 0);
+            throw new RuntimeException("上游 AI 错误(HTTP {$httpCode}, duration_ms={$durationMs}): {$message}", $httpCode ?: 0);
         }
         return $json;
     }
