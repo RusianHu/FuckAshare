@@ -171,9 +171,8 @@ return [
         //    应大于 timeout，否则可能误清理仍在运行的请求。fallback 310
         'stale_threshold' => 310,
 
-        // ⚠️ 预留未接线：ai_api.php 当前为纯透传上游 SSE，未实现服务端心跳发送逻辑，
-        //    修改此项不会生效。预期用途：长连接期间定时发送 keepalive 事件，防止中间
-        //    代理/CDN 因空闲断连。设为 0 表示禁用。如需启用需在 ai_api.php 补充心跳循环。
+        // ✅ SSE 心跳间隔（秒）：长工具调用或上游流式空闲期间发送 keepalive 注释行，
+        //    防止浏览器/反代/CDN 因长时间无字节输出而断连；设为 0 表示禁用。
         'heartbeat_interval' => 15,
 
         // ✅ 消息内容限制：覆盖 SecurityAudit 内置常量，用于校验前端传入的消息体。
@@ -194,7 +193,7 @@ return [
             'tool_output_char_limit' => 60000,  // 单个工具输出回填给模型的最大字符数
             'parallel_tool_calls' => true,      // 允许模型一次请求多个工具；配置 internal_exec_token+endpoint 后服务端用 curl_multi 并行执行，否则串行
             'internal_exec_token' => '',        // 并行执行内部鉴权 token；留空则禁用并行回退串行。建议填 32+ 位随机字符串
-            'internal_exec_endpoint' => '',     // 并行执行端点 URL，如 'http://127.0.0.1/FuckAshare/ai_tool_exec.php'；留空禁用并行
+            'internal_exec_endpoint' => '',     // 并行执行端点 URL；留空时 ai_api.php 自动推导本机 /ai_tool_exec.php
             'expose_tool_trace' => true,        // 向前端发送 tool_status SSE 事件用于展示进度
             'emit_agent_events' => true,        // 发送 run_started/tool_call_finished/run_finished 等结构化智能体事件
             'suppress_reasoning_content' => false, // 默认向前端透传上游 reasoning_content 推理流；设为 true 可隐藏

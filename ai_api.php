@@ -207,6 +207,7 @@ $agentOptions = [
     'parallel_tool_calls' => (bool)($toolAgentConfig['parallel_tool_calls'] ?? true),
     'internal_exec_token' => (string)($toolAgentConfig['internal_exec_token'] ?? ''),
     'internal_exec_endpoint' => (string)($toolAgentConfig['internal_exec_endpoint'] ?? ''),
+    'internal_exec_host' => (string)($_SERVER['HTTP_HOST'] ?? ''),
     'expose_tool_trace' => (bool)($toolAgentConfig['expose_tool_trace'] ?? true),
     'emit_agent_events' => (bool)($toolAgentConfig['emit_agent_events'] ?? true),
     'suppress_reasoning_content' => (bool)($toolAgentConfig['suppress_reasoning_content'] ?? false),
@@ -218,7 +219,10 @@ $agentOptions = [
     'tool_decision_max_tokens' => (int)($toolAgentConfig['tool_decision_max_tokens'] ?? 4096),
     'timeout' => (int)($aiConfig['timeout'] ?? 300),
     'connect_timeout' => (int)($aiConfig['connect_timeout'] ?? 15),
+    'heartbeat_interval' => (int)($aiConfig['heartbeat_interval'] ?? 15),
 ];
+
+$agentOptions['internal_exec_endpoint'] = deriveInternalExecEndpoint($agentOptions['internal_exec_endpoint']);
 
 $agent = new AIChatToolAgent($channel, $agentOptions);
 
@@ -238,4 +242,28 @@ try {
     ], JSON_UNESCAPED_UNICODE) . "\n\n";
     if (ob_get_level()) ob_flush();
     flush();
+}
+
+function deriveInternalExecEndpoint(string $configured): string {
+    $configured = trim($configured);
+    if ($configured !== '') {
+        return $configured;
+    }
+    if (PHP_SAPI === 'cli-server') {
+        return '';
+    }
+
+    $scriptName = (string)($_SERVER['SCRIPT_NAME'] ?? '');
+    $basePath = rtrim(str_replace('\\', '/', dirname($scriptName)), '/');
+    if ($basePath === '' || $basePath === '.') {
+        $basePath = '';
+    }
+
+    $host = (string)($_SERVER['HTTP_HOST'] ?? '');
+    $port = '';
+    if (preg_match('/:(\d+)$/', $host, $m)) {
+        $port = ':' . $m[1];
+    }
+
+    return 'http://127.0.0.1' . $port . $basePath . '/ai_tool_exec.php';
 }

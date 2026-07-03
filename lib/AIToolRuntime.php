@@ -255,10 +255,15 @@ class AIToolRuntime
                 if ($ch === false) {
                     continue;
                 }
+                $headers = ['Content-Type: application/json', 'Accept: application/json'];
+                $host = trim((string)($this->options['internal_exec_host'] ?? ''));
+                if ($host !== '' && preg_match('#^https?://(?:127\.0\.0\.1|localhost)(?::\d+)?/#i', $endpoint)) {
+                    $headers[] = 'Host: ' . $host;
+                }
                 curl_setopt_array($ch, [
                     CURLOPT_POST => true,
                     CURLOPT_POSTFIELDS => $body,
-                    CURLOPT_HTTPHEADER => ['Content-Type: application/json', 'Accept: application/json'],
+                    CURLOPT_HTTPHEADER => $headers,
                     CURLOPT_RETURNTRANSFER => true,
                     CURLOPT_TIMEOUT => $timeout,
                     CURLOPT_CONNECTTIMEOUT => 5,
@@ -269,10 +274,16 @@ class AIToolRuntime
             }
 
             $active = null;
+            $heartbeatInterval = (int)($this->options['heartbeat_interval'] ?? 0);
+            $lastHeartbeatAt = microtime(true);
             do {
                 $status = curl_multi_exec($mh, $active);
                 if ($status !== CURLM_OK) {
                     break;
+                }
+                if ($heartbeatInterval > 0 && (microtime(true) - $lastHeartbeatAt) >= $heartbeatInterval) {
+                    $this->stream->heartbeat($emit, 'tool_batch');
+                    $lastHeartbeatAt = microtime(true);
                 }
                 if ($active > 0) {
                     curl_multi_select($mh, 1.0);
@@ -461,4 +472,3 @@ class AIToolRuntime
         return $impacts[$name] ?? '工具失败，结果可能不完整';
     }
 }
-

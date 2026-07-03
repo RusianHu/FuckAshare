@@ -48,6 +48,11 @@ class AIAgentStreamEmitter
         }
     }
 
+    public function heartbeat(callable $emit, string $phase = 'keepalive'): void
+    {
+        $emit(': ' . $phase . ' ' . date('c') . "\n\n");
+    }
+
     public function toolStatus(callable $emit, int $round, string $name, array $args, string $origin = 'model_tool_call'): void
     {
         if (empty($this->options['expose_tool_trace'])) return;

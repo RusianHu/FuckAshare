@@ -15,6 +15,7 @@ class AIAgentOptions
             'parallel_tool_calls' => true,
             'internal_exec_token' => '',
             'internal_exec_endpoint' => '',
+            'internal_exec_host' => '',
             'expose_tool_trace' => true,
             'auto_prefetch' => false,
             'stream_after_tool_round' => true,
@@ -29,6 +30,7 @@ class AIAgentOptions
             'connect_timeout' => 15,
             'max_tokens' => 8192,
             'tool_decision_max_tokens' => 4096,
+            'heartbeat_interval' => 15,
         ];
     }
 
@@ -45,8 +47,11 @@ class AIAgentOptions
             'timeout',
             'connect_timeout',
             'tool_decision_max_tokens',
+            'heartbeat_interval',
         ] as $key) {
-            $merged[$key] = max(1, (int)$merged[$key]);
+            $merged[$key] = $key === 'heartbeat_interval'
+                ? max(0, (int)$merged[$key])
+                : max(1, (int)$merged[$key]);
         }
         foreach ([
             'parallel_tool_calls',
@@ -63,6 +68,7 @@ class AIAgentOptions
         $merged['trace_log_path'] = (string)$merged['trace_log_path'];
         $merged['internal_exec_token'] = (string)($merged['internal_exec_token'] ?? '');
         $merged['internal_exec_endpoint'] = (string)($merged['internal_exec_endpoint'] ?? '');
+        $merged['internal_exec_host'] = (string)($merged['internal_exec_host'] ?? '');
         return $merged;
     }
 }

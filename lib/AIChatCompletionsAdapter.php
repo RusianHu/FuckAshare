@@ -116,10 +116,23 @@ class AIChatCompletionsAdapter
         curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
         curl_setopt($ch, CURLOPT_TIMEOUT, (int)$this->options['timeout']);
         curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, (int)$this->options['connect_timeout']);
-        curl_setopt($ch, CURLOPT_WRITEFUNCTION, function ($ch, $data) use ($emit) {
+        $heartbeatInterval = (int)($this->options['heartbeat_interval'] ?? 0);
+        $lastActivityAt = microtime(true);
+        if ($heartbeatInterval > 0) {
+            curl_setopt($ch, CURLOPT_NOPROGRESS, false);
+            curl_setopt($ch, CURLOPT_XFERINFOFUNCTION, function ($ch, $downloadTotal, $downloadNow, $uploadTotal, $uploadNow) use ($emit, $heartbeatInterval, &$lastActivityAt) {
+                if ((microtime(true) - $lastActivityAt) >= $heartbeatInterval) {
+                    $this->stream->heartbeat($emit, 'upstream_stream');
+                    $lastActivityAt = microtime(true);
+                }
+                return connection_aborted() ? 1 : 0;
+            });
+        }
+        curl_setopt($ch, CURLOPT_WRITEFUNCTION, function ($ch, $data) use ($emit, &$lastActivityAt) {
             if (connection_aborted()) {
                 return 0;
             }
+            $lastActivityAt = microtime(true);
             $emit($data);
             return strlen($data);
         });

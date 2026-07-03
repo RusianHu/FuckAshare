@@ -3166,6 +3166,18 @@ const AIModule = {
         return `**错误:** AI 响应流提前结束\n\n\`\`\`text\n${items.join(' | ')}\n\`\`\``;
     },
 
+    _formatFrontendFetchError(error) {
+        const rawMessage = String(error?.message || error || 'unknown error');
+        const isNetworkError = /network\s*error|failed to fetch|load failed/i.test(rawMessage);
+        const message = isNetworkError
+            ? 'AI 长连接被浏览器或中间代理中断'
+            : rawMessage;
+        const hint = isNetworkError
+            ? '通常由 PHP-FPM/Nginx/CDN 的请求时长或空闲超时触发；如果后端心跳仍无法避免，请同步调高 fastcgi_read_timeout / proxy_read_timeout / request_terminate_timeout。'
+            : '请查看浏览器 Network 面板中 ai_api.php 的状态码和响应内容。';
+        return `**错误:** ${message}\n\n${hint}\n\n\`\`\`text\nstage=frontend_fetch | raw=${rawMessage}\n\`\`\``;
+    },
+
     async sendToAI(loadingMessage, timer, targetContainer) {
         const requestVersion = APP.advisorRequestVersion;
         try {
@@ -3416,7 +3428,7 @@ const AIModule = {
                 return;
             }
             if (requestVersion === APP.advisorRequestVersion) {
-                this.appendMessage(`**错误:** ${error.message}\n\n\`\`\`text\nstage=frontend_fetch\n\`\`\``, null, 'bot-message', targetContainer);
+                this.appendMessage(this._formatFrontendFetchError(error), null, 'bot-message', targetContainer);
             }
             if (typeof AdvisorModule !== 'undefined') AdvisorModule.setThinking(false);
             if (typeof AdvisorModule !== 'undefined') AdvisorModule.updateContextMeter();
