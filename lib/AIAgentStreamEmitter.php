@@ -367,6 +367,12 @@ class AIAgentStreamEmitter
             'fa_get_index_profile' => '获取基金指数画像',
             'fa_get_fund_dividend_history' => '获取基金分红历史',
             'fa_get_fund_documents' => '获取基金文档',
+            'fa_screen_funds' => '召回基金候选池',
+            'fa_get_fund_performance_stats' => '计算基金长历史绩效',
+            'fa_score_funds' => '确定性评分排序基金',
+            'fa_get_fund_trade_rules' => '获取基金交易规则',
+            'fa_get_fund_holdings_or_index_exposure' => '获取基金风格暴露',
+            'fa_research_state_summary' => '汇总研究状态',
             'fa_calculate_kline_indicators' => '计算技术指标',
             'fa_compare_candidates' => '排序候选标的',
         ];

@@ -139,6 +139,114 @@ class HttpClient
     }
 
     /**
+     * 并发 GET 多个请求（curl_multi）。用于聚合工具内部批量化分页/多代码拉取。
+     *
+     * @param array $requests 形如 [['key'=>string, 'url'=>string, 'headers'=>array], ...]
+     *                        key 缺省时用数组索引的字符串形式。
+     * @param int   $maxParallel 最大并发数，<=0 时不限制（受系统句柄上限约束）。
+     * @return array 按 key 索引的响应数组，结构与 get() 一致：
+     *               ['body'=>string,'http_code'=>int,'error'=>?string,'content_type'=>string]
+     */
+    public function multiGet(array $requests, int $maxParallel = 4): array
+    {
+        if (empty($requests)) {
+            return [];
+        }
+
+        $maxParallel = $maxParallel > 0 ? $maxParallel : count($requests);
+        $handles = [];
+        $map = [];
+        $mh = curl_multi_init();
+
+        $enqueue = function ($req, $idx) use (&$handles, &$map, $mh): void {
+            $key = (string)($req['key'] ?? $idx);
+            $url = (string)($req['url'] ?? '');
+            $headers = is_array($req['headers'] ?? null) ? $req['headers'] : [];
+            if ($url === '') {
+                $map[$key] = ['body' => '', 'http_code' => 0, 'error' => 'empty_url', 'content_type' => ''];
+                return;
+            }
+            $ch = curl_init();
+            curl_setopt($ch, CURLOPT_URL, $url);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_TIMEOUT, $this->timeout);
+            curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, $this->connectTimeout);
+            curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+            curl_setopt($ch, CURLOPT_MAXREDIRS, 3);
+            curl_setopt($ch, CURLOPT_ENCODING, '');
+
+            $allHeaders = array_merge($this->defaultHeaders, $headers);
+            $headerLines = [];
+            foreach ($allHeaders as $k => $v) {
+                $headerLines[] = is_int($k) ? $v : "{$k}: {$v}";
+            }
+            if (!empty($headerLines)) {
+                curl_setopt($ch, CURLOPT_HTTPHEADER, $headerLines);
+            }
+            if ($this->cookieJar) {
+                curl_setopt($ch, CURLOPT_COOKIEJAR, $this->cookieJar);
+                curl_setopt($ch, CURLOPT_COOKIEFILE, $this->cookieJar);
+            }
+            curl_multi_add_handle($mh, $ch);
+            $handles[$key] = $ch;
+            $map[$key] = null;
+        };
+
+        $items = array_values($requests);
+        $total = count($items);
+        $i = 0;
+        while ($i < min($maxParallel, $total)) {
+            $enqueue($items[$i], $i);
+            $i++;
+        }
+
+        $active = 0;
+        do {
+            $status = curl_multi_exec($mh, $active);
+            if ($status !== CURLM_OK) {
+                break;
+            }
+            if (curl_multi_select($mh) === -1) {
+                usleep(1000);
+            }
+            while ($done = curl_multi_info_read($mh)) {
+                $ch = $done['handle'];
+                $key = array_search($ch, $handles, true);
+                if ($key === false) {
+                    curl_multi_remove_handle($mh, $ch);
+                    continue;
+                }
+                $body = curl_multi_getcontent($ch);
+                $map[$key] = [
+                    'body' => $body ?: '',
+                    'http_code' => (int)curl_getinfo($ch, CURLINFO_HTTP_CODE),
+                    'error' => curl_error($ch) ?: null,
+                    'content_type' => curl_getinfo($ch, CURLINFO_CONTENT_TYPE) ?: '',
+                ];
+                curl_multi_remove_handle($mh, $ch);
+                curl_close($ch);
+                unset($handles[$key]);
+
+                if ($i < $total) {
+                    $enqueue($items[$i], $i);
+                    $i++;
+                }
+            }
+        } while (!empty($handles) || $i < $total);
+
+        foreach ($handles as $key => $ch) {
+            if ($map[$key] === null) {
+                $map[$key] = ['body' => '', 'http_code' => 0, 'error' => curl_error($ch) ?: 'multi_incomplete', 'content_type' => ''];
+            }
+            curl_multi_remove_handle($mh, $ch);
+            curl_close($ch);
+        }
+        curl_multi_close($mh);
+
+        return $map;
+    }
+
+    /**
      * 解析 JSON 响应
      *
      * @param string $body

@@ -41,9 +41,24 @@ class AIToolExecutor
         'fa_get_index_profile' => 'executeIndexProfile',
         'fa_get_fund_dividend_history' => 'executeFundDividendHistory',
         'fa_get_fund_documents' => 'executeFundDocuments',
+        'fa_screen_funds' => 'executeScreenFunds',
+        'fa_get_fund_performance_stats' => 'executeFundPerformanceStats',
+        'fa_score_funds' => 'executeScoreFunds',
+        'fa_get_fund_trade_rules' => 'executeFundTradeRules',
+        'fa_get_fund_holdings_or_index_exposure' => 'executeFundExposure',
+        'fa_get_fund_holdings' => 'executeFundHoldings',
+        'fa_research_state_summary' => 'executeResearchStateSummary',
         'fa_calculate_kline_indicators' => 'calculateIndicators',
         'fa_compare_candidates' => 'compareCandidates',
     ];
+
+    /** @var array 研究状态摘要（由 AIToolRuntime 注入） */
+    private $researchState = [];
+
+    public function setResearchState(array $state): void
+    {
+        $this->researchState = $state;
+    }
 
     public function __construct(?MarketDataService $market = null, ?FundService $fund = null, int $outputCharLimit = 30000)
     {
@@ -253,6 +268,178 @@ class AIToolExecutor
         $response = $result->toResponse(false);
         $response['meta']['duration_ms'] = (int)round((microtime(true) - $started) * 1000);
         return $this->truncateArray($response);
+    }
+
+    private function executeScreenFunds(array $args, float $started): array
+    {
+        $theme = $args['theme'] ?? null;
+        $theme = $theme === null ? null : $this->safeText($theme, 40, true);
+
+        $keywords = $args['keywords'] ?? null;
+        if ($keywords !== null) {
+            if (!is_array($keywords)) throw new InvalidArgumentException('keywords 必须是数组');
+            $keywords = array_slice($keywords, 0, 12);
+        }
+
+        $fundTypes = $args['fund_types'] ?? null;
+        if ($fundTypes !== null) {
+            if (!is_array($fundTypes)) throw new InvalidArgumentException('fund_types 必须是数组');
+            $fundTypes = array_values(array_filter($fundTypes, function ($t) {
+                return in_array($t, ['all','stock','mixed','bond','index','qdii','fof'], true);
+            }));
+        }
+
+        $periods = $args['periods'] ?? null;
+        if ($periods !== null) {
+            if (!is_array($periods)) throw new InvalidArgumentException('periods 必须是数组');
+            $periods = array_values(array_filter($periods, function ($p) {
+                return in_array($p, ['month','quarter','half_year','year','two_year','three_year','this_year','since'], true);
+            }));
+        }
+
+        $minScale = $args['min_scale_yuan'] ?? null;
+        if ($minScale !== null && !is_numeric($minScale)) throw new InvalidArgumentException('min_scale_yuan 必须是数字');
+
+        return $this->fromResult($this->fund->screenFunds(
+            $theme,
+            $keywords,
+            $fundTypes,
+            $periods,
+            $this->int($args['page_size'] ?? null, 10, 100, 50),
+            $this->int($args['max_candidates'] ?? null, 3, 50, 20),
+            $minScale !== null ? (float)$minScale : null,
+            $this->bool($args['include_unbuyable'] ?? null, true)
+        ), $started);
+    }
+
+    private function executeFundPerformanceStats(array $args, float $started): array
+    {
+        $codes = $this->fundCodes($args['codes'] ?? []);
+        $periods = $args['periods'] ?? null;
+        if ($periods !== null) {
+            if (!is_array($periods)) throw new InvalidArgumentException('periods 必须是数组');
+            $periods = array_values(array_filter($periods, function ($p) {
+                return in_array($p, ['1m','3m','6m','1y','2y','3y','since_sample'], true);
+            }));
+        }
+        return $this->fromResult($this->fund->performanceStats(
+            $codes,
+            $this->int($args['target_days'] ?? null, 20, 1500, 500),
+            $periods ?? ['1m','3m','6m','1y','3y','since_sample'],
+            $this->bool($args['use_acc_nav'] ?? null, true),
+            $this->int($args['include_recent_rows'] ?? null, 0, 60, 10)
+        ), $started);
+    }
+
+    private function executeScoreFunds(array $args, float $started): array
+    {
+        $codes = $this->fundCodes($args['codes'] ?? []);
+        $weights = $args['weights'] ?? null;
+        if ($weights !== null) {
+            if (!is_array($weights)) throw new InvalidArgumentException('weights 必须是数组');
+            $weights = array_slice($weights, 0, 8);
+            foreach ($weights as $w) {
+                if (!is_array($w) || !isset($w['key'], $w['value'])) {
+                    throw new InvalidArgumentException('weights 每项需包含 key 和 value');
+                }
+            }
+        }
+        return $this->fromResult($this->fund->scoreFunds(
+            $codes,
+            $this->enum($args['objective'] ?? null, ['balanced','long_term_stable','low_fee_index','dividend_income','active_alpha','low_drawdown'], 'balanced'),
+            $this->enum($args['horizon'] ?? null, ['short','medium','long'], 'long'),
+            $this->enum($args['risk_preference'] ?? null, ['low','medium','high'], 'medium'),
+            $weights,
+            $this->bool($args['require_buyable'] ?? null, false)
+        ), $started);
+    }
+
+    private function executeFundTradeRules(array $args, float $started): array
+    {
+        return $this->fromResult($this->fund->tradeRules(
+            $this->fundCodes($args['codes'] ?? []),
+            $this->bool($args['include_fee_detail'] ?? null, true),
+            $this->bool($args['include_platform_status'] ?? null, true)
+        ), $started);
+    }
+
+    private function executeFundExposure(array $args, float $started): array
+    {
+        return $this->fromResult($this->fund->fundExposure(
+            $this->fundCode($args['code'] ?? ''),
+            $this->enum($args['prefer'] ?? null, ['auto','holdings','index','documents'], 'auto'),
+            $this->bool($args['include_top_holdings'] ?? null, true),
+            $this->bool($args['include_industry'] ?? null, true),
+            $this->bool($args['include_document_evidence'] ?? null, false),
+            $this->int($args['content_limit'] ?? null, 1000, 20000, 6000)
+        ), $started);
+    }
+
+    private function executeFundHoldings(array $args, float $started): array
+    {
+        return $this->fromResult($this->fund->fundHoldings(
+            $this->fundCode($args['code'] ?? ''),
+            $this->int($args['topline'] ?? null, 1, 50, 10),
+            $this->bool($args['include_industry'] ?? null, true)
+        ), $started);
+    }
+
+    private function executeResearchStateSummary(array $args, float $started): array
+    {
+        $assetType = $this->enum($args['asset_type'] ?? null, ['fund','stock','mixed'], 'fund');
+        $focus = $args['focus'] ?? null;
+        $focus = $focus === null ? '' : $this->safeText($focus, 80, true);
+        $includeFailures = $this->bool($args['include_failures'] ?? null, true);
+        $includeNextSteps = $this->bool($args['include_next_steps'] ?? null, true);
+
+        $state = $this->researchState;
+        $tools = $state['tools'] ?? [];
+        $candidates = $state['candidates'] ?? [];
+        $failures = $includeFailures ? ($state['failures'] ?? []) : [];
+
+        $toolNames = array_map(function ($t) { return $t['name'] ?? ''; }, $tools);
+        $coverage = [
+            'candidate_pool' => in_array('fa_screen_funds', $toolNames, true) || in_array('fa_get_fund_rank', $toolNames, true) || in_array('fa_search_funds', $toolNames, true),
+            'fund_info' => in_array('fa_get_fund_info', $toolNames, true),
+            'performance_stats' => in_array('fa_get_fund_performance_stats', $toolNames, true) || in_array('fa_get_fund_history', $toolNames, true),
+            'style_exposure' => in_array('fa_get_fund_holdings_or_index_exposure', $toolNames, true) || in_array('fa_get_index_profile', $toolNames, true),
+            'trade_rules' => in_array('fa_get_fund_trade_rules', $toolNames, true),
+            'scoring' => in_array('fa_score_funds', $toolNames, true),
+        ];
+
+        $candidateSummary = [];
+        foreach ($candidates as $code => $c) {
+            $candidateSummary[] = [
+                'code' => $code,
+                'name' => $c['name'] ?? '',
+                'status' => $c['status'] ?? 'seen',
+            ];
+        }
+
+        $nextSteps = [];
+        if ($includeNextSteps) {
+            if (!$coverage['candidate_pool']) $nextSteps[] = '调用 fa_screen_funds 或 fa_get_fund_rank 召回候选池';
+            if (!$coverage['performance_stats']) $nextSteps[] = '调用 fa_get_fund_performance_stats 获取长历史收益与回撤';
+            if (!$coverage['style_exposure']) $nextSteps[] = '调用 fa_get_fund_holdings_or_index_exposure 补充风格画像';
+            if (!$coverage['trade_rules']) $nextSteps[] = '调用 fa_get_fund_trade_rules 确认可投性与限购';
+            if (!$coverage['scoring'] && ($coverage['candidate_pool'] || !empty($candidates))) $nextSteps[] = '调用 fa_score_funds 做确定性评分排序后再给结论';
+        }
+
+        $data = [
+            'focus' => $focus !== '' ? $focus : ($state['focus'] ?? ''),
+            'asset_type' => $assetType,
+            'coverage' => $coverage,
+            'candidates' => array_slice($candidateSummary, 0, 30),
+            'failures' => array_slice($failures, 0, 20),
+            'next_steps' => $nextSteps,
+            'final_answer_requirements' => [
+                '说明候选池召回来源',
+                '说明评分权重或排序依据',
+                '说明工具失败和数据缺口',
+            ],
+        ];
+
+        return $this->wrap(true, 'local', 'fa_research_state_summary', $data, null, null, $started);
     }
 
     private function wrap(bool $success, string $source, string $action, $data, ?string $code, ?string $message, float $started): array

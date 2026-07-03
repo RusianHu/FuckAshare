@@ -109,6 +109,29 @@ return [
         'search'         => 600,    // ✅ 基金搜索；默认 600s
         'rank'           => 300,    // ✅ 基金排行；默认 300s
         'history'        => 300,    // ✅ 历史净值；默认 300s
+        'detail'         => 3600,   // ✅ 基金 F10 详情（聚合工具复用）；默认 3600s
+        'performance_stats' => 300, // ✅ fa_get_fund_performance_stats 长历史统计；默认 300s
+        'trade_rules'    => 300,    // ✅ fa_get_fund_trade_rules 交易规则；默认 300s
+        'exposure'       => 3600,   // ✅ fa_get_fund_holdings_or_index_exposure 风格暴露；默认 3600s
+        'screen'         => 300,    // ✅ fa_screen_funds 候选召回（job 级 batchFetch 缓存）；默认 300s
+        'score'          => 120,    // ✅ fa_score_funds 评分结果；默认 120s
+        'holdings'       => 3600,   // ✅ fa_get_fund_holdings 基金十大持仓+占净值比；默认 3600s
+        'index_kline'    => 300,    // ✅ 跟踪指数 K 线（跟踪误差计算的基准序列）；默认 300s
+    ],
+
+    // ════════════════════════════════════════════════════════════
+    // ── 基金研究聚合工具配置 ──
+    // ════════════════════════════════════════════════════════════
+    // 控制 6 个新增只读聚合工具的行为参数。
+    // 读取位置：lib/FundService.php 构造函数（$researchConfig）。
+    // 未配置项回退 FundService 内置默认值。
+    'fund_research' => [
+        'target_history_days'   => 500,   // ✅ fa_get_fund_performance_stats 目标历史交易日行数（分页拉取上限）；默认 500
+        'max_screen_candidates' => 20,    // ✅ fa_screen_funds 最大去重候选返回数；默认 20
+        'max_score_candidates'  => 20,    // ✅ fa_score_funds 最大评分候选数；默认 20
+        'max_parallel_workers'  => 4,     // ✅ 聚合工具内部 curl_multi 并发数（历史分页/多关键词搜索并行）；默认 4
+        'retry_network_errors'  => true,  // ✅ 历史分页网络错误是否重试 1 次；默认 true
+        'screen_page_size'      => 50,    // ✅ fa_screen_funds 每源排行/搜索样本数；默认 50
     ],
 
     // ════════════════════════════════════════════════════════════
@@ -169,7 +192,9 @@ return [
             'max_deep_dive_candidates' => 10,   // 市场扫描类请求最多深挖候选数（每个候选会查行情/指标/资金流）
             'tool_timeout' => 45,               // 非流式工具决策耗时预算（秒）；失败会回退普通流式对话
             'tool_output_char_limit' => 60000,  // 单个工具输出回填给模型的最大字符数
-            'parallel_tool_calls' => true,      // 允许模型一次请求多个工具；服务端仍按顺序安全执行
+            'parallel_tool_calls' => true,      // 允许模型一次请求多个工具；配置 internal_exec_token+endpoint 后服务端用 curl_multi 并行执行，否则串行
+            'internal_exec_token' => '',        // 并行执行内部鉴权 token；留空则禁用并行回退串行。建议填 32+ 位随机字符串
+            'internal_exec_endpoint' => '',     // 并行执行端点 URL，如 'http://127.0.0.1/FuckAshare/ai_tool_exec.php'；留空禁用并行
             'expose_tool_trace' => true,        // 向前端发送 tool_status SSE 事件用于展示进度
             'emit_agent_events' => true,        // 发送 run_started/tool_call_finished/run_finished 等结构化智能体事件
             'suppress_reasoning_content' => false, // 默认向前端透传上游 reasoning_content 推理流；设为 true 可隐藏

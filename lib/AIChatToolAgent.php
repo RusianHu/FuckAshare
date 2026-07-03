@@ -249,7 +249,7 @@ class AIChatToolAgent
             if ($round < $maxRounds) {
                 $continuationContent = '工具观察结果已回填。请基于最新观察继续判断下一步：如仍缺少关键事实，请继续调用只读工具；如信息足够，请给出最终研究结论。';
                 if ($this->shouldEncourageFundDeepDive($toolCalls, $originalMessages)) {
-                    $continuationContent = '基金排行候选已返回。若用户要求深入研究或给出建议，请从候选中选择不超过 3 只代表性基金，继续调用基金资料、估值、历史净值、指数画像或分红历史等必要只读工具；当已拿到候选池、基金资料、历史表现以及风格或分红依据后，停止继续搜索并直接给最终结论。';
+                    $continuationContent = '基金候选已返回。若用户要求深入研究或给出建议，请优先调用聚合工具：用 fa_get_fund_performance_stats 获取长历史收益与回撤、fa_get_fund_holdings_or_index_exposure 补充风格画像、fa_get_fund_trade_rules 确认可投性，最后用 fa_score_funds 做确定性评分排序；评分完成后即可停止搜索并直接给最终结论。';
                 }
                 $messages[] = [
                     'role' => 'system',
@@ -490,7 +490,78 @@ class AIChatToolAgent
             }
         }
 
+        if ($name === 'fa_screen_funds' && $this->looksLikeFundRequest($latestUser)) {
+            return [
+                'theme' => $this->requestedScreenTheme($latestUser),
+                'keywords' => null,
+                'fund_types' => null,
+                'periods' => ['year', 'half_year', 'this_year'],
+                'page_size' => 50,
+                'max_candidates' => 15,
+                'min_scale_yuan' => null,
+                'include_unbuyable' => true,
+            ];
+        }
+
+        if ($name === 'fa_score_funds' && $this->looksLikeFundRequest($latestUser)) {
+            $codes = array_slice($this->extractFundCodes($latestUser), 0, 10);
+            if (!empty($codes)) {
+                return [
+                    'codes' => $codes,
+                    'objective' => $this->requestedScoreObjective($latestUser),
+                    'horizon' => 'long',
+                    'risk_preference' => 'medium',
+                    'weights' => null,
+                    'require_buyable' => false,
+                ];
+            }
+        }
+
+        if ($name === 'fa_get_fund_performance_stats' && $this->looksLikeFundRequest($latestUser)) {
+            $codes = array_slice($this->extractFundCodes($latestUser), 0, 10);
+            if (!empty($codes)) {
+                return [
+                    'codes' => $codes,
+                    'target_days' => 500,
+                    'periods' => ['1m', '3m', '6m', '1y', '3y', 'since_sample'],
+                    'use_acc_nav' => true,
+                    'include_recent_rows' => 5,
+                ];
+            }
+        }
+
+        if ($name === 'fa_get_fund_trade_rules' && $this->looksLikeFundRequest($latestUser)) {
+            $codes = array_slice($this->extractFundCodes($latestUser), 0, 10);
+            if (!empty($codes)) {
+                return [
+                    'codes' => $codes,
+                    'include_fee_detail' => true,
+                    'include_platform_status' => true,
+                ];
+            }
+        }
+
         return null;
+    }
+
+    private function requestedScreenTheme(string $text): ?string
+    {
+        if (preg_match('/(红利|高股息|股息|分红)/u', $text)) return 'dividend';
+        if (preg_match('/(低波|低波动)/u', $text)) return 'low_volatility';
+        if (preg_match('/(宽基|沪深300|中证500|中证1000)/u', $text)) return 'broad_index';
+        if (preg_match('/(债券|纯债|债基)/u', $text)) return 'bond';
+        if (preg_match('/(QDII|qdii|美股|纳斯达克|海外|港股通)/u', $text)) return 'qdii';
+        return null;
+    }
+
+    private function requestedScoreObjective(string $text): string
+    {
+        if (preg_match('/(红利|高股息|股息|分红|派息|收益分配)/u', $text)) return 'dividend_income';
+        if (preg_match('/(低费|便宜|费率|指数基金|被动)/u', $text)) return 'low_fee_index';
+        if (preg_match('/(低回撤|稳健|回撤小|波动小|防御)/u', $text)) return 'low_drawdown';
+        if (preg_match('/(长期|长期持有|长期稳定)/u', $text)) return 'long_term_stable';
+        if (preg_match('/(超额|alpha|主动|进攻)/u', $text)) return 'active_alpha';
+        return 'balanced';
     }
 
     private function requestedFundDocumentType(string $text): string
@@ -597,7 +668,8 @@ class AIChatToolAgent
             return false;
         }
         foreach ($toolCalls as $call) {
-            if (($call['function']['name'] ?? '') === 'fa_get_fund_rank') {
+            $name = $call['function']['name'] ?? '';
+            if (in_array($name, ['fa_get_fund_rank', 'fa_screen_funds'], true)) {
                 return true;
             }
         }
@@ -606,7 +678,8 @@ class AIChatToolAgent
 
     private function shouldFinalizeFundResearch(array $messages, array $originalMessages, int $round): bool
     {
-        if ($round < 5) {
+        // 动态收敛软下限：评分成功且证据齐备即可收敛，避免强制拖到第 4 轮浪费 LLM 决策预算
+        if ($round < 2) {
             return false;
         }
         $latestUser = $this->latestUserContent($originalMessages);
@@ -615,10 +688,29 @@ class AIChatToolAgent
         }
 
         $toolStats = $this->successfulToolStats($messages);
-        $hasCandidates = ($toolStats['fa_get_fund_rank'] ?? 0) > 0 || ($toolStats['fa_search_funds'] ?? 0) > 0;
+        $wantsRecommendation = preg_match('/(推荐|建议|最好|最佳|挑选|筛选|选出|值得|优选|对比|比较)/u', $latestUser);
+
+        // 评分成功后即可收敛：推荐类问题必须先评分再收敛
+        if (($toolStats['fa_score_funds'] ?? 0) > 0) {
+            if (!$wantsRecommendation) {
+                return true;
+            }
+            // 推荐类问题：评分后若已有候选池+表现依据即可收敛
+            $hasCandidates = ($toolStats['fa_screen_funds'] ?? 0) > 0 || ($toolStats['fa_get_fund_rank'] ?? 0) > 0 || ($toolStats['fa_search_funds'] ?? 0) > 0;
+            $hasPerformance = ($toolStats['fa_get_fund_performance_stats'] ?? 0) > 0 || ($toolStats['fa_get_fund_history'] ?? 0) > 0;
+            return $hasCandidates && $hasPerformance;
+        }
+
+        // 未评分路径：保持原有“候选+资料+表现+风格”齐备才收敛
+        $hasCandidates = ($toolStats['fa_get_fund_rank'] ?? 0) > 0 || ($toolStats['fa_search_funds'] ?? 0) > 0 || ($toolStats['fa_screen_funds'] ?? 0) > 0;
         $hasInfo = ($toolStats['fa_get_fund_info'] ?? 0) > 0;
-        $hasPerformance = ($toolStats['fa_get_fund_history'] ?? 0) > 0 || ($toolStats['fa_get_fund_estimate'] ?? 0) > 0;
-        $hasStyleOrDividend = ($toolStats['fa_get_index_profile'] ?? 0) > 0 || ($toolStats['fa_get_fund_dividend_history'] ?? 0) > 0;
+        $hasPerformance = ($toolStats['fa_get_fund_history'] ?? 0) > 0 || ($toolStats['fa_get_fund_estimate'] ?? 0) > 0 || ($toolStats['fa_get_fund_performance_stats'] ?? 0) > 0;
+        $hasStyleOrDividend = ($toolStats['fa_get_index_profile'] ?? 0) > 0 || ($toolStats['fa_get_fund_dividend_history'] ?? 0) > 0 || ($toolStats['fa_get_fund_holdings_or_index_exposure'] ?? 0) > 0;
+
+        // 推荐类问题未评分时不轻易收敛
+        if ($wantsRecommendation && ($toolStats['fa_score_funds'] ?? 0) === 0) {
+            return false;
+        }
 
         return $hasCandidates && $hasInfo && $hasPerformance && $hasStyleOrDividend;
     }
@@ -657,6 +749,11 @@ class AIChatToolAgent
             'fa_get_index_profile',
             'fa_get_fund_dividend_history',
             'fa_get_fund_documents',
+            'fa_screen_funds',
+            'fa_get_fund_performance_stats',
+            'fa_score_funds',
+            'fa_get_fund_trade_rules',
+            'fa_get_fund_holdings_or_index_exposure',
             'fa_get_hot_stocks',
             'fa_get_market_breadth',
             'fa_get_sector_flow',
@@ -770,12 +867,18 @@ class AIChatToolAgent
             $lines = array_merge($lines, [
                 '涉及大盘环境、市场情绪、市场宽度、涨跌家数、涨停跌停、普涨普跌或赚钱效应时，必须优先调用 fa_get_market_breadth。',
                 '涉及市场扫描、资金流入、今日涨幅排行、热门股票或候选标的时，先调用 fa_get_market_breadth 判断市场环境，再调用 fa_get_hot_stocks；按涨幅排序使用 sort=f3，按主力净流入排序使用 sort=f62。',
+                '基金筛选/推荐/挑选类问题（如“帮我挑几只红利型基金”“最好的XX基金”）且未指定代码时，必须优先调用 fa_screen_funds 召回候选池，不要只用 fa_search_funds 单关键词搜索；红利主题用 theme=dividend。',
+                '涉及基金历史表现、回撤、波动、长期收益、胜率时，必须优先调用 fa_get_fund_performance_stats（自动分页拉取长历史并计算收益/回撤/波动），少用裸 fa_get_fund_history。',
+                '涉及基金申购、赎回、限购、费率、是否可买时，必须调用 fa_get_fund_trade_rules；无法确认限购金额时说明需以公告/平台为准，不要编造数字。',
+                '涉及基金持仓、行业暴露、指数/因子暴露、风格画像深化时，必须调用 fa_get_fund_holdings_or_index_exposure；区分实际持仓事实与从名称/基准推断的风格标签，无持仓数据时不要伪造行业权重。',
+                '给出基金推荐或排序前，必须调用 fa_score_funds 做确定性多维评分排序（可复现），最终回答要展示评分维度或排序依据；未评分前不要直接给推荐排序。',
+                '多轮研究或存在工具失败时，最终回答前可调用 fa_research_state_summary 汇总已查字段、失败项和下一步建议；最终回答必须说明候选池召回来源、评分依据和数据缺口。',
                 '涉及基金排行、今日基金涨幅、基金最新信息或未指定代码的基金研究时，必须优先调用 fa_get_fund_rank；今日/涨幅问题使用 period=day，再按候选调用基金资料和估值工具。',
                 '涉及基金风格、是否红利型/指数型、跟踪指数、业绩基准或投资策略依据时，必须优先调用 fa_get_index_profile。',
                 '涉及基金分红、派息、收益分配或最近是否分红时，必须调用 fa_get_fund_dividend_history。',
                 '涉及基金合同、招募说明书、产品资料概要、季报/年报、公告或需要文档证据时，必须调用 fa_get_fund_documents；如果正文/PDF 解析不可用，最终回答要说明数据缺口。',
-                '基金研究中的候选深挖应控制在少量代表性基金，优先选择不超过 3 只；避免为了穷举而重复搜索同义词、重复查多期排行或重复查相同类型资料。',
-                '当已经拿到候选池、基金资料、历史表现以及风格或分红依据后，应停止继续搜索并直接给出结论；不要为了“更完整”而无止境追加工具调用。',
+                '基金研究中的候选深挖应控制在少量代表性基金，优先选择不超过 3 只；避免为了穷举而重复搜索同义词、重复查多期排行或重复查相同类型资料。聚合工具（fa_screen_funds/fa_get_fund_performance_stats/fa_score_funds）应优先于模型多次调用裸工具。',
+                '当已经拿到候选池、基金资料、历史表现、风格或分红依据并完成评分后，应停止继续搜索并直接给出结论；不要为了“更完整”而无止境追加工具调用。',
                 '所有档案下都暴露完整只读工具集；即使当前是基金研究档案，也可以在用户问题需要时调用股票行情、K线、资金流、板块、雪球热度和选股工具来交叉验证或比较。',
                 '工具选择只按用户问题和研究需要决定，不按“基金版本/股票版本”裁剪；但不要为了展示能力而调用与问题无关的工具。',
                 '在每轮正式调用工具前，assistant content 先用 1-3 句中文简要说明当前判断、接下来要查什么和为什么；随后再通过 tool_calls 调用工具。',
@@ -972,6 +1075,12 @@ class AIChatToolAgent
             'fa_get_index_profile' => '基金指数画像',
             'fa_get_fund_dividend_history' => '基金分红历史',
             'fa_get_fund_documents' => '基金文档',
+            'fa_screen_funds' => '基金候选召回',
+            'fa_get_fund_performance_stats' => '基金长历史统计',
+            'fa_score_funds' => '基金确定性评分',
+            'fa_get_fund_trade_rules' => '基金交易规则',
+            'fa_get_fund_holdings_or_index_exposure' => '基金风格暴露',
+            'fa_research_state_summary' => '研究状态总结',
             'fa_calculate_kline_indicators' => '技术指标',
             'fa_compare_candidates' => '候选排序',
         ];

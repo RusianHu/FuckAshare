@@ -23,6 +23,14 @@ class AIAgentState
     /** @var array<string,bool> */
     public $flags = [];
 
+    /** @var array 结构化研究状态：tools/candidates/failures/focus，供 fa_research_state_summary 读取 */
+    public $researchState = [
+        'focus' => '',
+        'tools' => [],
+        'candidates' => [],
+        'failures' => [],
+    ];
+
     /** @var string */
     public $stopReason = '';
 

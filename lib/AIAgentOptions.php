@@ -13,6 +13,8 @@ class AIAgentOptions
             'tool_timeout' => 45,
             'tool_output_char_limit' => 60000,
             'parallel_tool_calls' => true,
+            'internal_exec_token' => '',
+            'internal_exec_endpoint' => '',
             'expose_tool_trace' => true,
             'auto_prefetch' => false,
             'stream_after_tool_round' => true,
@@ -59,6 +61,8 @@ class AIAgentOptions
         }
         $merged['agent_profile'] = (string)$merged['agent_profile'];
         $merged['trace_log_path'] = (string)$merged['trace_log_path'];
+        $merged['internal_exec_token'] = (string)($merged['internal_exec_token'] ?? '');
+        $merged['internal_exec_endpoint'] = (string)($merged['internal_exec_endpoint'] ?? '');
         return $merged;
     }
 }

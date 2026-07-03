@@ -281,8 +281,25 @@ FuckAshare/
 | `fa_get_fund_estimate` | 基金实时估值 |
 | `fa_get_fund_history` | 基金历史净值 |
 | `fa_get_fund_rank` | 基金同类排行 |
+| `fa_get_index_profile` | 基金跟踪指数画像、业绩基准、投资策略依据 |
+| `fa_get_fund_dividend_history` | 基金历史分红/派息记录 |
+| `fa_get_fund_documents` | 基金公告/报告/合同/招募说明书及可选正文 |
+| `fa_screen_funds` | 多关键词+多排行召回主题基金候选池（红利等主题） |
+| `fa_get_fund_performance_stats` | 分页拉取长历史净值并计算收益/回撤/波动/胜率 |
+| `fa_score_funds` | 对候选基金做确定性多维评分排序（可复现） |
+| `fa_get_fund_trade_rules` | 申购/赎回/限购/费率/购买状态 |
+| `fa_get_fund_holdings_or_index_exposure` | 持仓/行业/指数暴露与风格因子标签 |
+| `fa_research_state_summary` | 汇总本轮研究状态、已查字段、失败项与下一步建议 |
 | `fa_calculate_kline_indicators` | 计算 MA/BOLL/MACD/RSI/KDJ 等指标 |
 | `fa_compare_candidates` | 对候选股票/基金按数值指标做确定性排序 |
+
+基金研究聚合工具说明：
+- 6 个聚合工具（`fa_screen_funds` / `fa_get_fund_performance_stats` / `fa_score_funds` / `fa_get_fund_trade_rules` / `fa_get_fund_holdings_or_index_exposure` / `fa_research_state_summary`）优先于模型多次裸调单点工具，把“模型自由调用”升级为“服务端可复现研究流程 + 模型解释”。
+- `fa_get_fund_performance_stats` 内部用 `curl_multi` 并发分页拉取多基金历史净值，单基金失败不影响其他基金，样本不足时标记 `coverage_level=insufficient_history` 与 `partial=true`。
+- `fa_score_funds` 用默认权重表（按 objective/horizon/risk 调整）做 0-100 多维评分，返回 `score_breakdown`、`reasons`、`penalties`、`score_confidence`，同一输入多次调用排名一致。
+- 推荐类基金问题必须调用 `fa_score_funds` 后才收敛最终回答；最终回答需说明候选池召回来源、评分依据与数据缺口。
+- 聚合工具统一返回 `coverage`/`failures`/`partial`，便于模型说明数据缺口；`fa_research_state_summary` 由 `AIToolRuntime` 维护的结构化 `researchState` 驱动，记录候选池、工具成功/失败与下一步建议。
+- 相关配置见 `config.php` 的 `fund_research` 段（`target_history_days` / `max_screen_candidates` / `max_score_candidates` / `max_parallel_workers` / `retry_network_errors`）。
 
 工具执行策略：
 - 单次请求最多 `max_tool_rounds` 轮工具调用

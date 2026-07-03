@@ -37,6 +37,9 @@ class FundService
     /** @var int */
     private $stampedeLockTtl;
 
+    /** @var array 基金研究聚合工具配置 */
+    private $researchConfig;
+
     /** @var array 缓存 TTL 配置 (秒) */
     const CACHE_TTL = [
         'estimate'    => 10,     // 基金实时估值：短缓存
@@ -48,10 +51,27 @@ class FundService
         'index_profile' => 3600, // 基金跟踪指数画像：1 小时
         'dividend_history' => 300,
         'documents'   => 1800,   // 基金公告列表：30 分钟
+        'detail'      => 3600,   // 基金 F10 详情：1 小时
+        'performance_stats' => 300, // 长历史统计：5 分钟
+        'trade_rules' => 300,    // 交易规则：5 分钟
+        'exposure'    => 3600,   // 风格暴露：1 小时
+        'screen'      => 300,    // 候选召回：5 分钟
+        'score'       => 120,    // 评分结果：2 分钟
+        'holdings'    => 3600,   // 基金持仓：1 小时
+        'index_kline' => 300,    // 跟踪指数 K 线：5 分钟
     ];
 
     /** @var int negative cache TTL (秒) */
     const NEGATIVE_CACHE_TTL = 10;
+
+    /** @var float 风险调整指标使用的年化无风险利率（Sharpe/Sortino 分子） */
+    const RF_ANNUAL = 0.02;
+
+    /** @var int 年化交易日因子（A 股近似） */
+    const TRADING_DAYS = 250;
+
+    /** @var array 主题负向词：召回时 name 命中且不命中任何主题词则降级为 negative */
+    const THEME_NEGATIVE_WORDS = ['半导体', '芯片', '集成电路', '新能源车', '新能源汽车', '光伏', '锂电', '医药', '医疗', '生物', '军工', '国防', '科技', '人工智能', '消费', '白酒', '食品饮料'];
 
     const EASTMONEY_APP_PARAMS = [
         'plat'     => 'Iphone',
@@ -77,6 +97,15 @@ class FundService
         $this->negativeCacheTtl = (int)AppConfig::get('cache_degradation.negative_cache_ttl', self::NEGATIVE_CACHE_TTL);
         $this->stampedeWaitMs = (int)AppConfig::get('cache_degradation.stampede_wait_ms', 500);
         $this->stampedeLockTtl = (int)AppConfig::get('cache_degradation.stampede_lock_ttl', 5);
+        $research = AppConfig::get('fund_research', []);
+        $this->researchConfig = array_merge([
+            'target_history_days'   => 500,
+            'max_screen_candidates' => 20,
+            'max_score_candidates'  => 20,
+            'max_parallel_workers'  => 4,
+            'retry_network_errors'  => true,
+            'screen_page_size'      => 50,
+        ], is_array($research) ? $research : []);
     }
 
     /**
@@ -227,27 +256,12 @@ class FundService
                 return DataSourceResult::error(self::SOURCE_NAME, 'search', 'network_error', '请求失败: ' . ($resp['error'] ?: "HTTP {$resp['http_code']}"));
             }
 
-            $parsed = HttpClient::parseJson($resp['body']);
-            if (!$parsed['ok'] || !isset($parsed['data']['Datas'])) {
+            $parsed = $this->parseSearchResponse($resp['body']);
+            if ($parsed === null) {
                 return DataSourceResult::error(self::SOURCE_NAME, 'search', 'parse_error', '解析搜索结果失败');
             }
 
-            $results = [];
-            foreach ($parsed['data']['Datas'] as $item) {
-                $results[] = [
-                    'code'         => $item['CODE'] ?? '',
-                    'name'         => $item['NAME'] ?? '',
-                    'pinyin'       => $item['JP'] ?? '',
-                    'category'     => $item['CATEGORY'] ?? '',
-                    'type'         => $item['FTYPE'] ?? '',
-                    'nav'          => $item['DWJZ'] ?? '',
-                    'nav_date'     => $item['FSRQ'] ?? '',
-                    'min_purchase' => $item['MINSG'] ?? '',
-                    'company'      => $item['JJGS'] ?? '',
-                    'manager'      => $item['JJJL'] ?? '',
-                    'is_buy'       => ($item['ISBUY'] ?? '0') === '1',
-                ];
-            }
+            $results = $parsed['items'];
 
             return DataSourceResult::success(self::SOURCE_NAME, 'search', $results, [
                 'keyword' => $keyword,
@@ -294,23 +308,7 @@ class FundService
             return $this->withBreaker('rank', function() use ($type, $period, $typeKey, $sortKey, $page, $pageSize) {
                 $endDate = date('Y-m-d');
                 $startDate = date('Y-m-d', strtotime('-1 year'));
-                $url = 'https://fund.eastmoney.com/data/rankhandler.aspx?' . http_build_query([
-                    'op' => 'ph',
-                    'dt' => 'kf',
-                    'ft' => $typeKey,
-                    'rs' => '',
-                    'gs' => '0',
-                    'sc' => $sortKey,
-                    'st' => 'desc',
-                    'sd' => $startDate,
-                    'ed' => $endDate,
-                    'qdii' => '',
-                    'tabSubtype' => ',,,,,',
-                    'pi' => $page,
-                    'pn' => $pageSize,
-                    'dx' => '1',
-                    'v' => sprintf('%.6f', microtime(true)),
-                ]);
+                $url = $this->buildRankUrl($typeKey, $sortKey, $page, $pageSize, $startDate, $endDate);
 
                 $resp = $this->http->get($url, [
                     'Referer' => 'https://fund.eastmoney.com/data/fundranking.html',
@@ -563,6 +561,1569 @@ class FundService
     // ── 缓存层 (Phase 2 重构) ──
 
     /**
+     * fa_get_fund_performance_stats：分页拉取历史净值并计算确定性绩效统计
+     */
+    public function performanceStats(array $codes, int $targetDays = 500, array $periods = ['1m','3m','6m','1y','3y','since_sample'], bool $useAccNav = true, int $includeRecentRows = 10): DataSourceResult
+    {
+        $codes = array_values(array_unique(array_filter($codes, function ($c) {
+            return is_string($c) && preg_match('/^\d{6}$/', $c);
+        })));
+        if (empty($codes)) {
+            return DataSourceResult::error(self::SOURCE_NAME, 'performance_stats', 'invalid_code', '没有有效的基金代码');
+        }
+        $codes = array_slice($codes, 0, 20);
+
+        $targetDays = max(20, min($targetDays, 1500));
+        $allowedPeriods = ['1m','3m','6m','1y','2y','3y','since_sample'];
+        $periods = array_values(array_filter($periods, function ($p) use ($allowedPeriods) {
+            return in_array($p, $allowedPeriods, true);
+        }));
+        if (empty($periods)) {
+            $periods = ['1m','3m','6m','1y','3y','since_sample'];
+        }
+        $includeRecentRows = max(0, min($includeRecentRows, 60));
+        $maxParallel = max(1, min((int)($this->researchConfig['max_parallel_workers'] ?? 4), 8));
+
+        $cacheKey = $this->cacheKey('performance_stats', md5(implode(',', $codes) . ':' . $targetDays . ':' . implode(',', $periods) . ':' . (int)$useAccNav . ':' . $includeRecentRows));
+        return $this->useCache('performance_stats', $cacheKey, function() use ($codes, $targetDays, $periods, $useAccNav, $includeRecentRows, $maxParallel) {
+            $pageSize = 49;
+            $items = [];
+            $failures = [];
+            foreach ($codes as $code) {
+                $fetched = $this->fetchHistoryRowsParallel($code, $targetDays, $pageSize, $maxParallel);
+                foreach ($fetched['failures'] as $f) {
+                    $failures[] = array_merge(['code' => $code], $f);
+                }
+                // 取跟踪指数代码用于跟踪误差（detail 已缓存，命中率高）
+                $indexCode = '';
+                $detail = $this->fetchFundDetail($code);
+                if ($detail !== null) {
+                    $indexCode = (string)($detail['index_code'] ?? '');
+                }
+                $items[] = $this->buildPerformanceItem($code, $fetched, $periods, $useAccNav, $includeRecentRows, $indexCode);
+            }
+
+            $partial = false;
+            foreach ($items as $item) {
+                if (($item['coverage_level'] ?? '') === 'insufficient_history') {
+                    $partial = true;
+                }
+                if (!empty($item['meta']['page_failures'])) {
+                    $partial = true;
+                }
+            }
+
+            return DataSourceResult::success(self::SOURCE_NAME, 'performance_stats', $items, [
+                'codes' => $codes,
+                'target_days' => $targetDays,
+                'periods' => $periods,
+                'use_acc_nav' => $useAccNav,
+                'include_recent_rows' => $includeRecentRows,
+                'partial' => $partial,
+                'failures' => $failures,
+            ]);
+        });
+    }
+
+    /**
+     * 并行分页拉取某基金历史净值行（页 1 走缓存，后续页 curl_multi 并发，失败重试 1 次）
+     */
+    private function fetchHistoryRowsParallel(string $code, int $targetDays, int $pageSize, int $maxParallel): array
+    {
+        $page1 = $this->history($code, 1, $pageSize);
+        $failures = [];
+        if (!$page1->hasData()) {
+            return ['rows' => [], 'records' => 0, 'pages_total' => 0, 'pages_fetched' => 0, 'failures' => [['page' => 1, 'error' => $page1->errorCode ?: 'fetch_failed']], 'page_failures' => 1];
+        }
+
+        $pagesTotal = (int)($page1->meta['pages'] ?? 1);
+        $records = (int)($page1->meta['records'] ?? count($page1->data));
+        $allRows = is_array($page1->data) ? $page1->data : [];
+        $pagesFetched = 1;
+
+        $neededPages = max(1, (int)ceil($targetDays / $pageSize));
+        $neededPages = min($neededPages, max(1, $pagesTotal));
+        if ($neededPages <= 1) {
+            return ['rows' => $allRows, 'records' => $records, 'pages_total' => $pagesTotal, 'pages_fetched' => $pagesFetched, 'failures' => [], 'page_failures' => 0];
+        }
+
+        // 收集 2..neededPages，先查缓存
+        $pageRows = [];
+        $toFetch = [];
+        for ($p = 2; $p <= $neededPages; $p++) {
+            $ck = $this->cacheKey('history', "{$code}:{$p}:{$pageSize}");
+            $cached = $this->cache->get($ck);
+            if ($cached !== null && ($cached['success'] ?? false) && isset($cached['data'])) {
+                $pageRows[$p] = $cached['data'];
+                $pagesFetched++;
+            } else {
+                $toFetch[] = $p;
+            }
+        }
+
+        if (!empty($toFetch)) {
+            $requests = [];
+            foreach ($toFetch as $p) {
+                $url = 'https://fundf10.eastmoney.com/F10DataApi.aspx?' . http_build_query([
+                    'type' => 'lsjz', 'code' => $code, 'page' => $p, 'per' => $pageSize,
+                    'sdate' => '', 'edate' => '', 'rt' => sprintf('%.6f', microtime(true)),
+                ]);
+                $requests[] = [
+                    'key' => "p{$p}",
+                    'url' => $url,
+                    'headers' => ['Referer' => "https://fundf10.eastmoney.com/jjjz_{$code}.html", 'Accept' => '*/*'],
+                ];
+            }
+            $responses = $this->http->multiGet($requests, $maxParallel);
+            foreach ($toFetch as $p) {
+                $resp = $responses["p{$p}"] ?? null;
+                $body = $resp['body'] ?? '';
+                $parsed = ($resp !== null && !$resp['error'] && $resp['http_code'] === 200 && $body !== '')
+                    ? $this->parseHistoryResponse($body) : null;
+
+                // 失败重试 1 次（走缓存的 history()，含熔断）
+                if ($parsed === null) {
+                    $retry = $this->history($code, $p, $pageSize);
+                    if ($retry->hasData()) {
+                        $pageRows[$p] = is_array($retry->data) ? $retry->data : [];
+                        $pagesFetched++;
+                        continue;
+                    }
+                    $err = (string)($resp['error'] ?? '');
+                    if ($err === '' && (($resp['http_code'] ?? 0) !== 200)) {
+                        $err = 'HTTP ' . ($resp['http_code'] ?? 0);
+                    }
+                    if ($err === '') {
+                        $err = 'parse_error';
+                    }
+                    $failures[] = ['page' => $p, 'error' => $err];
+                    continue;
+                }
+
+                $pageRows[$p] = $parsed['items'];
+                $pagesFetched++;
+                $ck = $this->cacheKey('history', "{$code}:{$p}:{$pageSize}");
+                $this->cache->set($ck, [
+                    'success' => true,
+                    'source' => self::SOURCE_NAME,
+                    'action' => 'history',
+                    'result_action' => 'history',
+                    'data' => $parsed['items'],
+                    'meta' => ['code' => $code, 'page' => $p, 'page_size' => $pageSize, 'records' => $parsed['records'], 'pages' => $parsed['pages']],
+                ], $this->cacheTtl['history']);
+            }
+        }
+
+        ksort($pageRows);
+        foreach ($pageRows as $rows) {
+            $allRows = array_merge($allRows, is_array($rows) ? $rows : []);
+        }
+
+        return ['rows' => $allRows, 'records' => $records, 'pages_total' => $pagesTotal, 'pages_fetched' => $pagesFetched, 'failures' => $failures, 'page_failures' => count($failures)];
+    }
+
+    /**
+     * 由原始历史行计算收益/风险/极值统计
+     */
+    private function buildPerformanceItem(string $code, array $fetched, array $periods, bool $useAccNav, int $includeRecentRows, string $indexCode = ''): array
+    {
+        $rows = is_array($fetched['rows'] ?? null) ? $fetched['rows'] : [];
+        $recentRows = array_slice($rows, 0, $includeRecentRows);
+
+        // 按日期升序去重
+        $sorted = [];
+        foreach ($rows as $row) {
+            $date = (string)($row['date'] ?? '');
+            if ($date === '' || isset($sorted[$date])) {
+                continue;
+            }
+            $sorted[$date] = $row;
+        }
+        ksort($sorted);
+        $series = [];
+        $accUsed = 0;
+        foreach ($sorted as $date => $row) {
+            $nav = $this->num($row['nav'] ?? '');
+            $acc = $this->num($row['acc_nav'] ?? '');
+            $price = null;
+            if ($useAccNav && $acc !== null) {
+                $price = $acc;
+                $accUsed++;
+            } elseif ($nav !== null) {
+                $price = $nav;
+            }
+            if ($price === null || $price <= 0) {
+                continue;
+            }
+            $series[] = ['date' => $date, 'price' => $price, 'growth' => $this->num($row['growth_rate'] ?? '')];
+        }
+
+        $rowCount = count($series);
+        $coverageLevel = $rowCount < 60 ? 'insufficient_history' : 'sufficient';
+
+        $returns = [];
+        if ($rowCount >= 2) {
+            $last = $series[$rowCount - 1]['price'];
+            $periodDays = ['1m' => 21, '3m' => 63, '6m' => 126, '1y' => 250, '2y' => 500, '3y' => 750];
+            foreach ($periods as $p) {
+                if ($p === 'since_sample') {
+                    $first = $series[0]['price'];
+                    $returns["{$p}_pct"] = $this->pct2(($last - $first) / $first);
+                    continue;
+                }
+                $n = $periodDays[$p] ?? null;
+                if ($n === null || $rowCount <= $n) {
+                    $returns["{$p}_pct"] = null;
+                    continue;
+                }
+                $prev = $series[$rowCount - 1 - $n]['price'];
+                $returns["{$p}_pct"] = $prev > 0 ? $this->pct2(($last - $prev) / $prev) : null;
+            }
+        } else {
+            foreach ($periods as $p) {
+                $returns["{$p}_pct"] = null;
+            }
+        }
+
+        $risk = $this->computeRiskStats($series);
+        $extremes = $this->computeExtremes($series);
+        $riskAdjusted = $this->computeRiskAdjusted($series, $indexCode);
+
+        return [
+            'code' => $code,
+            'sample' => [
+                'rows' => $rowCount,
+                'date_start' => $rowCount > 0 ? $series[0]['date'] : '',
+                'date_end' => $rowCount > 0 ? $series[$rowCount - 1]['date'] : '',
+                'records_reported' => (int)($fetched['records'] ?? $rowCount),
+                'pages_fetched' => (int)($fetched['pages_fetched'] ?? 0),
+                'use_acc_nav' => $useAccNav && $accUsed > 0,
+                'acc_nav_rows' => $accUsed,
+            ],
+            'returns' => $returns,
+            'risk' => $risk,
+            'risk_adjusted' => $riskAdjusted,
+            'extremes' => $extremes,
+            'recent_rows' => array_values($recentRows),
+            'coverage_level' => $coverageLevel,
+            'partial' => $coverageLevel === 'insufficient_history' || (int)($fetched['page_failures'] ?? 0) > 0,
+            'meta' => ['page_failures' => (int)($fetched['page_failures'] ?? 0)],
+        ];
+    }
+
+    private function computeRiskStats(array $series): array
+    {
+        $n = count($series);
+        if ($n < 2) {
+            return [
+                'max_drawdown_pct' => null, 'max_drawdown_start' => '', 'max_drawdown_end' => '',
+                'daily_vol_pct' => null, 'annualized_vol_pct' => null,
+                'positive_days' => 0, 'negative_days' => 0, 'win_rate_pct' => null,
+            ];
+        }
+        $peak = $series[0]['price'];
+        $peakDate = $series[0]['date'];
+        $maxDd = 0.0;
+        $ddStart = '';
+        $ddEnd = '';
+        foreach ($series as $point) {
+            if ($point['price'] > $peak) {
+                $peak = $point['price'];
+                $peakDate = $point['date'];
+            }
+            $dd = $peak > 0 ? ($point['price'] / $peak - 1) : 0;
+            if ($dd < $maxDd) {
+                $maxDd = $dd;
+                $ddStart = $peakDate;
+                $ddEnd = $point['date'];
+            }
+        }
+
+        $dailyReturns = [];
+        $positive = 0;
+        $negative = 0;
+        for ($i = 1; $i < $n; $i++) {
+            $prev = $series[$i - 1]['price'];
+            if ($prev <= 0) continue;
+            $r = ($series[$i]['price'] - $prev) / $prev;
+            $dailyReturns[] = $r;
+            if ($r > 0) $positive++;
+            elseif ($r < 0) $negative++;
+        }
+        $vol = $this->stddev($dailyReturns);
+        $totalDays = $positive + $negative;
+
+        return [
+            'max_drawdown_pct' => round($maxDd * 100, 2),
+            'max_drawdown_start' => $ddStart,
+            'max_drawdown_end' => $ddEnd,
+            'daily_vol_pct' => round($vol * 100, 2),
+            'annualized_vol_pct' => round($vol * sqrt(250) * 100, 2),
+            'positive_days' => $positive,
+            'negative_days' => $negative,
+            'win_rate_pct' => $totalDays > 0 ? round($positive / $totalDays * 100, 2) : null,
+        ];
+    }
+
+    private function computeExtremes(array $series): array
+    {
+        $best = null;
+        $worst = null;
+        foreach ($series as $point) {
+            $g = $point['growth'];
+            if ($g === null) continue;
+            if ($best === null || $g > $best['growth_pct']) {
+                $best = ['date' => $point['date'], 'growth_pct' => $g];
+            }
+            if ($worst === null || $g < $worst['growth_pct']) {
+                $worst = ['date' => $point['date'], 'growth_pct' => $g];
+            }
+        }
+        return [
+            'best_day' => $best,
+            'worst_day' => $worst,
+        ];
+    }
+
+    private function num($value): ?float
+    {
+        if ($value === null || $value === '') return null;
+        if (!is_numeric($value)) return null;
+        return (float)$value;
+    }
+
+    /**
+     * 解析费率字符串（如 "0.50%" / "0.5" / "1.20%"）为百分比数值
+     */
+    private function parseFeePercent(string $value): ?float
+    {
+        $value = trim($value);
+        if ($value === '') return null;
+        $value = str_replace('%', '', $value);
+        if (!is_numeric($value)) return null;
+        return (float)$value;
+    }
+
+    private function pct2(float $ratio): float
+    {
+        return round($ratio * 100, 2);
+    }
+
+    private function stddev(array $values): float
+    {
+        $n = count($values);
+        if ($n === 0) return 0.0;
+        $mean = array_sum($values) / $n;
+        $sum = 0.0;
+        foreach ($values as $value) {
+            $sum += ($value - $mean) ** 2;
+        }
+        return sqrt($sum / $n);
+    }
+
+    /**
+     * 样本标准差（n-1），用于风险调整指标（Sharpe/Sortino/跟踪误差）
+     */
+    private function stddevSample(array $values): float
+    {
+        $n = count($values);
+        if ($n < 2) return 0.0;
+        $mean = array_sum($values) / $n;
+        $sum = 0.0;
+        foreach ($values as $value) {
+            $sum += ($value - $mean) ** 2;
+        }
+        return sqrt($sum / ($n - 1));
+    }
+
+    /**
+     * 计算风险调整指标：Sharpe / Sortino / 跟踪误差。
+     * Sharpe/Sortino 用年化无风险利率 RF_ANNUAL；跟踪误差仅对国内指数基金（有可拉基准）计算。
+     */
+    private function computeRiskAdjusted(array $series, string $indexCode): array
+    {
+        $result = [
+            'sharpe' => null,
+            'sortino' => null,
+            'tracking_error_pct' => null,
+            'benchmark_index' => '',
+            'sample_pairs' => 0,
+        ];
+        $n = count($series);
+        if ($n < 30) {
+            return $result;
+        }
+        $dailyReturns = [];
+        for ($i = 1; $i < $n; $i++) {
+            $prev = $series[$i - 1]['price'];
+            if ($prev <= 0) continue;
+            $dailyReturns[] = ($series[$i]['price'] - $prev) / $prev;
+        }
+        $m = count($dailyReturns);
+        if ($m < 30) {
+            return $result;
+        }
+        $mean = array_sum($dailyReturns) / $m;
+        $annExcess = $mean * self::TRADING_DAYS - self::RF_ANNUAL;
+        $vol = $this->stddevSample($dailyReturns);
+        if ($vol > 0) {
+            $result['sharpe'] = round($annExcess / ($vol * sqrt(self::TRADING_DAYS)), 3);
+        }
+        $downside = array_values(array_filter($dailyReturns, function ($r) { return $r < 0; }));
+        $dvol = $this->stddevSample($downside);
+        if ($dvol > 0) {
+            $result['sortino'] = round($annExcess / ($dvol * sqrt(self::TRADING_DAYS)), 3);
+        }
+        $benchCode = $this->normalizeDomesticIndexCode($indexCode);
+        if ($benchCode !== null) {
+            $benchSeries = $this->fetchIndexSeries($benchCode, $n);
+            if (!empty($benchSeries)) {
+                $te = $this->computeTrackingError($series, $benchSeries);
+                if ($te !== null) {
+                    $result['tracking_error_pct'] = round($te['te'] * 100, 2);
+                    $result['benchmark_index'] = $benchCode;
+                    $result['sample_pairs'] = $te['pairs'];
+                }
+            }
+        }
+        return $result;
+    }
+
+    /**
+     * 国内指数代码归一化：仅接受 000xxx（沪）或 399xxx（深）6 位代码；标普等字母代码返回 null
+     */
+    private function normalizeDomesticIndexCode(string $indexCode): ?string
+    {
+        $indexCode = trim($indexCode);
+        if (preg_match('/^(000|399)\d{3}$/', $indexCode)) {
+            return $indexCode;
+        }
+        return null;
+    }
+
+    /**
+     * 拉取国内指数日 K 序列（前复权收盘价），带缓存。失败返回 null。
+     */
+    private function fetchIndexSeries(string $indexCode, int $days = 500): ?array
+    {
+        $days = max(30, min($days, 1500));
+        $key = $this->cacheKey('index_kline', $indexCode . ':' . $days);
+        $cached = $this->cache->get($key);
+        if ($cached !== null && isset($cached['series'])) {
+            return $cached['series'];
+        }
+        $secid = (strpos($indexCode, '000') === 0) ? '1.' . $indexCode : '0.' . $indexCode;
+        $count = min($days + 20, 1500);
+        $url = 'https://push2his.eastmoney.com/api/qt/stock/kline/get?' . http_build_query([
+            'secid' => $secid,
+            'fields1' => 'f1,f2,f3,f4,f5,f6',
+            'fields2' => 'f51,f52,f53,f54,f55,f56,f57,f58',
+            'klt' => 101,
+            'fqt' => 1,
+            'end' => '20500101',
+            'lmt' => $count,
+        ]);
+        $resp = $this->http->get($url, ['Referer' => 'https://quote.eastmoney.com/', 'Accept' => '*/*']);
+        if ($resp['error'] || $resp['http_code'] !== 200 || $resp['body'] === '') {
+            return null;
+        }
+        $parsed = HttpClient::parseJson($resp['body']);
+        if (!$parsed['ok']) {
+            return null;
+        }
+        $klines = $parsed['data']['data']['klines'] ?? $parsed['data']['klines'] ?? null;
+        if (!is_array($klines)) {
+            return null;
+        }
+        $series = [];
+        foreach ($klines as $line) {
+            if (!is_string($line)) continue;
+            $parts = explode(',', $line);
+            if (count($parts) < 3) continue;
+            $date = $parts[0];
+            $close = $this->num($parts[2]);
+            if ($date !== '' && $close !== null && $close > 0) {
+                $series[] = ['date' => $date, 'price' => $close];
+            }
+        }
+        if (empty($series)) {
+            return null;
+        }
+        $this->cache->set($key, ['series' => $series], $this->cacheTtl['index_kline'] ?? 300);
+        return $series;
+    }
+
+    /**
+     * 跟踪误差：基金日收益与基准日收益之差的年化标准差。按日期对齐，对齐后不足 30 对返回 null。
+     */
+    private function computeTrackingError(array $fundSeries, array $benchSeries): ?array
+    {
+        $benchMap = [];
+        foreach ($benchSeries as $p) {
+            if (isset($p['date'], $p['price'])) {
+                $benchMap[$p['date']] = $p['price'];
+            }
+        }
+        $aligned = [];
+        foreach ($fundSeries as $p) {
+            if (isset($p['date']) && isset($benchMap[$p['date']])) {
+                $aligned[] = ['fund' => $p['price'], 'bench' => $benchMap[$p['date']]];
+            }
+        }
+        $cnt = count($aligned);
+        if ($cnt < 31) {
+            return null;
+        }
+        $diffs = [];
+        for ($i = 1; $i < $cnt; $i++) {
+            if ($aligned[$i - 1]['fund'] <= 0 || $aligned[$i - 1]['bench'] <= 0) continue;
+            $fr = ($aligned[$i]['fund'] - $aligned[$i - 1]['fund']) / $aligned[$i - 1]['fund'];
+            $br = ($aligned[$i]['bench'] - $aligned[$i - 1]['bench']) / $aligned[$i - 1]['bench'];
+            $diffs[] = $fr - $br;
+        }
+        if (count($diffs) < 30) {
+            return null;
+        }
+        $te = $this->stddevSample($diffs) * sqrt(self::TRADING_DAYS);
+        return ['te' => $te, 'pairs' => count($diffs)];
+    }
+
+    /**
+     * fa_screen_funds：多关键词搜索 + 排行样本合并 + 资料补全 + 去重
+     */
+    public function screenFunds(?string $theme, ?array $keywords, ?array $fundTypes, ?array $periods, int $pageSize = 50, int $maxCandidates = 20, ?float $minScaleYuan = null, bool $includeUnbuyable = true): DataSourceResult
+    {
+        $maxCandidates = max(3, min($maxCandidates, 50));
+        $pageSize = max(10, min($pageSize, 100));
+        $aliases = $this->themeAliases($theme);
+        $effectiveKeywords = is_array($keywords) && !empty($keywords)
+            ? array_values(array_unique(array_map('strval', $keywords)))
+            : $aliases;
+        if (empty($effectiveKeywords) && $theme === null) {
+            $effectiveKeywords = ['红利'];
+        }
+
+        $types = is_array($fundTypes) && !empty($fundTypes)
+            ? array_values(array_intersect($fundTypes, ['all','stock','mixed','bond','index','qdii','fof']))
+            : $this->inferFundTypes($theme);
+        if (empty($types)) {
+            $types = ['index','stock','mixed'];
+        }
+        $periods = is_array($periods) && !empty($periods)
+            ? array_values(array_intersect($periods, ['month','quarter','half_year','year','two_year','three_year','this_year','since']))
+            : ['year','half_year','this_year'];
+
+        $failures = [];
+        $rawHits = [];
+        $rawCount = 0;
+        $maxParallel = max(1, min((int)($this->researchConfig['max_parallel_workers'] ?? 4), 8));
+
+        // 1. 构建搜索 + 排行任务并并发拉取（缓存感知）
+        $jobs = [];
+        $searchHeaders = $this->eastmoneyFundMobileHeaders();
+        $rankHeaders = ['Referer' => 'https://fund.eastmoney.com/data/fundranking.html', 'Accept' => '*/*'];
+        $endDate = date('Y-m-d');
+        $startDate = date('Y-m-d', strtotime('-1 year'));
+        $typeMap = ['all'=>'all','stock'=>'gp','mixed'=>'hh','bond'=>'zq','index'=>'zs','qdii'=>'qdii','fof'=>'fof'];
+        $periodMap = ['month'=>'1yzf','quarter'=>'3yzf','half_year'=>'6yzf','year'=>'1nzf','two_year'=>'2nzf','three_year'=>'3nzf','this_year'=>'jnzf','since'=>'lnzf'];
+
+        foreach ($effectiveKeywords as $kw) {
+            $kw = trim($kw);
+            if ($kw === '') continue;
+            $jobs[] = [
+                'cache_key' => $this->cacheKey('search', md5($kw)),
+                'url' => $this->buildSearchUrl($kw),
+                'headers' => $searchHeaders,
+                'tag' => 'search:' . $kw,
+                'action' => 'search',
+                'ttl_key' => 'search',
+                'parser' => function ($body) { return $this->parseSearchResponse($body); },
+            ];
+        }
+        foreach ($types as $type) {
+            foreach ($periods as $period) {
+                $jobs[] = [
+                    'cache_key' => $this->cacheKey('rank', "{$type}:{$period}:1:{$pageSize}"),
+                    'url' => $this->buildRankUrl($typeMap[$type] ?? 'all', $periodMap[$period] ?? '1nzf', 1, $pageSize, $startDate, $endDate),
+                    'headers' => $rankHeaders,
+                    'tag' => "rank:{$type}:{$period}",
+                    'action' => 'rank',
+                    'ttl_key' => 'rank',
+                    'parser' => function ($body) use ($period) { return $this->parseRankResponse($body, $period); },
+                ];
+            }
+        }
+
+        $batch = $this->batchFetch($jobs, $maxParallel);
+        foreach ($batch['failures'] as $f) {
+            $tag = (string)$f['tag'];
+            $parts = explode(':', $tag);
+            $entry = ['source' => $parts[0] ?? 'unknown', 'error' => $f['error']];
+            if (($parts[0] ?? '') === 'search' && isset($parts[1])) {
+                $entry['keyword'] = $parts[1];
+            } elseif (($parts[0] ?? '') === 'rank') {
+                $entry['type'] = $parts[1] ?? '';
+                $entry['period'] = $parts[2] ?? '';
+            }
+            $failures[] = $entry;
+        }
+
+        // 2. 合并搜索结果
+        foreach ($effectiveKeywords as $kw) {
+            $kw = trim($kw);
+            if ($kw === '') continue;
+            $res = $batch['results']['search:' . $kw] ?? null;
+            if ($res === null) continue;
+            foreach ($res['items'] as $idx => $item) {
+                $code = (string)($item['code'] ?? '');
+                if ($code === '' || !preg_match('/^\d{6}$/', $code)) continue;
+                $rawCount++;
+                $rawHits[$code] = $rawHits[$code] ?? ['code' => $code, 'name' => (string)($item['name'] ?? ''), 'type' => (string)($item['type'] ?? $item['category'] ?? ''), 'company' => (string)($item['company'] ?? ''), 'is_buy' => (bool)($item['is_buy'] ?? false), 'scale' => '', 'match_reasons' => [], 'source_hits' => []];
+                $rawHits[$code]['source_hits'][] = ['source' => 'search', 'keyword' => $kw, 'rank' => $idx + 1];
+                if (strpos((string)($item['name'] ?? ''), $kw) !== false) {
+                    $rawHits[$code]['match_reasons'][] = 'keyword:' . $kw;
+                }
+            }
+        }
+
+        // 3. 合并排行结果
+        foreach ($types as $type) {
+            foreach ($periods as $period) {
+                $res = $batch['results']["rank:{$type}:{$period}"] ?? null;
+                if ($res === null) continue;
+                foreach ($res['items'] as $idx => $item) {
+                    $code = (string)($item['code'] ?? '');
+                    if ($code === '' || !preg_match('/^\d{6}$/', $code)) continue;
+                    $rawCount++;
+                    $rawHits[$code] = $rawHits[$code] ?? ['code' => $code, 'name' => (string)($item['name'] ?? ''), 'type' => '', 'company' => '', 'is_buy' => (bool)($item['buy_status'] ?? false), 'scale' => '', 'match_reasons' => [], 'source_hits' => []];
+                    $rawHits[$code]['source_hits'][] = ['source' => 'rank', 'type' => $type, 'period' => $period, 'rank' => $idx + 1];
+                }
+            }
+        }
+
+        if (empty($rawHits)) {
+            return DataSourceResult::success(self::SOURCE_NAME, 'screen', [], [
+                'theme' => $theme, 'aliases_used' => $aliases, 'keywords' => $effectiveKeywords,
+                'dedupe' => ['raw_hits' => 0, 'deduped' => 0, 'returned' => 0],
+                'failures' => $failures, 'partial' => !empty($failures),
+            ]);
+        }
+
+        // 4. 预排序并限制补全数量（避免对全部去重候选拉取资料）
+        $rawList = array_values($rawHits);
+        usort($rawList, function ($a, $b) {
+            $ah = count($a['source_hits']);
+            $bh = count($b['source_hits']);
+            if ($ah === $bh) {
+                $ar = $this->bestSearchRank($a['source_hits']);
+                $br = $this->bestSearchRank($b['source_hits']);
+                if ($ar === $br) return 0;
+                return ($ar === 0 ? PHP_INT_MAX : $ar) <=> ($br === 0 ? PHP_INT_MAX : $br);
+            }
+            return $bh <=> $ah;
+        });
+        $enrichLimit = max($maxCandidates * 3, 30);
+        $rawList = array_slice($rawList, 0, $enrichLimit);
+
+        // 5. 批量资料补全
+        $codes = array_column($rawList, 'code');
+        $enriched = [];
+        foreach (array_chunk($codes, 20) as $chunk) {
+            $infoRes = $this->info($chunk);
+            if ($infoRes->hasData()) {
+                foreach ($infoRes->data as $fund) {
+                    $c = (string)($fund['code'] ?? '');
+                    if ($c !== '') {
+                        $enriched[$c] = $fund;
+                    }
+                }
+            }
+        }
+
+        // 6. 组装候选 + 过滤 + match reason
+        $candidates = [];
+        foreach ($rawList as $hit) {
+            $code = $hit['code'];
+            $info = $enriched[$code] ?? null;
+            $name = $info['name'] ?? $hit['name'];
+            $type = $info['type'] ?? $hit['type'];
+            $company = $info['fund_company'] ?? $hit['company'];
+            $isBuy = $info !== null ? (bool)($info['is_buy'] ?? false) : $hit['is_buy'];
+            $scale = $info['scale'] ?? '';
+            $benchmark = (string)($info['benchmark'] ?? '');
+            $strategy = (string)($info['investment_strategy'] ?? '');
+
+            $scaleYuan = $this->parseScaleYuan((string)$scale);
+            if ($minScaleYuan !== null && ($scaleYuan === null || $scaleYuan < $minScaleYuan)) {
+                continue;
+            }
+            if (!$includeUnbuyable && !$isBuy) {
+                continue;
+            }
+
+            $matchReasons = $this->uniqueStrings($hit['match_reasons']);
+            foreach ($effectiveKeywords as $kw) {
+                if (strpos($name, $kw) !== false) {
+                    $matchReasons[] = 'keyword:' . $kw;
+                }
+                if ($benchmark !== '' && strpos($benchmark, $kw) !== false) {
+                    $matchReasons[] = 'benchmark:' . $kw;
+                }
+            }
+            $matchReasons = $this->uniqueStrings($matchReasons);
+            if (empty($matchReasons)) {
+                $matchReasons[] = 'rank_evidence';
+            }
+
+            // 主题相关性分级：strong（命中主题词）> weak（仅排行凑数）> negative（命中负向词且无主题命中）
+            $themeRelevance = $this->themeRelevanceLevel($matchReasons, $name, $effectiveKeywords);
+            if ($themeRelevance === 'weak') {
+                $matchReasons[] = 'theme_weak_rank_only';
+            } elseif ($themeRelevance === 'negative') {
+                $matchReasons[] = 'theme_mismatch';
+            }
+            $matchReasons = $this->uniqueStrings($matchReasons);
+
+            $candidates[] = [
+                'code' => $code,
+                'name' => $name,
+                'type' => $type,
+                'company' => $company,
+                'is_buy' => $isBuy,
+                'scale' => (string)$scale,
+                'scale_yuan' => $scaleYuan,
+                'benchmark' => $benchmark,
+                'theme_relevance' => $themeRelevance,
+                'match_reasons' => $matchReasons,
+                'source_hits' => array_slice($hit['source_hits'], 0, 6),
+                'coverage' => [
+                    'has_info' => $info !== null,
+                    'has_rank_evidence' => !empty(array_filter($hit['source_hits'], function ($s) { return ($s['source'] ?? '') === 'rank'; })),
+                    'has_strategy_evidence' => $benchmark !== '' || $strategy !== '',
+                ],
+            ];
+        }
+
+        // 5. 排序：主题相关性优先（strong>weak>negative），其次命中来源数，再搜索排名
+        $relevanceRank = ['strong' => 0, 'weak' => 1, 'negative' => 2];
+        usort($candidates, function ($a, $b) use ($relevanceRank) {
+            $ar = $relevanceRank[$a['theme_relevance'] ?? 'weak'] ?? 1;
+            $br = $relevanceRank[$b['theme_relevance'] ?? 'weak'] ?? 1;
+            if ($ar !== $br) return $ar <=> $br;
+            $ah = count($a['source_hits']);
+            $bh = count($b['source_hits']);
+            if ($ah === $bh) {
+                $asr = $this->bestSearchRank($a['source_hits']);
+                $bsr = $this->bestSearchRank($b['source_hits']);
+                if ($asr === $bsr) return 0;
+                return ($asr === 0 ? PHP_INT_MAX : $asr) <=> ($bsr === 0 ? PHP_INT_MAX : $bsr);
+            }
+            return $bh <=> $ah;
+        });
+
+        $returned = array_slice($candidates, 0, $maxCandidates);
+
+        $themeStats = ['strong' => 0, 'weak' => 0, 'negative' => 0];
+        foreach ($candidates as $c) {
+            $lvl = $c['theme_relevance'] ?? 'weak';
+            if (isset($themeStats[$lvl])) $themeStats[$lvl]++;
+        }
+
+        return DataSourceResult::success(self::SOURCE_NAME, 'screen', $returned, [
+            'theme' => $theme,
+            'aliases_used' => $aliases,
+            'keywords' => $effectiveKeywords,
+            'fund_types' => $types,
+            'periods' => $periods,
+            'dedupe' => ['raw_hits' => $rawCount, 'deduped' => count($rawHits), 'returned' => count($returned), 'theme_relevance' => $themeStats],
+            'failures' => $failures,
+            'partial' => !empty($failures) || count($enriched) < count($rawHits),
+        ]);
+    }
+
+    private function themeAliases(?string $theme): array
+    {
+        switch ($theme) {
+            case 'dividend': return ['红利','高股息','股息','红利低波','低波红利','央企红利','标普红利','中证红利','港股通高股息'];
+            case 'low_volatility': return ['低波','低波动','红利低波','低波红利'];
+            case 'broad_index': return ['沪深300','中证500','中证1000','宽基','指数'];
+            case 'bond': return ['债券','纯债','信用债','利率债','债基'];
+            case 'qdii': return ['QDII','美股','纳斯达克','标普500','海外','港股通'];
+            default: return [];
+        }
+    }
+
+    /**
+     * 主题相关性分级：strong（命中主题词）> weak（仅排行凑数）> negative（命中负向词且无主题命中）
+     * 用于把 theme=dividend 时召回出的科技/半导体等主题无关候选排到后面。
+     */
+    private function themeRelevanceLevel(array $matchReasons, string $name, array $keywords): string
+    {
+        $hasThemeHit = false;
+        foreach ($matchReasons as $mr) {
+            if (is_string($mr) && (strpos($mr, 'keyword:') === 0 || strpos($mr, 'benchmark:') === 0)) {
+                $hasThemeHit = true;
+                break;
+            }
+        }
+        if ($hasThemeHit) {
+            return 'strong';
+        }
+        if (empty($keywords)) {
+            return 'weak';
+        }
+        // 无主题词命中：name 命中负向词则判为 negative（明显与目标主题无关）
+        foreach (self::THEME_NEGATIVE_WORDS as $nw) {
+            if ($name !== '' && strpos($name, $nw) !== false) {
+                return 'negative';
+            }
+        }
+        return 'weak';
+    }
+
+    private function inferFundTypes(?string $theme): array
+    {
+        switch ($theme) {
+            case 'dividend': return ['index','stock','mixed'];
+            case 'low_volatility': return ['index'];
+            case 'broad_index': return ['index'];
+            case 'bond': return ['bond'];
+            case 'qdii': return ['qdii'];
+            default: return ['index','stock','mixed'];
+        }
+    }
+
+    private function parseScaleYuan(string $scale): ?float
+    {
+        $scale = trim($scale);
+        if ($scale === '') return null;
+        if (preg_match('/([\d.]+)\s*亿/u', $scale, $m)) {
+            return (float)$m[1] * 100000000;
+        }
+        if (preg_match('/([\d.]+)\s*万/u', $scale, $m)) {
+            return (float)$m[1] * 10000;
+        }
+        if (is_numeric($scale)) {
+            return (float)$scale;
+        }
+        return null;
+    }
+
+    private function bestSearchRank(array $sourceHits): int
+    {
+        $best = 0;
+        foreach ($sourceHits as $hit) {
+            if (($hit['source'] ?? '') === 'search' && isset($hit['rank'])) {
+                $r = (int)$hit['rank'];
+                if ($best === 0 || $r < $best) {
+                    $best = $r;
+                }
+            }
+        }
+        return $best;
+    }
+
+    private function uniqueStrings(array $items): array
+    {
+        return array_values(array_unique(array_filter($items, function ($v) {
+            return is_string($v) && $v !== '';
+        })));
+    }
+
+    /**
+     * fa_get_fund_trade_rules：申购/赎回/限购/费率/购买状态
+     */
+    public function tradeRules(array $codes, bool $includeFeeDetail = true, bool $includePlatformStatus = true): DataSourceResult
+    {
+        $codes = array_values(array_unique(array_filter($codes, function ($c) {
+            return is_string($c) && preg_match('/^\d{6}$/', $c);
+        })));
+        if (empty($codes)) {
+            return DataSourceResult::error(self::SOURCE_NAME, 'trade_rules', 'invalid_code', '没有有效的基金代码');
+        }
+        $codes = array_slice($codes, 0, 20);
+
+        $cacheKey = $this->cacheKey('trade_rules', md5(implode(',', $codes) . ':' . (int)$includeFeeDetail . ':' . (int)$includePlatformStatus));
+        return $this->useCache('trade_rules', $cacheKey, function() use ($codes, $includeFeeDetail, $includePlatformStatus) {
+            $infoMap = [];
+            foreach (array_chunk($codes, 20) as $chunk) {
+                $infoRes = $this->info($chunk);
+                if ($infoRes->hasData()) {
+                    foreach ($infoRes->data as $fund) {
+                        $infoMap[(string)($fund['code'] ?? '')] = $fund;
+                    }
+                }
+            }
+
+            $failures = [];
+            $items = [];
+            foreach ($codes as $code) {
+                $info = $infoMap[$code] ?? null;
+                if ($info === null) {
+                    // 降级：直接取详情
+                    $info = $this->fetchFundDetail($code);
+                }
+                $name = (string)($info['name'] ?? '');
+                $isBuy = (bool)($info['is_buy'] ?? false);
+                $minPurchase = (string)($info['min_purchase'] ?? '');
+                $managementFee = (string)($info['management_fee'] ?? '');
+                $custodyFee = (string)($info['custody_fee'] ?? '');
+
+                // 申购/赎回状态：降级读历史净值最近一行
+                $purchaseStatus = '';
+                $redeemStatus = '';
+                $hist = $this->history($code, 1, 5);
+                if ($hist->hasData() && !empty($hist->data)) {
+                    $latest = $hist->data[0];
+                    $purchaseStatus = (string)($latest['purchase_status'] ?? '');
+                    $redeemStatus = (string)($latest['redeem_status'] ?? '');
+                } else {
+                    $failures[] = ['code' => $code, 'tool' => 'history', 'error' => $hist->errorCode ?: 'fetch_failed'];
+                }
+                if ($purchaseStatus === '') {
+                    $purchaseStatus = $isBuy ? '开放申购' : '未知';
+                }
+                if ($redeemStatus === '') {
+                    $redeemStatus = '未知';
+                }
+
+                $maxHint = '';
+                if (preg_match('/限制/u', $purchaseStatus)) {
+                    $maxHint = '单日单账户限额需以公告/平台为准';
+                }
+
+                $item = [
+                    'code' => $code,
+                    'name' => $name,
+                    'purchase_status' => $purchaseStatus,
+                    'redeem_status' => $redeemStatus,
+                    'is_buy' => $isBuy,
+                    'min_purchase' => $minPurchase,
+                    'max_purchase_hint' => $maxHint,
+                ];
+                if ($includeFeeDetail) {
+                    $item['management_fee'] = $managementFee;
+                    $item['custody_fee'] = $custodyFee;
+                    $item['sales_service_fee'] = (string)($info['sales_service_fee'] ?? '');
+                    $item['fee_note'] = '费率字段来自基金详情；申购费率阶梯可能需要公告或平台补充。';
+                }
+                if ($includePlatformStatus) {
+                    $item['platform_status_note'] = '购买/赎回状态来自东方财富基金详情与历史净值列，实际可投性以销售平台为准。';
+                }
+                $items[] = $item;
+            }
+
+            return DataSourceResult::success(self::SOURCE_NAME, 'trade_rules', $items, [
+                'codes' => $codes,
+                'include_fee_detail' => $includeFeeDetail,
+                'include_platform_status' => $includePlatformStatus,
+                'failures' => $failures,
+                'partial' => !empty($failures),
+            ]);
+        });
+    }
+
+    /**
+     * fa_get_fund_holdings：基金真实十大持仓 + 行业暴露（东方财富 FundArchivesApis）
+     * 解决 fundExposure 持仓硬编码为空的问题。失败返回 empty_data，不抛异常。
+     */
+    public function fundHoldings(string $code, int $topline = 10, bool $includeIndustry = true): DataSourceResult
+    {
+        if (!preg_match('/^\d{6}$/', $code)) {
+            return DataSourceResult::error(self::SOURCE_NAME, 'holdings', 'invalid_code', '基金代码格式不正确');
+        }
+        $topline = max(1, min($topline, 50));
+        $key = $this->cacheKey('holdings', $code . ':' . $topline . ':' . ($includeIndustry ? '1' : '0'));
+
+        return $this->useCache('holdings', $key, function() use ($code, $topline, $includeIndustry) {
+            return $this->withBreaker('holdings', function() use ($code, $topline, $includeIndustry) {
+                $headers = ['Referer' => "https://fundf10.eastmoney.com/ccmx_{$code}.html", 'Accept' => '*/*'];
+                // 东方财富 FundArchivesDatas.aspx?type=jjcc 返回 var apidata={content:"<HTML表格>"}
+                $stockUrl = 'https://fundf10.eastmoney.com/FundArchivesDatas.aspx?' . http_build_query([
+                    'type' => 'jjcc', 'code' => $code, 'topline' => $topline, 'year' => '', 'month' => '',
+                ]);
+                $resp = $this->http->get($stockUrl, $headers);
+                $body = (!$resp['error'] && $resp['http_code'] === 200) ? (string)$resp['body'] : '';
+                $parsed = $body !== '' ? $this->parseHoldingsHtml($body, $topline) : ['report_date' => '', 'top_holdings' => []];
+
+                if (empty($parsed['top_holdings'])) {
+                    return DataSourceResult::error(self::SOURCE_NAME, 'holdings', 'empty_data', '持仓数据未返回，可能为新发基金或接口结构变更', ['code' => $code]);
+                }
+
+                // 行业暴露端点（tscc）当前不可用，留空待后续迭代；不影响股票持仓返回
+                return DataSourceResult::success(self::SOURCE_NAME, 'holdings', [
+                    'code' => $code,
+                    'report_date' => $parsed['report_date'],
+                    'top_holdings' => $parsed['top_holdings'],
+                    'industry_exposure' => $includeIndustry ? [] : null,
+                    'data_source' => 'eastmoney_fund_archives',
+                ], [
+                    'code' => $code,
+                    'topline' => $topline,
+                    'include_industry' => $includeIndustry,
+                    'holdings_count' => count($parsed['top_holdings']),
+                    'industry_count' => 0,
+                    'partial' => $includeIndustry,
+                ]);
+            });
+        });
+    }
+
+    /**
+     * 解析 FundArchivesDatas.aspx?type=jjcc 返回的 var apidata={content:"<HTML>"} 持仓表格
+     * 列：序号 股票代码 股票名称 最新价 涨跌幅 相关资讯 占净值比 持股数 市值
+     */
+    private function parseHoldingsHtml(string $body, int $topline): array
+    {
+        $reportDate = '';
+        if (preg_match('/截止至[：:]\s*<font[^>]*>([^<]+)<\/font>/u', $body, $m)) {
+            $reportDate = trim($m[1]);
+        } elseif (preg_match('/(\d{4}-\d{2}-\d{2})/', $body, $m)) {
+            $reportDate = $m[1];
+        }
+
+        $topHoldings = [];
+        if (preg_match_all('/<tr[^>]*>.*?<\/tr>/s', $body, $rows)) {
+            foreach ($rows[0] as $tr) {
+                if (!preg_match_all('/<td[^>]*>(.*?)<\/td>/s', $tr, $cm)) continue;
+                $cells = array_map(function ($c) { return trim(strip_tags($c)); }, $cm[1]);
+                if (count($cells) < 7) continue;
+                $idx = $this->num($cells[0]);
+                if ($idx === null || $idx < 1) continue;  // 跳过表头/非数据行
+                $stockCode = preg_replace('/\D/', '', $cells[1]);
+                if ($stockCode === '') continue;
+                $topHoldings[] = [
+                    'code' => $stockCode,
+                    'name' => $cells[2],
+                    'weight' => $this->parseFeePercent($cells[6]),
+                ];
+                if (count($topHoldings) >= $topline) break;
+            }
+        }
+        return ['report_date' => $reportDate, 'top_holdings' => $topHoldings];
+    }
+
+    /**
+     * fa_get_fund_holdings_or_index_exposure：持仓/行业/指数暴露与风格因子标签
+     */
+    public function fundExposure(string $code, string $prefer = 'auto', bool $includeTopHoldings = true, bool $includeIndustry = true, bool $includeDocumentEvidence = false, int $contentLimit = 6000): DataSourceResult
+    {
+        $cacheKey = $this->cacheKey('exposure', $code . ':' . $prefer . ':' . (int)$includeTopHoldings . ':' . (int)$includeIndustry . ':' . (int)$includeDocumentEvidence . ':' . $contentLimit);
+        return $this->useCache('exposure', $cacheKey, function() use ($code, $prefer, $includeTopHoldings, $includeIndustry, $includeDocumentEvidence, $contentLimit) {
+            $detail = $this->fetchFundDetail($code);
+            if ($detail === null) {
+                return DataSourceResult::error(self::SOURCE_NAME, 'exposure', 'empty_data', '基金详情未返回，无法推导风格暴露', ['code' => $code, 'exposure_type' => 'unavailable']);
+            }
+
+            $name = (string)($detail['name'] ?? '');
+            $benchmark = (string)($detail['benchmark'] ?? '');
+            $strategy = (string)($detail['investment_strategy'] ?? '');
+            $target = (string)($detail['investment_target'] ?? '');
+            $indexCode = (string)($detail['index_code'] ?? '');
+            $indexName = (string)($detail['index_name'] ?? '');
+            $type = (string)($detail['type'] ?? '');
+
+            $text = $name . ' ' . $benchmark . ' ' . $strategy . ' ' . $target . ' ' . $indexName;
+            $styleTags = $this->deriveStyleTags($text);
+            $factorEvidence = $this->deriveFactorEvidence($text, $styleTags);
+
+            $exposureType = 'fund_detail_derived';
+            if ($indexCode !== '' || $indexName !== '') {
+                $exposureType = 'index_derived';
+            }
+
+            $documentEvidence = [];
+            if ($includeDocumentEvidence) {
+                $docsRes = $this->fundDocuments($code, 1, 5, 'all', false, 0);
+                if ($docsRes->hasData()) {
+                    foreach (array_slice($docsRes->data, 0, 3) as $doc) {
+                        $documentEvidence[] = [
+                            'title' => (string)($doc['title'] ?? ''),
+                            'doc_type' => (string)($doc['doc_type'] ?? ''),
+                            'date' => (string)($doc['date'] ?? ''),
+                        ];
+                    }
+                }
+                if (!empty($documentEvidence)) {
+                    $exposureType = $exposureType === 'fund_detail_derived' ? 'document_derived' : $exposureType;
+                }
+            }
+
+            // 拉取真实持仓（失败时保持空数组，与历史行为兼容，不伪造权重）
+            $topHoldings = [];
+            $industryExposure = [];
+            $holdingsSource = 'unavailable';
+            $holdingsReportDate = '';
+            if ($includeTopHoldings || $includeIndustry) {
+                $holdingsRes = $this->fundHoldings($code, 10, $includeIndustry);
+                if ($holdingsRes->hasData() && is_array($holdingsRes->data)) {
+                    $hd = $holdingsRes->data;
+                    if ($includeTopHoldings && isset($hd['top_holdings']) && is_array($hd['top_holdings'])) {
+                        $topHoldings = $hd['top_holdings'];
+                    }
+                    if ($includeIndustry && isset($hd['industry_exposure']) && is_array($hd['industry_exposure'])) {
+                        $industryExposure = $hd['industry_exposure'];
+                    }
+                    $holdingsReportDate = (string)($hd['report_date'] ?? '');
+                    $holdingsSource = 'eastmoney_fund_archives';
+                    if (!empty($topHoldings) || !empty($industryExposure)) {
+                        $exposureType = $exposureType === 'fund_detail_derived' ? 'holdings_fetched' : $exposureType . '+holdings';
+                    }
+                }
+            }
+
+            $data = [
+                'code' => $code,
+                'name' => $name,
+                'exposure_type' => $exposureType,
+                'benchmark' => $benchmark,
+                'index_code' => $indexCode,
+                'index_name' => $indexName,
+                'fund_type' => $type,
+                'style_tags' => $styleTags,
+                'factor_evidence' => $factorEvidence,
+                'top_holdings' => $includeTopHoldings ? $topHoldings : null,
+                'industry_exposure' => $includeIndustry ? $industryExposure : null,
+                'holdings_source' => $holdingsSource,
+                'holdings_report_date' => $holdingsReportDate,
+                'document_evidence' => $documentEvidence,
+                'scope_note' => $holdingsSource === 'eastmoney_fund_archives'
+                    ? '持仓与行业暴露来自东方财富最新报告期（占净值比），非指数官网全量成分权重。'
+                    : '持仓数据未取得，行业和成分暴露只作为基金详情/报告推导；不伪造实际持仓权重。',
+            ];
+
+            return DataSourceResult::success(self::SOURCE_NAME, 'exposure', $data, [
+                'code' => $code,
+                'prefer' => $prefer,
+                'include_document_evidence' => $includeDocumentEvidence,
+                'content_limit' => $includeDocumentEvidence ? $contentLimit : 0,
+                'partial' => empty($styleTags) || $holdingsSource === 'unavailable' || ($includeIndustry && empty($industryExposure)),
+            ]);
+        });
+    }
+
+    private function deriveStyleTags(string $text): array
+    {
+        $rules = [
+            '红利' => '/红利|高股息|股息/u',
+            '低波' => '/低波|低波动/u',
+            '大盘' => '/大盘/u',
+            '中盘' => '/中盘/u',
+            '小盘' => '/小盘/u',
+            '价值' => '/价值/u',
+            '成长' => '/成长/u',
+            '央企' => '/央企/u',
+            '国企' => '/国企/u',
+            '港股通' => '/港股通/u',
+            '指数联接' => '/联接/u',
+            'ETF' => '/ETF|etf/u',
+            'QDII' => '/QDII|qdii/u',
+            '债券' => '/债券|纯债|信用债/u',
+            '消费' => '/消费/u',
+            '医药' => '/医药|医疗|生物/u',
+            '科技' => '/科技|半导体|芯片|人工智能|新能源/u',
+            '军工' => '/军工|国防/u',
+        ];
+        $tags = [];
+        foreach ($rules as $tag => $pattern) {
+            if (preg_match($pattern, $text)) {
+                $tags[] = $tag;
+            }
+        }
+        return $tags;
+    }
+
+    private function deriveFactorEvidence(string $text, array $styleTags): array
+    {
+        $map = [
+            '红利' => ['factor' => 'dividend', 'evidence' => '名称/基准包含 红利/高股息/股息'],
+            '低波' => ['factor' => 'low_volatility', 'evidence' => '名称/基准包含 低波/低波动'],
+            '大盘' => ['factor' => 'large_cap', 'evidence' => '名称/基准包含 大盘'],
+            '价值' => ['factor' => 'value', 'evidence' => '名称/基准包含 价值'],
+            '成长' => ['factor' => 'growth', 'evidence' => '名称/基准包含 成长'],
+            '央企' => ['factor' => 'soe', 'evidence' => '名称/基准包含 央企'],
+            '港股通' => ['factor' => 'hk_connect', 'evidence' => '名称/基准包含 港股通'],
+        ];
+        $evidence = [];
+        foreach ($styleTags as $tag) {
+            if (isset($map[$tag])) {
+                $evidence[] = $map[$tag];
+            }
+        }
+        return $evidence;
+    }
+
+    /**
+     * fa_score_funds：确定性多维评分与排序
+     */
+    public function scoreFunds(array $codes, ?string $objective = 'balanced', ?string $horizon = 'long', ?string $riskPreference = 'medium', ?array $weights = null, bool $requireBuyable = false): DataSourceResult
+    {
+        $codes = array_values(array_unique(array_filter($codes, function ($c) {
+            return is_string($c) && preg_match('/^\d{6}$/', $c);
+        })));
+        if (empty($codes)) {
+            return DataSourceResult::error(self::SOURCE_NAME, 'score', 'invalid_code', '没有有效的基金代码');
+        }
+        $codes = array_slice($codes, 0, (int)($this->researchConfig['max_score_candidates'] ?? 20));
+
+        $objective = in_array($objective, ['balanced','long_term_stable','low_fee_index','dividend_income','active_alpha','low_drawdown'], true) ? $objective : 'balanced';
+        $horizon = in_array($horizon, ['short','medium','long'], true) ? $horizon : 'long';
+        $riskPreference = in_array($riskPreference, ['low','medium','high'], true) ? $riskPreference : 'medium';
+
+        $weightTable = $this->weightTable($objective, $horizon, $riskPreference);
+        if (is_array($weights) && !empty($weights)) {
+            foreach ($weights as $w) {
+                if (!is_array($w)) continue;
+                $key = (string)($w['key'] ?? '');
+                $val = $w['value'] ?? null;
+                if ($key !== '' && is_numeric($val) && array_key_exists($key, $weightTable)) {
+                    $weightTable[$key] = (float)$val;
+                }
+            }
+        }
+        $totalWeight = array_sum($weightTable);
+        if ($totalWeight <= 0) {
+            $weightTable = $this->weightTable('balanced', 'long', 'medium');
+            $totalWeight = array_sum($weightTable);
+        }
+        foreach ($weightTable as $k => $v) {
+            $weightTable[$k] = round($v / $totalWeight, 4);
+        }
+
+        $weightsHash = is_array($weights) ? md5(json_encode($weights)) : 'null';
+        $cacheKey = $this->cacheKey('score', md5(implode(',', $codes) . ':' . $objective . ':' . $horizon . ':' . $riskPreference . ':' . $weightsHash . ':' . (int)$requireBuyable));
+        return $this->useCache('score', $cacheKey, function() use ($codes, $objective, $horizon, $riskPreference, $weights, $requireBuyable, $weightTable) {
+            // 1. 批量资料
+            $infoMap = [];
+            foreach (array_chunk($codes, 20) as $chunk) {
+                $infoRes = $this->info($chunk);
+                if ($infoRes->hasData()) {
+                    foreach ($infoRes->data as $fund) {
+                        $infoMap[(string)($fund['code'] ?? '')] = $fund;
+                    }
+                }
+            }
+
+            // 2. 绩效统计
+            $statsMap = [];
+            $statsRes = $this->performanceStats($codes, (int)($this->researchConfig['target_history_days'] ?? 500), ['1m','3m','6m','1y','2y','3y','since_sample'], true, 0);
+            if ($statsRes->hasData()) {
+                foreach ($statsRes->data as $stat) {
+                    $statsMap[(string)($stat['code'] ?? '')] = $stat;
+                }
+            }
+
+            // 3. 交易规则
+            $rulesMap = [];
+            $rulesRes = $this->tradeRules($codes, true, true);
+            if ($rulesRes->hasData()) {
+                foreach ($rulesRes->data as $rule) {
+                    $rulesMap[(string)($rule['code'] ?? '')] = $rule;
+                }
+            }
+
+            // 4. 风格暴露 + 分红
+            $exposureMap = [];
+            $dividendMap = [];
+            foreach ($codes as $code) {
+                $exp = $this->fundExposure($code, 'auto', false, false, false, 0);
+                if ($exp->hasData()) {
+                    $exposureMap[$code] = $exp->data;
+                }
+                $div = $this->dividendHistory($code, 1, 100);
+                if ($div->hasData()) {
+                    $dividendMap[$code] = $div->data;
+                }
+            }
+
+            $themeKeywords = $objective === 'dividend_income' ? ['红利','高股息','股息','低波'] : [];
+
+            $items = [];
+            $notRanked = [];
+            $failures = [];
+            foreach ($codes as $code) {
+                $info = $infoMap[$code] ?? null;
+                if ($info === null) {
+                    $notRanked[] = ['code' => $code, 'reason' => '资料缺失，无法评分'];
+                    $failures[] = ['code' => $code, 'tool' => 'fa_get_fund_info', 'error' => 'no_info'];
+                    continue;
+                }
+                $stats = $statsMap[$code] ?? null;
+                $rules = $rulesMap[$code] ?? null;
+                $exposure = $exposureMap[$code] ?? null;
+                $dividends = $dividendMap[$code] ?? [];
+
+                $breakdown = $this->scoreBreakdown($code, $info, $stats, $rules, $exposure, $dividends, $themeKeywords, $failures);
+                $score = 0.0;
+                $missingDims = [];
+                foreach ($weightTable as $dim => $w) {
+                    $val = $breakdown[$dim] ?? null;
+                    if ($val === null) {
+                        $score += $w * 50.0;  // null 按中性分，不再静默拉低得分
+                        $missingDims[] = $dim;
+                    } else {
+                        $score += $w * (float)$val;
+                    }
+                }
+                $score = round($score, 1);
+
+                $penalties = [];
+                if ($requireBuyable && !($rules['is_buy'] ?? false)) {
+                    $score = round($score * 0.5, 1);
+                    $penalties[] = '当前不可购买，require_buyable 已硬扣分';
+                }
+                if (($stats['coverage_level'] ?? '') === 'insufficient_history') {
+                    $penalties[] = '历史样本不足，绩效维度可信度低';
+                }
+                if (!empty($missingDims)) {
+                    $penalties[] = '缺失维度按中性分处理：' . implode('、', $missingDims);
+                }
+
+                $items[] = [
+                    'code' => $code,
+                    'name' => (string)($info['name'] ?? ''),
+                    'score' => $score,
+                    'score_breakdown' => $breakdown,
+                    'missing_dims' => $missingDims,
+                    'reasons' => $this->scoreReasons($breakdown, $exposure),
+                    'penalties' => $penalties,
+                    'evidence_refs' => array_filter([
+                        $stats !== null ? "performance_stats:{$code}" : null,
+                        $rules !== null ? "trade_rules:{$code}" : null,
+                        $exposure !== null ? "exposure:{$code}" : null,
+                        !empty($dividends) ? "dividend_history:{$code}" : null,
+                    ]),
+                ];
+            }
+
+            usort($items, function ($a, $b) {
+                return $b['score'] <=> $a['score'];
+            });
+            foreach ($items as $i => &$item) {
+                $item['rank'] = $i + 1;
+            }
+            unset($item);
+
+            $criticalDims = ['return_quality', 'risk_adjusted_return', 'drawdown_control'];
+            $missingDimCount = 0;
+            $criticalMissing = 0;
+            foreach ($items as $item) {
+                foreach ($item['score_breakdown'] as $dim => $val) {
+                    if ($val === null) {
+                        $missingDimCount++;
+                        if (in_array($dim, $criticalDims, true)) $criticalMissing++;
+                    }
+                }
+            }
+            $confidence = 'high';
+            if ($missingDimCount > 0) $confidence = 'medium';
+            if ($missingDimCount >= count($items) * 2 || $criticalMissing >= count($items)) $confidence = 'low';
+
+            return DataSourceResult::success(self::SOURCE_NAME, 'score', [
+                'objective' => $objective,
+                'horizon' => $horizon,
+                'risk_preference' => $riskPreference,
+                'weights' => $weightTable,
+                'items' => $items,
+                'not_ranked' => $notRanked,
+                'score_confidence' => $confidence,
+            ], [
+                'codes' => $codes,
+                'failures' => $failures,
+                'partial' => !empty($failures) || $confidence !== 'high',
+            ]);
+        });
+    }
+
+    private function weightTable(string $objective, string $horizon, string $riskPreference): array
+    {
+        $base = [
+            'theme_fit' => 0.14,
+            'return_quality' => 0.13,
+            'drawdown_control' => 0.14,
+            'risk_adjusted_return' => 0.10,
+            'tracking_quality' => 0.05,
+            'scale_liquidity' => 0.12,
+            'fee_efficiency' => 0.10,
+            'dividend_behavior' => 0.10,
+            'buyability' => 0.08,
+            'data_quality' => 0.04,
+        ];
+        switch ($objective) {
+            case 'long_term_stable':
+                $base['return_quality'] += 0.06; $base['drawdown_control'] += 0.04; $base['risk_adjusted_return'] += 0.04; $base['theme_fit'] -= 0.06; $base['buyability'] -= 0.04; break;
+            case 'dividend_income':
+                $base['dividend_behavior'] += 0.10; $base['theme_fit'] += 0.04; $base['risk_adjusted_return'] += 0.03; $base['drawdown_control'] += 0.02; $base['return_quality'] -= 0.08; $base['fee_efficiency'] -= 0.06; break;
+            case 'low_fee_index':
+                $base['fee_efficiency'] += 0.10; $base['scale_liquidity'] += 0.04; $base['tracking_quality'] += 0.06; $base['dividend_behavior'] -= 0.08; $base['theme_fit'] -= 0.06; break;
+            case 'low_drawdown':
+                $base['drawdown_control'] += 0.12; $base['risk_adjusted_return'] += 0.03; $base['return_quality'] -= 0.06; $base['dividend_behavior'] -= 0.06; break;
+            case 'active_alpha':
+                $base['return_quality'] += 0.08; $base['risk_adjusted_return'] += 0.06; $base['fee_efficiency'] -= 0.06; $base['scale_liquidity'] -= 0.04; $base['drawdown_control'] -= 0.02; break;
+        }
+        if ($riskPreference === 'low') { $base['drawdown_control'] += 0.04; $base['risk_adjusted_return'] += 0.02; $base['return_quality'] -= 0.04; $base['theme_fit'] -= 0.02; }
+        if ($riskPreference === 'high') { $base['return_quality'] += 0.04; $base['risk_adjusted_return'] += 0.02; $base['drawdown_control'] -= 0.04; }
+        if ($horizon === 'short') { $base['return_quality'] += 0.02; $base['drawdown_control'] -= 0.02; }
+        if ($horizon === 'long') { $base['drawdown_control'] += 0.02; $base['risk_adjusted_return'] += 0.02; $base['return_quality'] -= 0.02; $base['data_quality'] -= 0.02; }
+        // 保证非负下限
+        foreach ($base as $k => $v) { if ($v < 0.02) $base[$k] = 0.02; }
+        return $base;
+    }
+
+    private function scoreBreakdown(string $code, array $info, ?array $stats, ?array $rules, ?array $exposure, array $dividends, array $themeKeywords, array &$failures): array
+    {
+        $breakdown = [];
+
+        // theme_fit
+        $styleTags = $exposure['style_tags'] ?? [];
+        $benchmark = (string)($exposure['benchmark'] ?? $info['benchmark'] ?? '');
+        if (!empty($themeKeywords)) {
+            $hit = 0;
+            foreach ($themeKeywords as $kw) {
+                if (in_array($kw, $styleTags, true) || strpos($benchmark, $kw) !== false) $hit++;
+            }
+            $breakdown['theme_fit'] = $hit === 0 ? 40 : min(95, 55 + $hit * 15);
+        } else {
+            $breakdown['theme_fit'] = empty($styleTags) ? 55 : min(90, 55 + count($styleTags) * 8);
+        }
+
+        // return_quality
+        $returns = $stats['returns'] ?? [];
+        $retVals = [];
+        foreach (['1y_pct','3y_pct','since_sample_pct','6m_pct'] as $k) {
+            if (isset($returns[$k]) && is_numeric($returns[$k])) $retVals[] = (float)$returns[$k];
+        }
+        if (!empty($retVals)) {
+            $avg = array_sum($retVals) / count($retVals);
+            $breakdown['return_quality'] = max(5, min(100, round(50 + $avg * 2.5)));
+        } else {
+            $breakdown['return_quality'] = null;
+            $failures[] = ['code' => $code, 'tool' => 'performance_stats', 'error' => 'no_returns'];
+        }
+
+        // drawdown_control
+        $maxDd = $stats['risk']['max_drawdown_pct'] ?? null;
+        if ($maxDd !== null) {
+            $breakdown['drawdown_control'] = max(5, min(100, round(100 + $maxDd * 2)));
+        } else {
+            $breakdown['drawdown_control'] = null;
+        }
+
+        // scale_liquidity
+        $scaleYuan = $this->parseScaleYuan((string)($info['scale'] ?? ''));
+        if ($scaleYuan !== null) {
+            if ($scaleYuan >= 5e9) $s = 95;
+            elseif ($scaleYuan >= 1e9) $s = 85;
+            elseif ($scaleYuan >= 2e8) $s = 70;
+            elseif ($scaleYuan >= 5e7) $s = 55;
+            else $s = 35;
+            $breakdown['scale_liquidity'] = $s;
+        } else {
+            $breakdown['scale_liquidity'] = 50;
+        }
+
+        // fee_efficiency
+        $mgmt = $this->parseFeePercent((string)($info['management_fee'] ?? ''));
+        $cust = $this->parseFeePercent((string)($info['custody_fee'] ?? ''));
+        if ($mgmt !== null) {
+            $totalFee = $mgmt + ($cust ?? 0.0);
+            $breakdown['fee_efficiency'] = max(5, min(100, round(100 - $totalFee * 40)));
+        } else {
+            $breakdown['fee_efficiency'] = null;
+        }
+
+        // dividend_behavior
+        if (!empty($dividends)) {
+            $breakdown['dividend_behavior'] = min(95, 50 + count($dividends) * 8);
+        } else {
+            $breakdown['dividend_behavior'] = 30;
+        }
+
+        // buyability
+        $isBuy = (bool)($rules['is_buy'] ?? $info['is_buy'] ?? false);
+        $purchaseStatus = (string)($rules['purchase_status'] ?? '');
+        if ($isBuy && !preg_match('/限制|暂停/u', $purchaseStatus)) $b = 100;
+        elseif ($isBuy && preg_match('/限制/u', $purchaseStatus)) $b = 70;
+        elseif (preg_match('/暂停/u', $purchaseStatus)) $b = 20;
+        else $b = 50;
+        $breakdown['buyability'] = $b;
+
+        // risk_adjusted_return（Sharpe/Sortino 风险调整收益，区分绝对收益与风险调整后表现）
+        $riskAdj = $stats['risk_adjusted'] ?? null;
+        $sharpe = $riskAdj['sharpe'] ?? null;
+        $sortino = $riskAdj['sortino'] ?? null;
+        $metric = $sharpe ?? $sortino;
+        if ($metric !== null) {
+            if ($metric < 0) $r = 30;
+            elseif ($metric < 1) $r = 50 + $metric * 25;
+            elseif ($metric < 2) $r = 75 + ($metric - 1) * 15;
+            else $r = min(95, 90 + ($metric - 2) * 5);
+            $breakdown['risk_adjusted_return'] = max(5, min(100, round($r)));
+        } else {
+            $breakdown['risk_adjusted_return'] = null;
+            $failures[] = ['code' => $code, 'tool' => 'performance_stats', 'error' => 'no_risk_adjusted'];
+        }
+
+        // tracking_quality（跟踪误差，仅指数基金；非指数或无可用基准返回 null）
+        $te = $riskAdj['tracking_error_pct'] ?? null;
+        if ($te !== null) {
+            if ($te < 2) $t = 95;
+            elseif ($te < 5) $t = 90 - ($te - 2) * 5;
+            elseif ($te < 10) $t = 75 - ($te - 5) * 5;
+            else $t = max(40, 50 - ($te - 10) * 3);
+            $breakdown['tracking_quality'] = max(5, min(100, round($t)));
+        } else {
+            $breakdown['tracking_quality'] = null;
+        }
+
+        // data_quality
+        $coverage = 100;
+        if ($stats === null) $coverage -= 25;
+        elseif (($stats['coverage_level'] ?? '') === 'insufficient_history') $coverage -= 15;
+        if ($rules === null) $coverage -= 15;
+        if ($exposure === null) $coverage -= 15;
+        if (empty($dividends)) $coverage -= 5;
+        if ($stats !== null && ($stats['risk_adjusted']['sharpe'] ?? null) === null) $coverage -= 5;
+        $breakdown['data_quality'] = max(10, $coverage);
+
+        return $breakdown;
+    }
+
+    private function scoreReasons(array $breakdown, ?array $exposure): array
+    {
+        $reasons = [];
+        arsort($breakdown);
+        $labels = [
+            'theme_fit' => '主题契合度',
+            'return_quality' => '收益质量',
+            'drawdown_control' => '回撤控制',
+            'risk_adjusted_return' => '风险调整收益',
+            'tracking_quality' => '指数跟踪质量',
+            'scale_liquidity' => '规模流动性',
+            'fee_efficiency' => '费率效率',
+            'dividend_behavior' => '分红表现',
+            'buyability' => '可投性',
+            'data_quality' => '数据质量',
+        ];
+        $top = array_slice(array_keys($breakdown), 0, 3);
+        foreach ($top as $dim) {
+            $val = $breakdown[$dim];
+            if ($val !== null && $val >= 70) {
+                $reasons[] = ($labels[$dim] ?? $dim) . '较强';
+            }
+        }
+        if (!empty($exposure['style_tags'])) {
+            $reasons[] = '风格标签：' . implode('、', array_slice($exposure['style_tags'], 0, 4));
+        }
+        if (empty($reasons)) {
+            $reasons[] = '综合评分依据多维证据';
+        }
+        return $reasons;
+    }
+
+    // ── 缓存层 (Phase 2 重构) ──
+
+    /**
      * 统一缓存入口：防击穿 + negative cache + stale-while-revalidate
      */
     private function useCache(string $action, string $key, callable $fetcher): DataSourceResult
@@ -764,6 +2325,12 @@ class FundService
 
     private function fetchFundDetail(string $code): ?array
     {
+        $cacheKey = $this->cacheKey('detail', $code);
+        $cached = $this->cache->get($cacheKey);
+        if ($cached !== null && isset($cached['detail'])) {
+            return $cached['detail'];
+        }
+
         foreach (['FundMNDetailInformation', 'FundMNNBasicInformation'] as $api) {
             $url = "https://fundmobapi.eastmoney.com/FundMNewApi/{$api}?" . http_build_query(array_merge([
                 'FCODE' => $code,
@@ -780,7 +2347,9 @@ class FundService
                 continue;
             }
 
-            return $this->normalizeFundInfoItem($parsed['data']['Datas']);
+            $detail = $this->normalizeFundInfoItem($parsed['data']['Datas']);
+            $this->cache->set($cacheKey, ['detail' => $detail], $this->cacheTtl['detail'] ?? 3600);
+            return $detail;
         }
 
         return null;
@@ -836,6 +2405,111 @@ class FundService
             'Referer'    => 'https://fund.eastmoney.com/',
             'Accept'     => 'application/json,text/plain,*/*',
         ];
+    }
+
+    private function buildRankUrl(string $typeKey, string $sortKey, int $page, int $pageSize, string $startDate, string $endDate): string
+    {
+        return 'https://fund.eastmoney.com/data/rankhandler.aspx?' . http_build_query([
+            'op' => 'ph',
+            'dt' => 'kf',
+            'ft' => $typeKey,
+            'rs' => '',
+            'gs' => '0',
+            'sc' => $sortKey,
+            'st' => 'desc',
+            'sd' => $startDate,
+            'ed' => $endDate,
+            'qdii' => '',
+            'tabSubtype' => ',,,,,',
+            'pi' => $page,
+            'pn' => $pageSize,
+            'dx' => '1',
+            'v' => sprintf('%.6f', microtime(true)),
+        ]);
+    }
+
+    private function buildSearchUrl(string $keyword): string
+    {
+        return "https://fundsuggest.eastmoney.com/FundSearch/api/FundSearchAPI.ashx?m=9&key=" . urlencode($keyword);
+    }
+
+    private function parseSearchResponse(string $body): ?array
+    {
+        $parsed = HttpClient::parseJson($body);
+        if (!$parsed['ok'] || !isset($parsed['data']['Datas'])) {
+            return null;
+        }
+        $results = [];
+        foreach ($parsed['data']['Datas'] as $item) {
+            $results[] = [
+                'code'         => $item['CODE'] ?? '',
+                'name'         => $item['NAME'] ?? '',
+                'pinyin'       => $item['JP'] ?? '',
+                'category'     => $item['CATEGORY'] ?? '',
+                'type'         => $item['FTYPE'] ?? '',
+                'nav'          => $item['DWJZ'] ?? '',
+                'nav_date'     => $item['FSRQ'] ?? '',
+                'min_purchase' => $item['MINSG'] ?? '',
+                'company'      => $item['JJGS'] ?? '',
+                'manager'      => $item['JJJL'] ?? '',
+                'is_buy'       => ($item['ISBUY'] ?? '0') === '1',
+            ];
+        }
+        return ['items' => $results, 'meta' => ['total' => count($results)]];
+    }
+
+    /**
+     * 缓存感知的批量并发抓取：先查缓存，未命中用 curl_multi 并发拉取并回写缓存。
+     * 用于 screenFunds 的多关键词搜索 + 多排行样本并行化。
+     *
+     * @param array    $jobs   [['cache_key'=>string,'url'=>string,'headers'=>array,'tag'=>mixed,'parser'=>callable,'ttl_key'=>string], ...]
+     * @param int      $maxParallel
+     * @return array ['results'=>[tag=>['items'=>array,'meta'=>array]], 'failures'=>[...], 'cached'=>int, 'fetched'=>int]
+     */
+    private function batchFetch(array $jobs, int $maxParallel): array
+    {
+        $results = [];
+        $failures = [];
+        $toFetch = [];
+        $cached = 0;
+        foreach ($jobs as $job) {
+            $data = $this->cache->get($job['cache_key']);
+            if ($data !== null && ($data['success'] ?? false) && isset($data['data'])) {
+                $results[$job['tag']] = ['items' => $data['data'], 'meta' => $data['meta'] ?? []];
+                $cached++;
+            } else {
+                $toFetch[] = $job;
+            }
+        }
+
+        if (!empty($toFetch)) {
+            $reqs = [];
+            foreach ($toFetch as $i => $job) {
+                $reqs[] = ['key' => 'j' . $i, 'url' => $job['url'], 'headers' => $job['headers'] ?? []];
+            }
+            $responses = $this->http->multiGet($reqs, $maxParallel);
+            foreach ($toFetch as $i => $job) {
+                $resp = $responses['j' . $i] ?? null;
+                $body = $resp['body'] ?? '';
+                $parsed = ($resp !== null && !$resp['error'] && $resp['http_code'] === 200 && $body !== '')
+                    ? $job['parser']($body) : null;
+                if ($parsed === null) {
+                    $failures[] = ['tag' => $job['tag'], 'error' => (string)($resp['error'] ?? '') ?: 'HTTP ' . ($resp['http_code'] ?? 0)];
+                    continue;
+                }
+                $this->cache->set($job['cache_key'], [
+                    'success' => true,
+                    'source' => self::SOURCE_NAME,
+                    'action' => $job['action'] ?? 'batch',
+                    'result_action' => $job['action'] ?? 'batch',
+                    'data' => $parsed['items'],
+                    'meta' => $parsed['meta'] ?? [],
+                ], $this->cacheTtl[$job['ttl_key'] ?? 'history'] ?? 300);
+                $results[$job['tag']] = $parsed;
+            }
+        }
+
+        return ['results' => $results, 'failures' => $failures, 'cached' => $cached, 'fetched' => count($toFetch)];
     }
 
     private function parseRankResponse(string $body, string $selectedPeriod): ?array

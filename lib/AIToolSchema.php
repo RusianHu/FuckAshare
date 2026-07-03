@@ -61,4 +61,31 @@ class AIToolSchema
             'description' => $description,
         ];
     }
+
+    public static function nullableBoolean(string $description): array
+    {
+        return ['type' => ['boolean', 'null'], 'description' => $description];
+    }
+
+    public static function nullableNumber(string $description, ?float $min = null, ?float $max = null): array
+    {
+        $schema = ['type' => ['number', 'null'], 'description' => $description];
+        if ($min !== null) $schema['minimum'] = $min;
+        if ($max !== null) $schema['maximum'] = $max;
+        return $schema;
+    }
+
+    /**
+     * 可空数组 schema。items 必须是已构造好的 schema 片段（对象用 strictObject）。
+     */
+    public static function nullableArray(array $items, string $description, int $minItems = 0, int $maxItems = 100): array
+    {
+        return [
+            'type' => ['array', 'null'],
+            'items' => $items,
+            'minItems' => $minItems,
+            'maxItems' => $maxItems,
+            'description' => $description,
+        ];
+    }
 }

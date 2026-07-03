@@ -12,6 +12,7 @@ class AIFinanceToolCatalog
         return array_merge(
             self::stockMarketTools(),
             self::fundTools(),
+            self::fundResearchTools(),
             self::researchTools()
         );
     }
@@ -176,6 +177,108 @@ class AIFinanceToolCatalog
                     'doc_type' => AIToolSchema::nullableEnum(['all', 'periodic_report', 'prospectus', 'contract', 'dividend', 'other'], 'Document type filter. Default all.'),
                     'include_content' => ['type' => ['boolean', 'null'], 'description' => 'Whether to extract announcement/PDF text. Default false.'],
                     'content_limit' => AIToolSchema::nullableInteger('Maximum extracted text chars per document. Default 6000, max 20000.', 1000, 20000),
+                ]
+            ),
+        ];
+    }
+
+    public static function fundResearchTools(): array
+    {
+        $fundCode = self::fundCodeSchema();
+        $fundCodesArray = ['type' => 'array', 'items' => $fundCode, 'minItems' => 1, 'maxItems' => 20, 'description' => 'Fund codes.'];
+        $weightItem = AIToolSchema::strictObject([
+            'key' => ['type' => 'string', 'description' => 'Score dimension key, e.g. theme_fit, return_quality, drawdown_control, scale_liquidity, fee_efficiency, dividend_behavior, buyability, data_quality.'],
+            'value' => ['type' => 'number', 'description' => 'Weight value; normalized server-side.'],
+        ]);
+
+        return [
+            'fa_screen_funds' => AIToolSchema::tool(
+                'fa_screen_funds',
+                'Search and screen fund candidates by theme, aliases, fund type, purchase status, scale and ranking evidence. Use this for fund screening/recommendation tasks instead of repeatedly calling fa_search_funds with single keywords.',
+                [
+                    'theme' => ['type' => ['string', 'null'], 'description' => 'Theme key, e.g. dividend, low_volatility, broad_index, bond, qdii. Default null.'],
+                    'keywords' => AIToolSchema::nullableArray(['type' => 'string'], 'Search keywords or aliases. For dividend theme use 红利, 高股息, 股息, 红利低波, 央企红利, 标普红利.', 0, 12),
+                    'fund_types' => AIToolSchema::nullableArray(
+                        ['type' => 'string', 'enum' => ['all', 'stock', 'mixed', 'bond', 'index', 'qdii', 'fof']],
+                        'Fund ranking categories to inspect. Default inferred from theme.',
+                        0, 7
+                    ),
+                    'periods' => AIToolSchema::nullableArray(
+                        ['type' => 'string', 'enum' => ['month', 'quarter', 'half_year', 'year', 'two_year', 'three_year', 'this_year', 'since']],
+                        'Ranking periods used as supporting evidence. Default year, half_year, this_year.',
+                        0, 8
+                    ),
+                    'page_size' => AIToolSchema::nullableInteger('Ranking/search sample size per source. Default 50.', 10, 100),
+                    'max_candidates' => AIToolSchema::nullableInteger('Maximum deduplicated candidates returned. Default 20.', 3, 50),
+                    'min_scale_yuan' => AIToolSchema::nullableNumber('Optional minimum fund scale in yuan.', 0, null),
+                    'include_unbuyable' => AIToolSchema::nullableBoolean('Whether to include funds that are not currently buyable or unknown. Default true.'),
+                ]
+            ),
+            'fa_get_fund_performance_stats' => AIToolSchema::tool(
+                'fa_get_fund_performance_stats',
+                'Fetch paginated NAV history and calculate deterministic performance statistics (returns, drawdown, volatility, win rate, extremes) for one or more funds. Prefer this over raw fa_get_fund_history when assessing historical performance, drawdown or volatility.',
+                [
+                    'codes' => $fundCodesArray,
+                    'target_days' => AIToolSchema::nullableInteger('Target trading-day rows. Default 500.', 20, 1500),
+                    'periods' => AIToolSchema::nullableArray(
+                        ['type' => 'string', 'enum' => ['1m', '3m', '6m', '1y', '2y', '3y', 'since_sample']],
+                        'Periods to summarize. Default 1m,3m,6m,1y,3y,since_sample.',
+                        0, 7
+                    ),
+                    'use_acc_nav' => AIToolSchema::nullableBoolean('Use accumulated NAV when available, better for dividend-adjusted return. Default true.'),
+                    'include_recent_rows' => AIToolSchema::nullableInteger('Include latest raw NAV rows for model inspection. Default 10.', 0, 60),
+                ]
+            ),
+            'fa_score_funds' => AIToolSchema::tool(
+                'fa_score_funds',
+                'Deterministically score and rank provided fund candidates using profile, performance stats, trade rules, dividend and style evidence. Must be called before giving fund recommendations to ensure reproducible ranking.',
+                [
+                    'codes' => $fundCodesArray,
+                    'objective' => AIToolSchema::nullableEnum(['balanced', 'long_term_stable', 'low_fee_index', 'dividend_income', 'active_alpha', 'low_drawdown'], 'Ranking objective. Default balanced.'),
+                    'horizon' => AIToolSchema::nullableEnum(['short', 'medium', 'long'], 'Investment horizon for scoring weights. Default long.'),
+                    'risk_preference' => AIToolSchema::nullableEnum(['low', 'medium', 'high'], 'Risk preference. Default medium.'),
+                    'weights' => AIToolSchema::nullableArray($weightItem, 'Optional score weights as key/value pairs. Values are normalized server-side.', 0, 8),
+                    'require_buyable' => AIToolSchema::nullableBoolean('Whether unbuyable funds should receive a hard penalty. Default false.'),
+                ]
+            ),
+            'fa_get_fund_trade_rules' => AIToolSchema::tool(
+                'fa_get_fund_trade_rules',
+                'Get fund purchase, redeem, limit, fee and availability rules. Use this to confirm buyability, limits and fees before recommending a fund.',
+                [
+                    'codes' => $fundCodesArray,
+                    'include_fee_detail' => AIToolSchema::nullableBoolean('Whether to include fee fields if available. Default true.'),
+                    'include_platform_status' => AIToolSchema::nullableBoolean('Whether to include buy/redeem status from available Eastmoney fields. Default true.'),
+                ]
+            ),
+            'fa_get_fund_holdings_or_index_exposure' => AIToolSchema::tool(
+                'fa_get_fund_holdings_or_index_exposure',
+                'Get holdings, sector exposure, benchmark/index exposure and style/factor tags for a fund when available. Use this to deepen style profiling beyond fa_get_index_profile.',
+                [
+                    'code' => $fundCode,
+                    'prefer' => AIToolSchema::nullableEnum(['auto', 'holdings', 'index', 'documents'], 'Preferred exposure source. Default auto.'),
+                    'include_top_holdings' => AIToolSchema::nullableBoolean('Whether to include top holdings. Default true.'),
+                    'include_industry' => AIToolSchema::nullableBoolean('Whether to include industry/sector exposure if available. Default true.'),
+                    'include_document_evidence' => AIToolSchema::nullableBoolean('Whether to inspect latest report/prospectus text snippets. Default false.'),
+                    'content_limit' => AIToolSchema::nullableInteger('Document text limit when include_document_evidence=true. Default 6000.', 1000, 20000),
+                ]
+            ),
+            'fa_get_fund_holdings' => AIToolSchema::tool(
+                'fa_get_fund_holdings',
+                'Get real top stock holdings and industry exposure for a fund from the latest fund report. Use this when fa_get_fund_holdings_or_index_exposure returns empty holdings, or when fresher detailed real holdings and industry weights are needed for style analysis.',
+                [
+                    'code' => $fundCode,
+                    'topline' => AIToolSchema::nullableInteger('Top holdings count. Default 10, max 50.', 1, 50),
+                    'include_industry' => AIToolSchema::nullableBoolean('Whether to include industry exposure. Default true.'),
+                ]
+            ),
+            'fa_research_state_summary' => AIToolSchema::tool(
+                'fa_research_state_summary',
+                'Summarize the current tool-run research state for audit, follow-up and final answer grounding. Call this before the final answer when the research involved multiple tools or had failures.',
+                [
+                    'asset_type' => AIToolSchema::nullableEnum(['fund', 'stock', 'mixed'], 'Research asset type. Default fund when fund tools were used.'),
+                    'focus' => AIToolSchema::nullableString('Short topic label, e.g. 红利型基金筛选.'),
+                    'include_failures' => AIToolSchema::nullableBoolean('Whether to include failed tool calls. Default true.'),
+                    'include_next_steps' => AIToolSchema::nullableBoolean('Whether to include recommended missing follow-up tools. Default true.'),
                 ]
             ),
         ];
