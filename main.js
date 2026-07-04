@@ -3301,12 +3301,19 @@ const AIModule = {
             const decoder = new TextDecoder('utf-8');
             let botDiv = null;
             let reasoningDiv = null;
+            let reasoningRound = null;
+            let currentReasoning = '';
             const ensureBotDiv = () => {
                 if (!botDiv) botDiv = this.appendMessage('', '', 'bot-message', targetContainer);
                 return botDiv;
             };
             const ensureReasoningDiv = () => {
-                if (!reasoningDiv) reasoningDiv = this._appendReasoningBubble(targetContainer);
+                const roundKey = diagnostics.lastRound ?? 'unknown';
+                if (!reasoningDiv || reasoningRound !== roundKey) {
+                    reasoningDiv = this._appendReasoningBubble(targetContainer, { round: roundKey });
+                    reasoningRound = roundKey;
+                    currentReasoning = '';
+                }
                 return reasoningDiv;
             };
             let fullResponse = '';
@@ -3404,7 +3411,9 @@ const AIModule = {
                                 const reasoningDelta = this._extractReasoningDelta(delta);
                                 if (reasoningDelta) {
                                     fullReasoning += reasoningDelta;
-                                    this._updateReasoning(ensureReasoningDiv(), fullReasoning);
+                                    const targetReasoningDiv = ensureReasoningDiv();
+                                    currentReasoning += reasoningDelta;
+                                    this._updateReasoning(targetReasoningDiv, currentReasoning);
                                 }
                                 // 正式回复内容
                                 if (delta.content) {
@@ -3469,7 +3478,9 @@ const AIModule = {
                                         const reasoningDelta = this._extractReasoningDelta(delta);
                                         if (reasoningDelta) {
                                             fullReasoning += reasoningDelta;
-                                            this._updateReasoning(ensureReasoningDiv(), fullReasoning);
+                                            const targetReasoningDiv = ensureReasoningDiv();
+                                            currentReasoning += reasoningDelta;
+                                            this._updateReasoning(targetReasoningDiv, currentReasoning);
                                         }
                                         if (delta.content) {
                                             fullResponse += delta.content;
@@ -3499,8 +3510,8 @@ const AIModule = {
             if (typeof AdvisorModule !== 'undefined') AdvisorModule.setThinking(false);
 
             // 如果有推理内容，渲染为 Markdown
-            if (fullReasoning) {
-                this._renderReasoningMarkdown(ensureReasoningDiv(), fullReasoning);
+            if (reasoningDiv && currentReasoning) {
+                this._renderReasoningMarkdown(reasoningDiv, currentReasoning);
             }
 
             // 将最终回复记入消息历史（仅记录正式内容，不含推理过程）

@@ -1806,7 +1806,9 @@ class FundService
 
             // 2. 绩效统计
             $statsMap = [];
-            $statsRes = $this->performanceStats($codes, (int)($this->researchConfig['target_history_days'] ?? 500), ['1m','3m','6m','1y','2y','3y','since_sample'], true, 0);
+            // Keep this aligned with the common deep-dive call so fa_score_funds can reuse
+            // the cached performance_stats result instead of re-fetching long history.
+            $statsRes = $this->performanceStats($codes, (int)($this->researchConfig['target_history_days'] ?? 500), ['1m','3m','6m','1y','3y','since_sample'], true, 10);
             if ($statsRes->hasData()) {
                 foreach ($statsRes->data as $stat) {
                     $statsMap[(string)($stat['code'] ?? '')] = $stat;
