@@ -11,7 +11,9 @@ const Icons = {
     table: '<span class="ui-icon" aria-hidden="true"><svg><use href="#icon-table"></use></svg></span>',
     flow: '<span class="ui-icon" aria-hidden="true"><svg><use href="#icon-flow"></use></svg></span>',
     hot: '<span class="ui-icon" aria-hidden="true"><svg><use href="#icon-hot"></use></svg></span>',
-    warning: '<span class="ui-icon" aria-hidden="true"><svg><use href="#icon-warning"></use></svg></span>'
+    warning: '<span class="ui-icon" aria-hidden="true"><svg><use href="#icon-warning"></use></svg></span>',
+    layers: '<span class="ui-icon" aria-hidden="true"><svg><use href="#icon-layers"></use></svg></span>',
+    settings: '<span class="ui-icon" aria-hidden="true"><svg><use href="#icon-settings"></use></svg></span>'
 };
 
 function escapeHTML(value) {
@@ -2451,7 +2453,7 @@ const AdvisorModule = {
     /** 根据当前页面模块推导顾问资产上下文，避免基金页串用股票代码 */
     resolvePageContext() {
         const tab = this.getActiveTabName();
-        const tabNames = { stock: '股票行情', realtime: '实时看板', sector: '板块资金', fund: '基金分析', ai: 'AI顾问' };
+        const tabNames = { stock: '股票行情', realtime: '实时看板', strategy: '策略池', sector: '板块资金', fund: '基金分析', ai: 'AI顾问' };
         const result = {
             tab,
             tabLabel: tabNames[tab] || tab,
@@ -3800,6 +3802,8 @@ const XueqiuModule = {
     }
 };
 
+// StrategyModule 已迁移到 strategy_pool.js，主脚本只负责初始化。
+
 function switchTab(tabName) {
     let activeTab = null;
     document.querySelectorAll('.nav-tab').forEach(t => {
@@ -4332,6 +4336,11 @@ document.addEventListener('DOMContentLoaded', function() {
     // === 板块资金 ===
     document.getElementById('sector-query-btn')?.addEventListener('click', () => SectorModule.query());
 
+    // === 策略池 ===
+    if (window.StrategyModule && typeof window.StrategyModule.init === 'function') {
+        window.StrategyModule.init();
+    }
+
     // === 雪球洞察 ===
     document.getElementById('xq-hot-query-btn')?.addEventListener('click', () => {
         const type = document.getElementById('xq-hot-type')?.value || '10';
@@ -4377,3 +4386,4 @@ document.addEventListener('DOMContentLoaded', function() {
         stockForm.dispatchEvent(new Event('submit'));
     }
 });
+

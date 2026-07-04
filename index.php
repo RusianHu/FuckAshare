@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>FuckAshare - A股智能分析平台</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
     <!-- Microsoft Clarity 站长统计 -->
     <script type="text/javascript">
         (function(c,l,a,r,i,t,y){
@@ -63,6 +64,8 @@
             <symbol id="icon-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></symbol>
             <symbol id="icon-warning" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" x2="12" y1="9" y2="13"/><circle cx="12" cy="17" r=".5"/></symbol>
             <symbol id="icon-expand" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 3 6 6M9 21 3 15M21 3l-7 7M3 21l7-7"/></symbol>
+            <symbol id="icon-layers" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 2 9 5-9 5-9-5 9-5z"/><path d="m3 12 9 5 9-5"/><path d="m3 17 9 5 9-5"/></symbol>
+            <symbol id="icon-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.51a2 2 0 0 1 1-1.72l.15-.1a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></symbol>
         </defs>
     </svg>
 
@@ -79,6 +82,7 @@
         <div class="nav-tabs">
             <button class="nav-tab active" data-tab="stock">行情工作台</button>
             <button class="nav-tab" data-tab="realtime">实时看板</button>
+            <button class="nav-tab" data-tab="strategy">策略池</button>
             <button class="nav-tab" data-tab="sector">资金与板块</button>
             <button class="nav-tab" data-tab="xueqiu">雪球洞察</button>
             <button class="nav-tab" data-tab="fund">基金分析</button>
@@ -259,6 +263,103 @@
                     </div>
                     <div class="realtime-grid" id="realtime-grid">
                         <p class="placeholder-text">点击"添加"按钮输入股票代码，或从自选股添加</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 策略池页 -->
+        <div class="tab-panel" id="panel-strategy">
+            <div class="strategy-layout">
+                <div class="card strategy-workbench-card">
+                    <div class="card-header strategy-header">
+                        <div>
+                            <h3><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-layers"></use></svg></span> 策略池</h3>
+                            <p class="strategy-subtitle">迁移自 TickFlow 策略池 · 东方财富实时候选池 + 日 K 指标精算</p>
+                        </div>
+                        <div class="strategy-controls">
+                            <button id="strategy-show-all-btn" class="btn-sm" title="显示策略池全部命中"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-table"></use></svg></span> 全部命中</button>
+                            <label class="strategy-control-field">
+                                <span>候选数</span>
+                                <select id="strategy-candidate-limit">
+                                    <option value="50">50</option>
+                                    <option value="80" selected>80</option>
+                                    <option value="120">120</option>
+                                    <option value="160">160</option>
+                                </select>
+                            </label>
+                            <button id="strategy-run-all-btn" class="btn-sm btn-accent"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-refresh"></use></svg></span> 运行策略池</button>
+                            <button id="strategy-pool-btn" class="btn-sm"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-layers"></use></svg></span> 管理策略池 <span id="strategy-pool-count" class="strategy-count-pill">0/0</span></button>
+                        </div>
+                    </div>
+                    <div id="strategy-status" class="strategy-status">
+                        <span>加载策略列表中...</span>
+                    </div>
+                    <div id="strategy-cards" class="strategy-cards"></div>
+                    <div id="strategy-loading" style="display:none;" class="loading-spinner"><div class="spinner"></div><span>正在拉取行情并运行策略...</span></div>
+                    <div id="strategy-error" class="error-msg" style="display:none;"></div>
+                    <div id="strategy-result-empty" class="strategy-empty">
+                        <span class="ui-icon" aria-hidden="true"><svg><use href="#icon-search"></use></svg></span>
+                        <p>点击策略卡片查看单策略命中，或运行策略池查看全部命中。</p>
+                    </div>
+                    <div id="strategy-result" class="strategy-result" style="display:none;">
+                        <div class="strategy-result-head">
+                            <div>
+                                <h3 id="strategy-result-title">策略命中</h3>
+                                <p id="strategy-result-meta"></p>
+                            </div>
+                            <div class="strategy-result-actions">
+                                <button id="strategy-result-ai-btn" class="btn-sm btn-ai"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-ai"></use></svg></span> 交给AI复盘</button>
+                            </div>
+                        </div>
+                        <div class="strategy-table-wrapper">
+                            <table id="strategy-table">
+                                <thead>
+                                    <tr>
+                                        <th>代码</th>
+                                        <th>名称</th>
+                                        <th>价格</th>
+                                        <th>涨跌幅</th>
+                                        <th>换手率</th>
+                                        <th>量比</th>
+                                        <th>成交额</th>
+                                        <th>评分</th>
+                                        <th>所属策略</th>
+                                        <th>操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="strategy-table-data"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="strategy-pool-modal" class="strategy-modal" style="display:none;">
+                <div class="strategy-modal-dialog">
+                    <div class="strategy-modal-header">
+                        <h3>策略池 <span id="strategy-modal-count">0 / 0</span></h3>
+                        <button id="strategy-modal-close" class="modal-close-btn" aria-label="关闭"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-close"></use></svg></span></button>
+                    </div>
+                    <div class="strategy-modal-body">
+                        <div class="strategy-modal-column">
+                            <div class="strategy-modal-tabs">
+                                <button class="strategy-source-tab active" data-source="all">全部</button>
+                                <button class="strategy-source-tab" data-source="builtin">内置</button>
+                            </div>
+                            <div id="strategy-available-list" class="strategy-list"></div>
+                        </div>
+                        <div class="strategy-modal-column">
+                            <div class="strategy-selected-title"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-layers"></use></svg></span> 已选 · 拖动右侧手柄排序</div>
+                            <div id="strategy-selected-list" class="strategy-list strategy-selected-list"></div>
+                        </div>
+                    </div>
+                    <div class="strategy-modal-footer">
+                        <span>仅策略池中的策略会参与批量运行。</span>
+                        <div>
+                            <button id="strategy-modal-cancel" class="btn-sm">取消</button>
+                            <button id="strategy-modal-save" class="btn-sm btn-accent">确定</button>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -655,6 +756,7 @@
         <p>by <a href="https://yanshanlaosiji.top" target="_blank">雁山老司机</a> · <span class="ui-icon" aria-hidden="true"><svg><use href="#icon-warning"></use></svg></span> 仅供娱乐研究，不构成投资建议</p>
     </footer>
 
+    <script src="strategy_pool.js"></script>
     <script src="main.js"></script>
 </body>
 </html>
