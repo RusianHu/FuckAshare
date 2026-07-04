@@ -34,10 +34,20 @@ class AIToolRuntime
             && !empty($this->options['internal_exec_token'])
             && count($toolCalls) > 0
             && function_exists('curl_multi_init')) {
+            $stateSnapshot = [
+                'toolCalls' => $state->toolCalls,
+                'seenCalls' => $state->seenCalls,
+                'researchState' => $state->researchState,
+                'stopReason' => $state->stopReason,
+            ];
             $parallel = $this->executeToolCallsParallel($toolCalls, $state, $emit, $round, $origin);
             if ($parallel !== null) {
                 return $parallel;
             }
+            $state->toolCalls = $stateSnapshot['toolCalls'];
+            $state->seenCalls = $stateSnapshot['seenCalls'];
+            $state->researchState = $stateSnapshot['researchState'];
+            $state->stopReason = $stateSnapshot['stopReason'];
             // 内部执行失败，降级串行
             $this->stream->agentEvent($emit, 'agent_status', [
                 'run_id' => $state->runId,
