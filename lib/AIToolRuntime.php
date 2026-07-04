@@ -248,6 +248,7 @@ class AIToolRuntime
                 return null;
             }
             $handles = [];
+            $dispatchFailures = [];
             $timeout = (int)($this->options['tool_timeout'] ?? 45);
             foreach ($dispatchIndices as $idx) {
                 $p = $plan[$idx];
@@ -310,6 +311,11 @@ class AIToolRuntime
 
                 if ($errno !== 0 || $httpCode !== 200 || $body === false || $body === '') {
                     $errText = function_exists('curl_strerror') ? (string)curl_strerror($errno) : '';
+                    $dispatchFailures[] = [
+                        'errno' => $errno,
+                        'http_code' => $httpCode,
+                        'message' => $errText,
+                    ];
                     $plan[$idx]['result'] = json_encode([
                         'success' => false, 'source' => 'ai_tool', 'action' => $plan[$idx]['name'],
                         'code' => 'parallel_dispatch_failed',
@@ -330,6 +336,21 @@ class AIToolRuntime
                 }
             }
             curl_multi_close($mh);
+
+            if (!empty($dispatchFailures) && count($dispatchFailures) === count($dispatchIndices)) {
+                $shouldFallbackSerial = false;
+                foreach ($dispatchFailures as $failure) {
+                    $httpCode = (int)($failure['http_code'] ?? 0);
+                    $errno = (int)($failure['errno'] ?? 0);
+                    if ($errno !== 0 || in_array($httpCode, [301, 302, 307, 308, 403, 404, 405, 500, 502, 503, 504], true)) {
+                        $shouldFallbackSerial = true;
+                        break;
+                    }
+                }
+                if ($shouldFallbackSerial) {
+                    return null;
+                }
+            }
         }
 
         // 4. 按原顺序回填 messages + 发 tool_call_finished + recordResearchState

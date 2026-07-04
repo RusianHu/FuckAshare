@@ -199,6 +199,7 @@ return [
             'parallel_tool_calls' => true,      // 允许模型一次请求多个工具；配置 internal_exec_token+endpoint 后服务端用 curl_multi 内部执行，否则串行
             'internal_exec_token' => '',        // 内部工具执行鉴权 token；生产环境建议填 32+ 位随机字符串，留空会退回串行阻塞
             'internal_exec_endpoint' => '',     // 内部工具执行端点 URL；留空时 ai_api.php 自动推导本机 /ai_tool_exec.php
+            'internal_exec_host' => '',         // 可选：仅本机 127.0.0.1 请求必须指定 vhost 时填写；错误填写可能触发 HTTP->HTTPS 301
             'expose_tool_trace' => true,        // 向前端发送 tool_status SSE 事件用于展示进度
             'emit_agent_events' => true,        // 发送 run_started/tool_call_finished/run_finished 等结构化智能体事件
             'suppress_reasoning_content' => false, // 默认向前端透传上游 reasoning_content 推理流；设为 true 可隐藏
