@@ -983,12 +983,18 @@ class AIChatToolAgent
 
     private function stripPseudoToolMarkup(string $content): string
     {
-        if ($content === '' || strpos($content, '<function=') === false) {
+        if ($content === '' || (
+            strpos($content, '<function=') === false
+            && strpos($content, '<tool_call') === false
+            && strpos($content, '<parameter=') === false
+        )) {
             return $content;
         }
 
-        $content = preg_replace('/<function=[^>]*>.*?(?:<\/function>|\n\s*\n|$)/su', '', $content);
+        $content = preg_replace('/<tool_call\b[^>]*>\s*<function=[^>]*>.*?<\/function>\s*<\/tool_call>/su', '', $content);
+        $content = preg_replace('/<function=[^>]*>.*?(?:<\/function>|\n\s*\n|$)/su', '', (string)$content);
         $content = preg_replace('/<\/?parameter(?:=[^>]*)?>[^\n]*/u', '', (string)$content);
+        $content = preg_replace('/<\/?tool_call\b[^>]*>/u', '', (string)$content);
         return trim((string)$content);
     }
 
@@ -1011,14 +1017,80 @@ class AIChatToolAgent
             ]];
         }
 
-        return [];
+        return $this->extractPseudoToolCalls((string)($assistant['content'] ?? ''));
+    }
+
+    private function extractPseudoToolCalls(string $content): array
+    {
+        if ($content === '' || strpos($content, '<function=') === false) {
+            return [];
+        }
+
+        preg_match_all('/<function=([A-Za-z0-9_:-]+)\s*>(.*?)<\/function>/su', $content, $matches, PREG_SET_ORDER);
+        $toolCalls = [];
+        foreach ($matches as $match) {
+            $name = (string)($match[1] ?? '');
+            if ($name === '' || !AIToolRegistry::has($name)) {
+                continue;
+            }
+            $args = $this->parsePseudoToolArguments((string)($match[2] ?? ''));
+            $toolCalls[] = [
+                'id' => uniqid('pseudo_call_', true),
+                'type' => 'function',
+                'function' => [
+                    'name' => $name,
+                    'arguments' => json_encode($args, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                ],
+            ];
+        }
+        return $toolCalls;
+    }
+
+    private function parsePseudoToolArguments(string $body): array
+    {
+        preg_match_all('/<parameter=([A-Za-z0-9_:-]+)\s*>(.*?)<\/parameter>/su', $body, $matches, PREG_SET_ORDER);
+        if (empty($matches)) {
+            $decoded = json_decode(trim($body), true);
+            return is_array($decoded) ? $decoded : [];
+        }
+
+        $args = [];
+        foreach ($matches as $match) {
+            $key = (string)($match[1] ?? '');
+            if ($key === '') {
+                continue;
+            }
+            $args[$key] = $this->decodePseudoToolArgument((string)($match[2] ?? ''));
+        }
+        return $args;
+    }
+
+    private function decodePseudoToolArgument(string $value)
+    {
+        $value = trim(html_entity_decode($value, ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+        if (strcasecmp($value, 'true') === 0) return true;
+        if (strcasecmp($value, 'false') === 0) return false;
+        if (strcasecmp($value, 'null') === 0) return null;
+
+        $decoded = json_decode($value, true);
+        if (json_last_error() === JSON_ERROR_NONE) {
+            return $decoded;
+        }
+        return $value;
     }
 
     private function compactAssistantMessage(array $assistant, ?array $toolCalls = null): array
     {
+        $content = $assistant['content'] ?? null;
+        if ($toolCalls !== null && is_string($content)) {
+            $content = $this->stripPseudoToolMarkup($content);
+            if ($content === '') {
+                $content = null;
+            }
+        }
         $message = [
             'role' => 'assistant',
-            'content' => $assistant['content'] ?? null,
+            'content' => $content,
         ];
         if ($toolCalls !== null) {
             $message['tool_calls'] = $toolCalls;

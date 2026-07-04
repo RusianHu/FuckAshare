@@ -61,7 +61,7 @@ return [
         'global_window'  => 60,     //    预期：全局限流窗口（秒）（SecurityAudit::GLOBAL_RATE_WINDOW=60）
 
         // ✅ 已生效：仅 ai_api.php 读取这两项，用于 AI SSE 接口的独立限流。
-        //    读取位置：ai_api.php 第 16~17 行 AppConfig::get('rate_limit', [])。
+        //    读取位置：ai_api.php 第 13 行 AppConfig::get('rate_limit', [])，第 17~18 行传入 SecurityAudit::init()。
         'ai_limit'       => 10,     //    AI 接口每窗口最大请求数；未配置时 fallback 30
         'ai_window'      => 60,     //    AI 限流窗口（秒）；未配置时 fallback 60
     ],
@@ -109,6 +109,9 @@ return [
         'search'         => 600,    // ✅ 基金搜索；默认 600s
         'rank'           => 300,    // ✅ 基金排行；默认 300s
         'history'        => 300,    // ✅ 历史净值；默认 300s
+        'index_profile'    => 3600, // ✅ 基金跟踪指数画像（跟踪指数代码/名称等）；默认 3600s
+        'dividend_history' => 300,  // ✅ 基金分红历史；默认 300s
+        'documents'        => 1800, // ✅ 基金公告/文档列表；默认 1800s
         'detail'         => 3600,   // ✅ 基金 F10 详情（聚合工具复用）；默认 3600s
         'performance_stats' => 300, // ✅ fa_get_fund_performance_stats 长历史统计；默认 300s
         'trade_rules'    => 300,    // ✅ fa_get_fund_trade_rules 交易规则；默认 300s
@@ -176,7 +179,9 @@ return [
         'heartbeat_interval' => 15,
 
         // ✅ 消息内容限制：覆盖 SecurityAudit 内置常量，用于校验前端传入的消息体。
-        //    读取位置：ai_api.php 第 165~166 行。
+        //    读取位置：ai_api.php 第 166~167 行。
+        //    注意：前端基金 AI 上下文上限为 255000（main.js AI_CONTEXT_LIMIT），
+        //    若启用大上下文场景，此处 max_message_length 需略大于该值以容纳系统提示。
         'max_message_length' => 50000,    //    单条消息最大字符数；fallback SecurityAudit::MAX_MESSAGE_LENGTH=50000
         'max_message_count'  => 100,      //    单次会话最大消息条数；fallback SecurityAudit::MAX_MESSAGE_COUNT=100
 
@@ -256,7 +261,7 @@ return [
     // ════════════════════════════════════════════════════════════
     'security' => [
         // ❌ 未生效（死配置）：SecurityAudit.php 使用硬编码类常量 TRUST_PROXY=false，
-        //    ai_api.php 第 50 行也直接引用 SecurityAudit::TRUST_PROXY，并未读取本配置。
+        //    ai_api.php 第 51 行也直接引用 SecurityAudit::TRUST_PROXY，并未读取本配置。
         //    预期用途：设为 true 后，客户端 IP 从 X-Forwarded-For / X-Real-IP 头读取
         //    （仅在确认部署了可信反向代理时启用，否则可被伪造绕过限流）。
         //    如需启用，需修改 SecurityAudit.php 将常量改为从 AppConfig::get('security.trust_proxy') 读取。

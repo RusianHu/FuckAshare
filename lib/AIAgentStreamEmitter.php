@@ -205,12 +205,18 @@ class AIAgentStreamEmitter
 
     private function stripPseudoToolMarkup(string $content): string
     {
-        if ($content === '' || strpos($content, '<function=') === false) {
+        if ($content === '' || (
+            strpos($content, '<function=') === false
+            && strpos($content, '<tool_call') === false
+            && strpos($content, '<parameter=') === false
+        )) {
             return $content;
         }
 
-        $content = preg_replace('/<function=[^>]*>.*?(?:<\/function>|\n\s*\n|$)/su', '', $content);
+        $content = preg_replace('/<tool_call\b[^>]*>\s*<function=[^>]*>.*?<\/function>\s*<\/tool_call>/su', '', $content);
+        $content = preg_replace('/<function=[^>]*>.*?(?:<\/function>|\n\s*\n|$)/su', '', (string)$content);
         $content = preg_replace('/<\/?parameter(?:=[^>]*)?>[^\n]*/u', '', (string)$content);
+        $content = preg_replace('/<\/?tool_call\b[^>]*>/u', '', (string)$content);
         return trim((string)$content);
     }
 

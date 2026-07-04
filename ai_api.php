@@ -216,6 +216,7 @@ $agentOptions = [
     'agent_profile' => (string)($toolAgentConfig['agent_profile'] ?? ''),
     'trace_enabled' => (bool)($toolAgentConfig['trace_enabled'] ?? false),
     'trace_log_path' => (string)($toolAgentConfig['trace_log_path'] ?? ''),
+    'max_tokens' => (int)($toolAgentConfig['max_tokens'] ?? 8192),
     'tool_decision_max_tokens' => (int)($toolAgentConfig['tool_decision_max_tokens'] ?? 4096),
     'timeout' => (int)($aiConfig['timeout'] ?? 300),
     'connect_timeout' => (int)($aiConfig['connect_timeout'] ?? 15),
