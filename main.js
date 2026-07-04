@@ -467,6 +467,7 @@ const APP = {
     chatContainer: null,
     userInput: null,
     messageHistory: [{ role: 'system', content: AI_SYSTEM_PROMPT }],
+    chatDisplayHistory: [],
     currentSessionId: null,
     aiContextLimit: AI_CONTEXT_LIMIT,
     // 图表
@@ -2349,11 +2350,11 @@ const AdvisorModule = {
         APP.messageHistory.push({ role: 'user', content: msg });
         this.updateContextMeter();
         AIModule.appendMessage(msg, null, 'user-message', this._els.chatContainer);
-        const loadingMsg = AIModule.appendMessage('思考中...', null, 'loading-message', this._els.chatContainer);
+        const loadingMsg = AIModule.appendMessage('分析中...', null, 'loading-message', this._els.chatContainer);
         let seconds = 0;
-        const timer = setInterval(() => { seconds++; loadingMsg.textContent = `思考中... ${seconds}s`; }, 1000);
+        const timer = setInterval(() => { seconds++; loadingMsg.textContent = `分析中... ${seconds}s`; }, 1000);
 
-        // 设置思考态
+        // 设置分析态
         this.setThinking(true);
 
         // 发送到 AI，使用顾问面板容器
@@ -2371,9 +2372,9 @@ const AdvisorModule = {
         APP.messageHistory.push({ role: 'user', content: prompt });
         this.updateContextMeter();
         AIModule.appendMessage(prompt, null, 'user-message', this._els.chatContainer);
-        const loadingMsg = AIModule.appendMessage('思考中...', null, 'loading-message', this._els.chatContainer);
+        const loadingMsg = AIModule.appendMessage('分析中...', null, 'loading-message', this._els.chatContainer);
         let seconds = 0;
-        const timer = setInterval(() => { seconds++; loadingMsg.textContent = `思考中... ${seconds}s`; }, 1000);
+        const timer = setInterval(() => { seconds++; loadingMsg.textContent = `分析中... ${seconds}s`; }, 1000);
 
         this.setThinking(true);
         AIModule.sendToAI(loadingMsg, timer, this._els.chatContainer);
@@ -2399,9 +2400,9 @@ const AdvisorModule = {
             APP.messageHistory.push({ role: 'user', content: message });
             this.updateContextMeter();
             AIModule.appendMessage(message, null, 'user-message', this._els.chatContainer);
-            const loadingMsg = AIModule.appendMessage('思考中...', null, 'loading-message', this._els.chatContainer);
+            const loadingMsg = AIModule.appendMessage('分析中...', null, 'loading-message', this._els.chatContainer);
             let seconds = 0;
-            const timer = setInterval(() => { seconds++; loadingMsg.textContent = `思考中... ${seconds}s`; }, 1000);
+            const timer = setInterval(() => { seconds++; loadingMsg.textContent = `分析中... ${seconds}s`; }, 1000);
 
             this.setThinking(true);
             AIModule.sendToAI(loadingMsg, timer, this._els.chatContainer);
@@ -2547,6 +2548,7 @@ const AdvisorModule = {
         }
 
         APP.messageHistory = [{ role: 'system', content: AI_SYSTEM_PROMPT }];
+        APP.chatDisplayHistory = [];
 
         if (APP.chatContainer) APP.chatContainer.innerHTML = '';
         if (this._els.chatContainer) this._els.chatContainer.innerHTML = '';
@@ -2577,9 +2579,8 @@ const AdvisorModule = {
         const container = this._els.chatContainer;
         if (!container) return;
 
-        // 跳过 system 消息
-        const messages = APP.messageHistory.filter(m => m.role !== 'system');
-        const hasMessages = messages.length > 0;
+        const displayMessages = Array.isArray(APP.chatDisplayHistory) ? APP.chatDisplayHistory : [];
+        const hasMessages = displayMessages.length > 0;
 
         // 切换欢迎区/消息区显示
         this._els.panel?.classList.toggle('has-messages', hasMessages);
@@ -2592,21 +2593,12 @@ const AdvisorModule = {
         // 检查是否需要重新渲染（对比已有消息数）
         const existingMsgs = container.querySelectorAll('.message');
         // 简单对比：如果数量一致则跳过（避免重复渲染）
-        if (existingMsgs.length === messages.length) return;
+        if (existingMsgs.length === displayMessages.length) return;
 
-        // 重新渲染全部
-        container.innerHTML = '';
-        messages.forEach(m => {
-            if (m.role === 'user') {
-                AIModule.appendMessage(m.content, null, 'user-message', container);
-            } else if (m.role === 'assistant') {
-                AIModule.appendMessage(m.content, null, 'bot-message', container);
-            }
-        });
-        container.scrollTop = container.scrollHeight;
+        AIModule.renderDisplayHistory(container);
     },
 
-    /** 设置思考态 */
+    /** 设置分析态 */
     setThinking(isThinking) {
         APP.advisorThinking = isThinking;
         const fab = this._els.fab;
@@ -2614,7 +2606,7 @@ const AdvisorModule = {
 
         if (isThinking) {
             fab?.classList.add('thinking');
-            if (status) status.textContent = '思考中...';
+            if (status) status.textContent = '分析中...';
         } else {
             fab?.classList.remove('thinking');
             if (status) status.textContent = '在线 · Beta';
@@ -2790,6 +2782,43 @@ const AdvisorModule = {
 // AI聊天模块
 // ============================================================
 const AIModule = {
+    _recordDisplayMessage(element, record, options = {}) {
+        if (!element || options.skipDisplayRecord || record?.className === 'loading-message') return;
+        const history = Array.isArray(APP.chatDisplayHistory) ? APP.chatDisplayHistory : (APP.chatDisplayHistory = []);
+        const index = history.length;
+        element.dataset.displayIndex = String(index);
+        history.push({ ...record });
+    },
+
+    _updateDisplayMessage(element, patch = {}) {
+        if (!element || !Array.isArray(APP.chatDisplayHistory)) return;
+        const index = Number(element.dataset.displayIndex);
+        if (!Number.isInteger(index) || index < 0 || index >= APP.chatDisplayHistory.length) return;
+        APP.chatDisplayHistory[index] = { ...APP.chatDisplayHistory[index], ...patch };
+    },
+
+    renderDisplayHistory(container) {
+        if (!container) return;
+        const records = Array.isArray(APP.chatDisplayHistory) ? APP.chatDisplayHistory : [];
+        container.innerHTML = '';
+        records.forEach(record => {
+            if (!record || !record.className) return;
+            if (record.className === 'process-message') {
+                this._appendProcessStatus(record.message || '', container, { skipDisplayRecord: true });
+            } else if (record.className === 'thought-message') {
+                this._appendThoughtBubble(record.message || '', container, { skipDisplayRecord: true });
+            } else if (record.className === 'tool-message') {
+                this._appendToolStatusBubble(record.status || {}, container, { skipDisplayRecord: true });
+            } else if (record.className === 'reasoning-message') {
+                const div = this._appendReasoningBubble(container, { skipDisplayRecord: true });
+                this._renderReasoningMarkdown(div, record.content || '');
+            } else {
+                this.appendMessage(record.content || '', record.reasoningContent || null, record.className, container, { skipDisplayRecord: true });
+            }
+        });
+        container.scrollTop = container.scrollHeight;
+    },
+
     countMessageChars(message) {
         return countTextChars(message?.content || '');
     },
@@ -2860,16 +2889,16 @@ const AIModule = {
         APP.messageHistory.push({ role: 'user', content: message });
         if (typeof AdvisorModule !== 'undefined') AdvisorModule.updateContextMeter();
         this.appendMessage(message, null, 'user-message');
-        const loadingMsg = this.appendMessage('思考中...', null, 'loading-message');
+        const loadingMsg = this.appendMessage('分析中...', null, 'loading-message');
         let seconds = 0;
         const timer = setInterval(() => {
             seconds++;
-            loadingMsg.textContent = `思考中... ${seconds}s`;
+            loadingMsg.textContent = `分析中... ${seconds}s`;
         }, 1000);
         this.sendToAI(loadingMsg, timer);
     },
 
-    appendMessage(content, reasoningContent, className, targetContainer) {
+    appendMessage(content, reasoningContent, className, targetContainer, options = {}) {
         const container = targetContainer || APP.chatContainer;
         if (!container) return null;
         const div = document.createElement('div');
@@ -2916,7 +2945,14 @@ const AIModule = {
             if (reasoningContent) {
                 const rd = document.createElement('div');
                 rd.classList.add('reasoning-content');
-                rd.innerHTML = DOMPurify.sanitize(marked.parse(reasoningContent));
+                const title = document.createElement('div');
+                title.className = 'reasoning-title';
+                title.textContent = '推理流';
+                const body = document.createElement('div');
+                body.className = 'reasoning-body';
+                body.innerHTML = DOMPurify.sanitize(marked.parse(reasoningContent));
+                rd.appendChild(title);
+                rd.appendChild(body);
                 div.appendChild(rd);
             }
             if (content) {
@@ -2928,6 +2964,7 @@ const AIModule = {
         }
         container.appendChild(div);
         container.scrollTop = container.scrollHeight;
+        this._recordDisplayMessage(div, { className, content: content || '', reasoningContent: reasoningContent || '' }, options);
 
         // 消息气泡 GSAP 入场——autoAlpha 淡入
         // 使用 fromTo 显式指定目标状态，避免父元素动画干扰计算
@@ -2941,18 +2978,70 @@ const AIModule = {
         return div;
     },
 
+    _appendReasoningBubble(targetContainer, options = {}) {
+        const container = targetContainer || APP.chatContainer;
+        if (!container) return null;
+
+        const div = document.createElement('div');
+        div.className = 'message reasoning-message';
+
+        const title = document.createElement('div');
+        title.className = 'reasoning-title';
+        title.textContent = '推理流';
+
+        const body = document.createElement('div');
+        body.className = 'reasoning-body';
+
+        div.appendChild(title);
+        div.appendChild(body);
+        container.appendChild(div);
+        container.scrollTop = container.scrollHeight;
+        this._recordDisplayMessage(div, { className: 'reasoning-message', content: '' }, options);
+
+        if (typeof gsap !== 'undefined') {
+            gsap.fromTo(div, { autoAlpha: 0, y: 4 }, { autoAlpha: 1, y: 0, duration: 0.22, ease: 'power2.out', clearProps: 'autoAlpha,transform' });
+        }
+
+        return div;
+    },
+
     /**
-     * 更新 bot 消息气泡中的 reasoning 区域
+     * 更新独立推理流消息气泡
      */
-    _updateReasoning(botDiv, fullReasoning) {
-        let rd = botDiv.querySelector('.reasoning-content');
-        if (!rd) {
-            rd = document.createElement('div');
-            rd.classList.add('reasoning-content');
-            botDiv.insertBefore(rd, botDiv.firstChild);
+    _updateReasoning(reasoningDiv, fullReasoning) {
+        if (!reasoningDiv) return;
+        let body = reasoningDiv.querySelector('.reasoning-body');
+        if (!body) {
+            body = document.createElement('div');
+            body.className = 'reasoning-body';
+            reasoningDiv.appendChild(body);
         }
         // 推理内容用纯文本显示，避免大量 Markdown 解析卡顿
-        rd.textContent = fullReasoning;
+        body.textContent = fullReasoning;
+        this._updateDisplayMessage(reasoningDiv, { content: fullReasoning });
+        const scrollContainer = reasoningDiv.closest('.chat-messages, .advisor-messages');
+        if (scrollContainer) scrollContainer.scrollTop = scrollContainer.scrollHeight;
+    },
+
+    _renderReasoningMarkdown(reasoningDiv, fullReasoning) {
+        if (!reasoningDiv) return;
+        let body = reasoningDiv.querySelector('.reasoning-body');
+        if (!body) {
+            body = document.createElement('div');
+            body.className = 'reasoning-body';
+            reasoningDiv.appendChild(body);
+        }
+        body.innerHTML = DOMPurify.sanitize(marked.parse(fullReasoning));
+        this._updateDisplayMessage(reasoningDiv, { content: fullReasoning });
+    },
+
+    _extractReasoningDelta(delta) {
+        if (!delta || typeof delta !== 'object') return '';
+        for (const key of ['reasoning_content', 'reasoning', 'thinking']) {
+            const value = delta[key];
+            if (typeof value === 'string' && value) return value;
+        }
+        return '';
     },
 
     /**
@@ -2966,12 +3055,13 @@ const AIModule = {
             botDiv.appendChild(cd);
         }
         cd.innerHTML = DOMPurify.sanitize(marked.parse(fullResponse));
+        this._updateDisplayMessage(botDiv, { content: fullResponse });
         // 使用 botDiv 的父级容器来滚动，而非硬编码 APP.chatContainer
         const scrollContainer = botDiv.closest('.chat-messages, .advisor-messages');
         if (scrollContainer) scrollContainer.scrollTop = scrollContainer.scrollHeight;
     },
 
-    _appendProcessStatus(message, targetContainer) {
+    _appendProcessStatus(message, targetContainer, options = {}) {
         const text = String(message || '').trim();
         if (!text) return null;
         const container = targetContainer || APP.chatContainer;
@@ -2989,6 +3079,7 @@ const AIModule = {
         div.appendChild(content);
         container.appendChild(div);
         container.scrollTop = container.scrollHeight;
+        this._recordDisplayMessage(div, { className: 'process-message', message: text }, options);
 
         if (typeof gsap !== 'undefined') {
             gsap.fromTo(div, { autoAlpha: 0, y: 4 }, { autoAlpha: 1, y: 0, duration: 0.2, ease: 'power2.out', clearProps: 'autoAlpha,transform' });
@@ -2996,7 +3087,7 @@ const AIModule = {
         return div;
     },
 
-    _appendThoughtBubble(message, targetContainer) {
+    _appendThoughtBubble(message, targetContainer, options = {}) {
         const text = String(message || '').trim();
         if (!text) return null;
         const container = targetContainer || APP.chatContainer;
@@ -3006,7 +3097,7 @@ const AIModule = {
         div.className = 'message thought-message';
         const title = document.createElement('div');
         title.className = 'thought-message-title';
-        title.textContent = '思考';
+        title.textContent = '执行计划';
         const body = document.createElement('div');
         body.className = 'thought-message-body';
         body.textContent = text;
@@ -3014,6 +3105,7 @@ const AIModule = {
         div.appendChild(body);
         container.appendChild(div);
         container.scrollTop = container.scrollHeight;
+        this._recordDisplayMessage(div, { className: 'thought-message', message: text }, options);
 
         if (typeof gsap !== 'undefined') {
             gsap.fromTo(div, { autoAlpha: 0, y: 4 }, { autoAlpha: 1, y: 0, duration: 0.22, ease: 'power2.out', clearProps: 'autoAlpha,transform' });
@@ -3021,7 +3113,7 @@ const AIModule = {
         return div;
     },
 
-    _appendToolStatusBubble(status, targetContainer) {
+    _appendToolStatusBubble(status, targetContainer, options = {}) {
         if (!status) return null;
         const container = targetContainer || APP.chatContainer;
         if (!container) return null;
@@ -3054,6 +3146,7 @@ const AIModule = {
         if (meta.textContent) div.appendChild(meta);
         container.appendChild(div);
         container.scrollTop = container.scrollHeight;
+        this._recordDisplayMessage(div, { className: 'tool-message', status: { ...status } }, options);
 
         if (typeof gsap !== 'undefined') {
             gsap.fromTo(div, { autoAlpha: 0, y: 5 }, { autoAlpha: 1, y: 0, duration: 0.22, ease: 'power2.out', clearProps: 'autoAlpha,transform' });
@@ -3207,9 +3300,14 @@ const AIModule = {
             const reader = response.body.getReader();
             const decoder = new TextDecoder('utf-8');
             let botDiv = null;
+            let reasoningDiv = null;
             const ensureBotDiv = () => {
                 if (!botDiv) botDiv = this.appendMessage('', '', 'bot-message', targetContainer);
                 return botDiv;
+            };
+            const ensureReasoningDiv = () => {
+                if (!reasoningDiv) reasoningDiv = this._appendReasoningBubble(targetContainer);
+                return reasoningDiv;
             };
             let fullResponse = '';
             let fullReasoning = '';
@@ -3274,7 +3372,7 @@ const AIModule = {
                             if (json.type === 'assistant_thought') {
                                 this._appendThoughtBubble(json.message || '', targetContainer);
                                 if (typeof AdvisorModule !== 'undefined' && AdvisorModule._els?.status) {
-                                    AdvisorModule._els.status.textContent = '思考中...';
+                                    AdvisorModule._els.status.textContent = '规划工具调用...';
                                 }
                                 continue;
                             }
@@ -3303,9 +3401,10 @@ const AIModule = {
                             const delta = json.choices?.[0]?.delta;
                             if (delta) {
                                 // 推理内容（reasoning 模型特有）
-                                if (delta.reasoning_content) {
-                                    fullReasoning += delta.reasoning_content;
-                                    this._updateReasoning(ensureBotDiv(), fullReasoning);
+                                const reasoningDelta = this._extractReasoningDelta(delta);
+                                if (reasoningDelta) {
+                                    fullReasoning += reasoningDelta;
+                                    this._updateReasoning(ensureReasoningDiv(), fullReasoning);
                                 }
                                 // 正式回复内容
                                 if (delta.content) {
@@ -3348,7 +3447,7 @@ const AIModule = {
                             } else if (json.type === 'assistant_thought') {
                                 this._appendThoughtBubble(json.message || '', targetContainer);
                                 if (typeof AdvisorModule !== 'undefined' && AdvisorModule._els?.status) {
-                                    AdvisorModule._els.status.textContent = '思考中...';
+                                    AdvisorModule._els.status.textContent = '规划工具调用...';
                                 }
                             } else {
                                 const agentStatus = this._agentStatusText(json);
@@ -3367,9 +3466,10 @@ const AIModule = {
                                 } else {
                                     const delta = json.choices?.[0]?.delta;
                                     if (delta) {
-                                        if (delta.reasoning_content) {
-                                            fullReasoning += delta.reasoning_content;
-                                            this._updateReasoning(ensureBotDiv(), fullReasoning);
+                                        const reasoningDelta = this._extractReasoningDelta(delta);
+                                        if (reasoningDelta) {
+                                            fullReasoning += reasoningDelta;
+                                            this._updateReasoning(ensureReasoningDiv(), fullReasoning);
                                         }
                                         if (delta.content) {
                                             fullResponse += delta.content;
@@ -3395,13 +3495,12 @@ const AIModule = {
             // 流结束：清理 loading 状态
             clearInterval(timer);
             if (loadingMessage.parentNode) loadingMessage.parentNode.removeChild(loadingMessage);
-            // 通知顾问面板思考结束
+            // 通知顾问面板分析结束
             if (typeof AdvisorModule !== 'undefined') AdvisorModule.setThinking(false);
 
             // 如果有推理内容，渲染为 Markdown
             if (fullReasoning) {
-                const rd = ensureBotDiv().querySelector('.reasoning-content');
-                if (rd) rd.innerHTML = DOMPurify.sanitize(marked.parse(fullReasoning));
+                this._renderReasoningMarkdown(ensureReasoningDiv(), fullReasoning);
             }
 
             // 将最终回复记入消息历史（仅记录正式内容，不含推理过程）
@@ -3446,9 +3545,9 @@ function sendMessage() {
     APP.messageHistory.push({ role: 'user', content: msg });
     if (typeof AdvisorModule !== 'undefined') AdvisorModule.updateContextMeter();
     AIModule.appendMessage(msg, null, 'user-message');
-    const loadingMsg = AIModule.appendMessage('思考中...', null, 'loading-message');
+    const loadingMsg = AIModule.appendMessage('分析中...', null, 'loading-message');
     let seconds = 0;
-    const timer = setInterval(() => { seconds++; loadingMsg.textContent = `思考中... ${seconds}s`; }, 1000);
+    const timer = setInterval(() => { seconds++; loadingMsg.textContent = `分析中... ${seconds}s`; }, 1000);
     AIModule.sendToAI(loadingMsg, timer);
 }
 
@@ -3701,18 +3800,10 @@ function switchTab(tabName) {
 
     // 切换到 AI Tab 时，同步消息历史到 #chat-container
     if (tabName === 'ai' && APP.chatContainer) {
-        const messages = APP.messageHistory.filter(m => m.role !== 'system');
+        const messages = Array.isArray(APP.chatDisplayHistory) ? APP.chatDisplayHistory : [];
         const existingMsgs = APP.chatContainer.querySelectorAll('.message');
         if (existingMsgs.length !== messages.length) {
-            APP.chatContainer.innerHTML = '';
-            messages.forEach(m => {
-                if (m.role === 'user') {
-                    AIModule.appendMessage(m.content, null, 'user-message');
-                } else if (m.role === 'assistant') {
-                    AIModule.appendMessage(m.content, null, 'bot-message');
-                }
-            });
-            APP.chatContainer.scrollTop = APP.chatContainer.scrollHeight;
+            AIModule.renderDisplayHistory(APP.chatContainer);
         }
     }
 

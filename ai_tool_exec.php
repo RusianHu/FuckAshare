@@ -36,8 +36,9 @@ if ($expectedToken === '') {
     exit;
 }
 
-// 单工具执行上限 60s
-set_time_limit(60);
+$toolTimeout = max(30, (int)($toolAgentConfig['tool_timeout'] ?? 120));
+// 单工具执行上限跟随 AI 工具配置，避免长历史统计类工具被内部端点提前杀死。
+set_time_limit($toolTimeout + 10);
 header('Content-Type: application/json; charset=utf-8');
 header('X-Accel-Buffering: no');
 

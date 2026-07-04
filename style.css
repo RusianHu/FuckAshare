@@ -1495,12 +1495,35 @@ tr:hover td { background: var(--bg-hover); }
     line-height: 1.35;
     overflow-wrap: anywhere;
 }
+.reasoning-message {
+    margin-right: auto;
+    max-width: 88%;
+    padding: 9px 12px;
+    color: var(--text-muted);
+    background: var(--accent-green-bg);
+    border: 1px solid rgba(91, 132, 91, 0.2);
+    border-left: 3px solid var(--accent-green);
+    border-radius: var(--radius-md);
+    font-size: 0.82rem;
+    line-height: 1.55;
+}
 .reasoning-content {
-    color: var(--text-muted); font-size: 0.85em;
-    margin-bottom: 6px; padding: 6px 8px;
+    color: var(--text-muted);
+    font-size: 0.85em;
+    margin-bottom: 6px;
+    padding: 6px 8px;
     border-left: 2px solid var(--accent-green);
     background: var(--accent-green-bg);
     border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+.reasoning-title {
+    margin-bottom: 4px;
+    color: var(--text-secondary);
+    font-weight: 600;
+    font-size: 0.78rem;
+}
+.reasoning-body {
+    white-space: pre-wrap;
 }
 .tool-trace {
     margin-bottom: 8px;

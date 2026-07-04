@@ -23,6 +23,14 @@ class AIAgentGuardrailPolicy
 
     public function reviewFinalText(string $text): array
     {
+        if ($this->looksLikeOperationalMetaAnswer($text) || !$this->looksLikeFinancialResearch($text)) {
+            return [
+                'ok' => true,
+                'violations' => [],
+                'append_text' => '',
+            ];
+        }
+
         $violations = [];
         foreach ($this->forbiddenReturnPatterns() as $pattern) {
             if (preg_match($pattern, $text)) {
@@ -58,6 +66,19 @@ class AIAgentGuardrailPolicy
             }
         }
         return true;
+    }
+
+    private function looksLikeOperationalMetaAnswer(string $text): bool
+    {
+        return (bool)preg_match('/(接口|服务|系统|AI顾问|工具).{0,24}(正常|运行|可用|可调用|已启动|健康检查)|正常.{0,16}(运行|使用|服务|调用)|只读工具.{0,16}(正常|可用|调用)/u', $text);
+    }
+
+    private function looksLikeFinancialResearch(string $text): bool
+    {
+        return (bool)preg_match(
+            '/(股票|A股|基金|ETF|债券|转债|指数|行情|资金流|主力|净值|估值|排行|涨幅|跌幅|回撤|收益|风险|买入|卖出|持有|仓位|投资|交易|申购|赎回|板块|行业|K线|MACD|RSI|PE|PB)/iu',
+            $text
+        );
     }
 
     private function forbiddenReturnPatterns(): array

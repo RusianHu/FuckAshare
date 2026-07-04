@@ -106,6 +106,20 @@ class AIAgentStreamEmitter
         $emit('data: ' . json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n\n");
     }
 
+    public function reasoningContent(callable $emit, string $content): void
+    {
+        if (!empty($this->options['suppress_reasoning_content'])) return;
+        $content = trim($content);
+        if ($content === '') return;
+        $payload = [
+            'choices' => [[
+                'delta' => ['reasoning_content' => $content],
+                'finish_reason' => null,
+            ]],
+        ];
+        $emit('data: ' . json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n\n");
+    }
+
     public function finishRun(callable $emit, AIAgentState $state, string $stopReason): void
     {
         $state->stopReason = $stopReason;
@@ -303,6 +317,7 @@ class AIAgentStreamEmitter
                 $emit('data: ' . json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n\n");
                 return;
             }
+            return;
         }
         if (strpos($content, '不构成投资建议') !== false) return;
         $payload = [

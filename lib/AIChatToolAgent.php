@@ -128,6 +128,7 @@ class AIChatToolAgent
                 $this->stream->failRun($emit, $state, 'invalid_upstream_response', '上游 AI 响应格式无效，未返回 assistant message。');
                 return;
             }
+            $this->stream->reasoningContent($emit, $this->extractReasoningContent($assistant));
 
             $finishReason = $response['choices'][0]['finish_reason'] ?? null;
             if ($finishReason === 'length') {
@@ -979,6 +980,17 @@ class AIChatToolAgent
     {
         $message = $response['choices'][0]['message'] ?? null;
         return is_array($message) ? $message : null;
+    }
+
+    private function extractReasoningContent(array $assistant): string
+    {
+        foreach (['reasoning_content', 'reasoning', 'thinking'] as $key) {
+            $value = $assistant[$key] ?? null;
+            if (is_string($value) && trim($value) !== '') {
+                return $value;
+            }
+        }
+        return '';
     }
 
     private function stripPseudoToolMarkup(string $content): string

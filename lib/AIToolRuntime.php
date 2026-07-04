@@ -27,21 +27,22 @@ class AIToolRuntime
 
     public function executeToolCalls(array $toolCalls, AIAgentState $state, callable $emit, int $round, string $origin): array
     {
-        // 并行分支：配置了 internal_exec_endpoint + token 且本轮多于 1 个工具时，用 curl_multi self-HTTP 并发派发
+        // 内部执行分支：配置了 internal_exec_endpoint + token 时，用 self-HTTP 派发工具。
+        // 即使只有 1 个长工具，也让主 SSE 请求能在等待期间继续发送 heartbeat。
         if (!empty($this->options['parallel_tool_calls'])
             && !empty($this->options['internal_exec_endpoint'])
             && !empty($this->options['internal_exec_token'])
-            && count($toolCalls) > 1
+            && count($toolCalls) > 0
             && function_exists('curl_multi_init')) {
             $parallel = $this->executeToolCallsParallel($toolCalls, $state, $emit, $round, $origin);
             if ($parallel !== null) {
                 return $parallel;
             }
-            // 并行失败，降级串行
+            // 内部执行失败，降级串行
             $this->stream->agentEvent($emit, 'agent_status', [
                 'run_id' => $state->runId,
                 'round' => $round,
-                'message' => '并行工具执行不可用，已降级为串行执行。',
+                'message' => '内部工具执行不可用，已降级为串行执行；长工具期间可能无法持续发送心跳。',
             ]);
         }
 
