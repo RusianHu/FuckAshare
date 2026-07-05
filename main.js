@@ -151,9 +151,9 @@ const ThemeManager = {
         const isLight = theme === 'light' || 
             (theme === 'system' && window.matchMedia('(prefers-color-scheme: light)').matches);
 
-        const color = isLight 
-            ? 'radial-gradient(circle at ' + x + 'px ' + y + 'px, rgba(232,240,228,0.6) 0%, transparent 70%)'
-            : 'radial-gradient(circle at ' + x + 'px ' + y + 'px, rgba(13,17,23,0.6) 0%, transparent 70%)';
+        const color = isLight
+            ? 'radial-gradient(circle at ' + x + 'px ' + y + 'px, rgba(238,241,234,0.6) 0%, transparent 70%)'
+            : 'radial-gradient(circle at ' + x + 'px ' + y + 'px, rgba(10,14,22,0.6) 0%, transparent 70%)';
 
         gsap.set(overlay, { background: color });
         
@@ -356,7 +356,7 @@ const AnimationManager = {
         if (!el || typeof gsap === 'undefined') return;
         const isUp = direction === 'up';
         const isDown = direction === 'down';
-        const flashColor = isUp ? 'rgba(199, 58, 24, 0.18)' : isDown ? 'rgba(46, 139, 87, 0.18)' : 'rgba(95, 117, 95, 0.1)';
+        const flashColor = isUp ? 'rgba(246, 70, 93, 0.16)' : isDown ? 'rgba(46, 189, 133, 0.16)' : 'rgba(139, 149, 169, 0.12)';
         gsap.fromTo(el,
             { backgroundColor: flashColor },
             { backgroundColor: 'transparent', duration: 0.8, ease: 'power2.out' }
@@ -676,76 +676,73 @@ const Indicators = {
 const ChartModule = {
     indicatorSeries: {},
 
-    // 获取当前主题的图表配色
+    // 获取当前主题的图表配色：优先读取 style.css 的 --chart-* 设计令牌，
+    // 读取失败时回退到内置色板，保证图表始终与页面主题一致
     getChartColors() {
         const style = getComputedStyle(document.documentElement);
         const isLight = ThemeManager.getEffectiveTheme() === 'light';
-        
-        if (isLight) {
-            return {
-                layout: {
-                    background: { type: 'solid', color: '#f2f7ef' },
-                    textColor: '#4a6348',
-                    fontSize: 12,
-                },
-                grid: {
-                    vertLines: { color: '#dce8d6' },
-                    horzLines: { color: '#dce8d6' },
-                },
-                crosshair: {
-                    mode: 0, // Normal
-                    vertLine: { color: '#b8ccb0', width: 1, style: 2 },
-                    horzLine: { color: '#b8ccb0', width: 1, style: 2 },
-                },
-                rightPriceScale: { borderColor: '#b8ccb0' },
-                timeScale: { borderColor: '#b8ccb0', timeVisible: true },
-                candle: {
-                    upColor: '#d4380d', downColor: '#389e0f',
-                    borderUpColor: '#d4380d', borderDownColor: '#389e0f',
-                    wickUpColor: '#d4380d', wickDownColor: '#389e0f',
-                },
-                volume: {
-                    up: 'rgba(212, 56, 13, 0.35)',
-                    down: 'rgba(56, 158, 15, 0.35)',
-                },
-                macd: {
-                    up: 'rgba(212, 56, 13, 0.5)',
-                    down: 'rgba(56, 158, 15, 0.5)',
-                }
-            };
-        } else {
-            return {
-                layout: {
-                    background: { type: 'solid', color: '#0d1117' },
-                    textColor: '#8b949e',
-                    fontSize: 12,
-                },
-                grid: {
-                    vertLines: { color: '#1c2128' },
-                    horzLines: { color: '#1c2128' },
-                },
-                crosshair: {
-                    mode: 0,
-                    vertLine: { color: '#30363d', width: 1, style: 2 },
-                    horzLine: { color: '#30363d', width: 1, style: 2 },
-                },
-                rightPriceScale: { borderColor: '#30363d' },
-                timeScale: { borderColor: '#30363d', timeVisible: true },
-                candle: {
-                    upColor: '#f85149', downColor: '#3fb950',
-                    borderUpColor: '#f85149', borderDownColor: '#3fb950',
-                    wickUpColor: '#f85149', wickDownColor: '#3fb950',
-                },
-                volume: {
-                    up: 'rgba(248, 81, 73, 0.4)',
-                    down: 'rgba(63, 185, 80, 0.4)',
-                },
-                macd: {
-                    up: 'rgba(248, 81, 73, 0.6)',
-                    down: 'rgba(63, 185, 80, 0.6)',
-                }
-            };
-        }
+        const cssVar = (name, fallback) => {
+            const v = style.getPropertyValue(name).trim();
+            return v || fallback;
+        };
+        // hex → rgba（MACD 柱需要半透明；非 hex 值原样返回）
+        const withAlpha = (color, alpha) => {
+            const m = /^#([0-9a-f]{6})$/i.exec(color);
+            if (!m) return color;
+            const n = parseInt(m[1], 16);
+            return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+        };
+
+        const fb = isLight ? {
+            bg: '#fbfdf8', text: '#5a6b5e', grid: '#e5eadd', border: '#cbd5c2',
+            up: '#d43e4d', down: '#159568',
+            volUp: 'rgba(212, 62, 77, 0.35)', volDown: 'rgba(21, 149, 104, 0.35)'
+        } : {
+            bg: '#10151f', text: '#8b98af', grid: '#1a2130', border: '#273043',
+            up: '#f6465d', down: '#2ebd85',
+            volUp: 'rgba(246, 70, 93, 0.42)', volDown: 'rgba(46, 189, 133, 0.42)'
+        };
+
+        const bg = cssVar('--chart-bg', fb.bg);
+        const text = cssVar('--chart-text', fb.text);
+        const grid = cssVar('--chart-grid', fb.grid);
+        const border = cssVar('--chart-border', fb.border);
+        const up = cssVar('--chart-up', fb.up);
+        const down = cssVar('--chart-down', fb.down);
+        const volUp = cssVar('--chart-vol-up', fb.volUp);
+        const volDown = cssVar('--chart-vol-down', fb.volDown);
+
+        return {
+            layout: {
+                background: { type: 'solid', color: bg },
+                textColor: text,
+                fontSize: 12,
+            },
+            grid: {
+                vertLines: { color: grid },
+                horzLines: { color: grid },
+            },
+            crosshair: {
+                mode: 0, // Normal
+                vertLine: { color: border, width: 1, style: 2 },
+                horzLine: { color: border, width: 1, style: 2 },
+            },
+            rightPriceScale: { borderColor: border },
+            timeScale: { borderColor: border, timeVisible: true },
+            candle: {
+                upColor: up, downColor: down,
+                borderUpColor: up, borderDownColor: down,
+                wickUpColor: up, wickDownColor: down,
+            },
+            volume: {
+                up: volUp,
+                down: volDown,
+            },
+            macd: {
+                up: withAlpha(up, 0.6),
+                down: withAlpha(down, 0.6),
+            }
+        };
     },
 
     normalizeChartTime(rawTime) {
@@ -3903,6 +3900,9 @@ document.addEventListener('DOMContentLoaded', function() {
             if (tabName === 'ai') {
                 AdvisorModule.toggle();
                 return;
+            }
+            if (APP.advisorOpen) {
+                AdvisorModule.close();
             }
             switchTab(tabName);
             // 更新顾问面板上下文

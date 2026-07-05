@@ -3,8 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="description" content="FuckAshare - A股智能分析平台：K线图表、技术指标、实时行情、板块资金流向、基金估值与 AI 智能研判。仅供研究，不构成投资建议。">
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0a0e16">
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#eef1ea">
     <title>FuckAshare - A股智能分析平台</title>
     <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+    <link rel="preconnect" href="https://unpkg.com" crossorigin>
     <!-- Microsoft Clarity 站长统计 -->
     <script type="text/javascript">
         (function(c,l,a,r,i,t,y){
@@ -39,6 +44,9 @@
     <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/ScrollTrigger.min.js"></script>
 </head>
 <body>
+    <!-- 键盘用户跳转主内容 -->
+    <a class="skip-link" href="#main">跳到主内容</a>
+
     <!-- SVG Icon Sprite -->
     <svg xmlns="http://www.w3.org/2000/svg" style="display:none">
         <defs>
@@ -103,7 +111,7 @@
     </nav>
 
     <!-- 主内容区域 -->
-    <div class="main-wrapper">
+    <div class="main-wrapper" id="main">
         <!-- 股票行情页 -->
         <div class="tab-panel active" id="panel-stock">
             <div class="stock-layout">
@@ -113,13 +121,13 @@
                         <div class="card-header">
                             <h3><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-search"></use></svg></span> 股票行情查询</h3>
                         </div>
-                        <form id="stockForm" class="query-form-inline">
+                        <form id="stockForm" class="query-form-inline" autocomplete="off">
                             <div class="form-row">
                                 <div class="form-group form-group-code flex-1">
-                                    <input type="text" id="code" name="code" placeholder="股票代码 如: sh000001" required>
+                                    <input type="text" id="code" name="code" placeholder="股票代码 如: sh000001" aria-label="股票代码" enterkeyhint="search" autocapitalize="off" spellcheck="false" required>
                                 </div>
                                 <div class="form-group form-group-frequency">
-                                    <select id="frequency" name="frequency">
+                                    <select id="frequency" name="frequency" aria-label="K线周期">
                                         <option value="1m">1分钟</option>
                                         <option value="5m">5分钟</option>
                                         <option value="15m">15分钟</option>
@@ -131,13 +139,13 @@
                                     </select>
                                 </div>
                                 <div class="form-group form-group-count">
-                                    <input type="number" id="count" name="count" min="1" max="500" value="120" placeholder="条数">
+                                    <input type="number" id="count" name="count" min="1" max="500" value="120" placeholder="条数" aria-label="数据条数" inputmode="numeric">
                                 </div>
                                 <div class="form-group form-group-date">
-                                    <input type="date" id="end_date" name="end_date" title="结束日期(可选)">
+                                    <input type="date" id="end_date" name="end_date" title="结束日期(可选)" aria-label="结束日期（可选）">
                                 </div>
                                 <div class="form-group form-group-source">
-                                    <select id="data-source" name="source" title="数据源">
+                                    <select id="data-source" name="source" title="数据源" aria-label="数据源">
                                         <option value="auto">自动</option>
                                         <option value="ashare">Ashare</option>
                                         <option value="eastmoney">东方财富</option>
@@ -255,7 +263,7 @@
                     <div class="card-header">
                         <h3><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-chart"></use></svg></span> 实时行情看板</h3>
                         <div class="realtime-controls">
-                            <input type="text" id="realtime-code-input" placeholder="输入代码添加 如: sh600519">
+                            <input type="text" id="realtime-code-input" placeholder="输入代码添加 如: sh600519" aria-label="添加监控股票代码" enterkeyhint="done" autocapitalize="off" spellcheck="false">
                             <button id="realtime-add-btn" class="btn-sm btn-accent">添加</button>
                             <button id="realtime-refresh-btn" class="btn-sm"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-refresh"></use></svg></span> 刷新</button>
                             <span class="auto-refresh-hint" id="auto-refresh-timer">自动刷新: 30s</span>
@@ -275,7 +283,7 @@
                     <div class="card-header strategy-header">
                         <div>
                             <h3><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-layers"></use></svg></span> 策略池</h3>
-                            <p class="strategy-subtitle">迁移自 TickFlow 策略池 · 东方财富实时候选池 + 日 K 指标精算</p>
+                            <p class="strategy-subtitle">东方财富实时候选池 + 日 K 指标精算</p>
                         </div>
                         <div class="strategy-controls">
                             <button id="strategy-show-all-btn" class="btn-sm" title="显示策略池全部命中"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-table"></use></svg></span> 全部命中</button>
@@ -534,7 +542,7 @@
                             <div class="card-header">
                                 <h3><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-search"></use></svg></span> 基金检索</h3>
                                 <div class="fund-controls">
-                                    <input type="text" id="fund-search-input" placeholder="输入基金代码或名称搜索">
+                                    <input type="text" id="fund-search-input" placeholder="输入基金代码或名称搜索" aria-label="基金代码或名称" enterkeyhint="search" autocapitalize="off" spellcheck="false">
                                     <button id="fund-search-btn" class="btn-sm btn-accent">搜索</button>
                                 </div>
                             </div>
@@ -646,7 +654,7 @@
             <button id="watchlist-close" class="btn-icon-sm" aria-label="关闭自选股"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-close"></use></svg></span></button>
         </div>
         <div class="watchlist-add">
-            <input type="text" id="watchlist-add-input" placeholder="输入代码添加 如: sh600519">
+            <input type="text" id="watchlist-add-input" placeholder="输入代码添加 如: sh600519" aria-label="添加自选股代码" enterkeyhint="done" autocapitalize="off" spellcheck="false">
             <button id="watchlist-add-btn" class="btn-sm btn-accent">添加</button>
         </div>
         <div class="watchlist-items" id="watchlist-items">
