@@ -10,9 +10,13 @@
 // ============================================================
 window.StrategyModule = {
     STORAGE_KEY: 'fa_strategy_pool',
+    STORAGE_PARAMS_KEY: 'fa_strategy_pool_params',
+    STORAGE_MIGRATION_KEY: 'fa_strategy_pool_v2_defaults_migrated',
     strategies: [],
     pool: [],
     draftPool: [],
+    strategyParams: {},
+    draftParams: {},
     activeStrategy: null,
     activeSource: 'all',
     results: {},
@@ -48,6 +52,7 @@ window.StrategyModule = {
         document.getElementById('strategy-table-data')?.addEventListener('click', e => {
             const queryBtn = e.target.closest('[data-strategy-query]');
             if (queryBtn) {
+                if (queryBtn.disabled) return;
                 submitStockQuery(queryBtn.dataset.strategyQuery, { frequency: '1d', count: 90 });
                 return;
             }
@@ -70,6 +75,7 @@ window.StrategyModule = {
             if (!data.success) throw new Error(data.message || '策略列表加载失败');
             this.strategies = data.strategies || [];
             this.pool = this.loadPool();
+            this.strategyParams = this.loadParams();
             this.prunePool();
             this.renderCards();
             this.updateCounts();
@@ -83,27 +89,67 @@ window.StrategyModule = {
     loadPool() {
         try {
             const saved = JSON.parse(localStorage.getItem(this.STORAGE_KEY) || '[]');
-            if (Array.isArray(saved) && saved.length) return saved;
+            if (Array.isArray(saved) && saved.length) {
+                if (!localStorage.getItem(this.STORAGE_MIGRATION_KEY)) {
+                    const defaults = this.strategies.filter(s => s.default_pool).map(s => s.id);
+                    defaults.forEach(id => {
+                        if (!saved.includes(id)) saved.push(id);
+                    });
+                    localStorage.setItem(this.STORAGE_MIGRATION_KEY, '1');
+                }
+                return saved;
+            }
         } catch (e) {}
-        return [
-            'high_turnover_surge', 'near_limit_up', 'strong_open', 'limit_up_momentum',
-            'volume_price_surge', 'macd_golden', 'bullish_alignment', 'trend_breakout',
-        ];
+        const defaults = this.strategies.filter(s => s.default_pool).map(s => s.id);
+        return defaults.length ? defaults : this.strategies.slice(0, 8).map(s => s.id);
     },
 
     savePool() {
         try { localStorage.setItem(this.STORAGE_KEY, JSON.stringify(this.pool)); } catch (e) {}
     },
 
+    loadParams() {
+        try {
+            const saved = JSON.parse(localStorage.getItem(this.STORAGE_PARAMS_KEY) || '{}');
+            return saved && typeof saved === 'object' && !Array.isArray(saved) ? saved : {};
+        } catch (e) {
+            return {};
+        }
+    },
+
+    saveParams() {
+        try { localStorage.setItem(this.STORAGE_PARAMS_KEY, JSON.stringify(this.strategyParams)); } catch (e) {}
+    },
+
     prunePool() {
         const valid = new Set(this.strategies.map(s => s.id));
         this.pool = this.pool.filter(id => valid.has(id));
+        if (!this.pool.length) this.pool = this.strategies.filter(s => s.default_pool).map(s => s.id);
         if (!this.pool.length) this.pool = this.strategies.slice(0, 8).map(s => s.id);
+        Object.keys(this.strategyParams).forEach(id => {
+            if (!valid.has(id)) delete this.strategyParams[id];
+        });
+        this.pool.forEach(id => this.ensureStrategyParams(id));
         this.savePool();
+        this.saveParams();
     },
 
     strategyMap() {
         return new Map(this.strategies.map(s => [s.id, s]));
+    },
+
+    defaultParams(strategy) {
+        const out = {};
+        (strategy?.params || []).forEach(p => { out[p.id] = p.default; });
+        return out;
+    },
+
+    ensureStrategyParams(id) {
+        const strategy = this.strategyMap().get(id);
+        if (!strategy) return;
+        const defaults = this.defaultParams(strategy);
+        const current = this.strategyParams[id] || {};
+        this.strategyParams[id] = Object.assign({}, defaults, current);
     },
 
     renderCards() {
@@ -125,12 +171,15 @@ window.StrategyModule = {
             card.dataset.strategyId = id;
             card.innerHTML = `
                 <span class="strategy-card-top">
-                    <span class="strategy-source-badge">内置</span>
+                    <span class="strategy-source-badge">${escapeHTML(this.assetLabel(s.asset_type))}</span>
                     <span class="strategy-card-name">${escapeHTML(s.name)}</span>
                     <span class="strategy-hit-count">${total == null ? '-' : total}</span>
                 </span>
                 <span class="strategy-card-desc">${escapeHTML(s.description || '')}</span>
-                <span class="strategy-card-tags">${(s.tags || []).map(t => `<i>${escapeHTML(t)}</i>`).join('')}</span>
+                <span class="strategy-card-tags">
+                    ${s.watch_only ? '<i>观察</i>' : ''}
+                    ${(s.tags || []).map(t => `<i>${escapeHTML(t)}</i>`).join('')}
+                </span>
             `;
             card.addEventListener('click', () => this.runStrategy(id));
             wrap.appendChild(card);
@@ -198,7 +247,17 @@ window.StrategyModule = {
 
     async postRun(action, body) {
         const limit = parseInt(document.getElementById('strategy-candidate-limit')?.value || '80', 10);
-        const payload = Object.assign({ candidate_limit: limit, pages: 2 }, body || {});
+        const ids = body?.strategy_ids || (body?.strategy_id ? [body.strategy_id] : this.pool);
+        const params = {};
+        (ids || []).forEach(id => {
+            if (this.strategyParams[id]) params[id] = this.strategyParams[id];
+        });
+        const payload = Object.assign({
+            candidate_limit: limit,
+            pages: 2,
+            params_by_strategy: params,
+            include_diagnostics: (ids || []).includes('strategy_validation_healthcheck')
+        }, body || {});
         return fetch(`strategy_api.php?action=${encodeURIComponent(action)}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -244,21 +303,28 @@ window.StrategyModule = {
 
     rowHtml(row) {
         const strategyText = row.strategy_names?.length ? row.strategy_names.join(' / ') : (this.strategyMap().get(this.activeStrategy)?.name || '-');
+        const assetType = row.asset_type || 'stock';
         const code = row.symbol || row.code || '';
+        const isStock = assetType === 'stock';
+        const changeValue = row.change_pct_display ?? (Number(row.change_pct) * 100);
+        const changeText = assetType === 'diagnostic' ? '-' : formatPct(changeValue);
+        const turnoverText = assetType === 'diagnostic' ? '-' : `${this.fmt(row.turnover_rate_display ?? row.turnover_rate * 100, 2)}%`;
+        const volumeRatioText = row.vol_ratio_5d == null ? '-' : this.fmt(row.vol_ratio_5d, 2);
+        const amountText = assetType === 'diagnostic' ? this.fmt(row.amount, 0) : formatAmount(row.amount || 0);
         return `
             <tr>
                 <td class="mono">${escapeHTML(code)}</td>
-                <td>${escapeHTML(row.name || '-')}</td>
-                <td class="mono">${this.fmt(row.close ?? row.price, 2)}</td>
-                <td class="${colorClass(row.change_pct_display ?? row.change_pct * 100)}">${formatPct(row.change_pct_display ?? row.change_pct * 100)}</td>
-                <td class="mono">${this.fmt(row.turnover_rate_display ?? row.turnover_rate * 100, 2)}%</td>
-                <td class="mono">${this.fmt(row.vol_ratio_5d, 2)}</td>
-                <td class="mono">${formatAmount(row.amount || 0)}</td>
+                <td>${escapeHTML(row.name || '-')}<span class="strategy-row-type">${escapeHTML(this.assetLabel(assetType))}</span></td>
+                <td class="mono">${row.close == null && row.price == null ? '-' : this.fmt(row.close ?? row.price, 2)}</td>
+                <td class="${assetType === 'diagnostic' ? '' : colorClass(changeValue)}">${changeText}</td>
+                <td class="mono">${turnoverText}</td>
+                <td class="mono">${volumeRatioText}</td>
+                <td class="mono">${amountText}</td>
                 <td class="strategy-score">${this.fmt(row.score, 1)}</td>
                 <td class="strategy-tags-cell">${escapeHTML(strategyText)}</td>
                 <td>
                     <div class="table-action-group">
-                        <button class="btn-quick-query" data-strategy-query="${escapeAttr(code)}">查询</button>
+                        <button class="btn-quick-query" data-strategy-query="${escapeAttr(code)}" ${isStock ? '' : 'disabled title="非股票结果不可查询K线"'}>${isStock ? '查询' : '说明'}</button>
                         <button class="btn-hot-ai" data-strategy-row-ai="${escapeAttr(code)}">${Icons.warning} AI</button>
                     </div>
                 </td>
@@ -274,7 +340,11 @@ window.StrategyModule = {
         if (!rows.length) return;
         const lines = rows.map((r, i) => {
             const strategies = r.strategy_names?.join('/') || this.strategyMap().get(this.activeStrategy)?.name || '';
-            return `${i + 1}. ${r.name}(${r.symbol}) 策略=${strategies} 价格=${this.fmt(r.close ?? r.price, 2)} 涨跌幅=${formatPct(r.change_pct_display ?? r.change_pct * 100)} 换手=${this.fmt(r.turnover_rate_display ?? r.turnover_rate * 100, 2)}% 量比=${this.fmt(r.vol_ratio_5d, 2)} 成交额=${formatAmount(r.amount || 0)} 评分=${this.fmt(r.score, 1)}`;
+            const assetType = this.assetLabel(r.asset_type || 'stock');
+            const price = r.close == null && r.price == null ? '-' : this.fmt(r.close ?? r.price, 2);
+            const change = r.change_pct_display == null && r.change_pct == null ? '-' : formatPct(r.change_pct_display ?? r.change_pct * 100);
+            const extra = r.diagnostic_message ? ` 诊断=${r.diagnostic_message}` : '';
+            return `${i + 1}. [${assetType}] ${r.name}(${r.symbol}) 策略=${strategies} 价格=${price} 涨跌幅=${change} 换手=${this.fmt(r.turnover_rate_display ?? r.turnover_rate * 100, 2)}% 量比=${this.fmt(r.vol_ratio_5d, 2)} 成交额=${formatAmount(r.amount || 0)} 评分=${this.fmt(r.score, 1)}${extra}`;
         }).join('\n');
         const prompt = `# 策略池命中复盘\n日期: ${this.asOf || new Date().toISOString().slice(0, 10)}\n${this.metaText()}\n\n${lines}\n\n${instruction}\n请说明数据局限：候选池来自东方财富排行合并，不等同完整本地全市场历史库。`;
         APP.advisorContext.source = '策略池';
@@ -283,6 +353,8 @@ window.StrategyModule = {
 
     openPoolModal() {
         this.draftPool = [...this.pool];
+        this.draftParams = JSON.parse(JSON.stringify(this.strategyParams || {}));
+        this.draftPool.forEach(id => this.ensureDraftParams(id));
         this.renderPoolModal();
         const modal = document.getElementById('strategy-pool-modal');
         if (modal) modal.style.display = 'flex';
@@ -295,7 +367,13 @@ window.StrategyModule = {
 
     savePoolDraft() {
         this.pool = [...this.draftPool];
+        this.strategyParams = JSON.parse(JSON.stringify(this.draftParams || {}));
+        Object.keys(this.strategyParams).forEach(id => {
+            if (!this.pool.includes(id)) delete this.strategyParams[id];
+        });
+        this.pool.forEach(id => this.ensureStrategyParams(id));
         this.savePool();
+        this.saveParams();
         this.closePoolModal();
         this.renderCards();
         this.results = {};
@@ -318,11 +396,17 @@ window.StrategyModule = {
         `).join('') : '<div class="strategy-list-empty">全部已加入策略池</div>';
         selectedEl.innerHTML = this.draftPool.length ? this.draftPool.map((id, index) => {
             const s = map.get(id);
+            const paramHtml = s ? this.paramEditorHtml(s, id) : '';
             return `
                 <div class="strategy-pool-item selected" draggable="true" data-id="${escapeAttr(id)}">
                     <button class="strategy-drag-handle" title="拖拽排序">⋮⋮</button>
-                    <span><b>${escapeHTML(s?.name || id)}</b><small>${escapeHTML(s?.description || '策略已失效')}</small></span>
-                    <i>${s ? '内置' : '失效'}</i>
+                    <span>
+                        <b>${escapeHTML(s?.name || id)}</b>
+                        <small>${escapeHTML(s?.description || '策略已失效')}</small>
+                        ${s?.risk_note ? `<small class="strategy-risk-note">${escapeHTML(s.risk_note)}</small>` : ''}
+                        ${paramHtml}
+                    </span>
+                    <i>${s ? escapeHTML(this.assetLabel(s.asset_type)) : '失效'}</i>
                     <button class="strategy-order-btn" data-move="${escapeAttr(id)}" data-dir="-1" ${index === 0 ? 'disabled' : ''}>↑</button>
                     <button class="strategy-order-btn" data-move="${escapeAttr(id)}" data-dir="1" ${index === this.draftPool.length - 1 ? 'disabled' : ''}>↓</button>
                     <button class="strategy-remove-btn" data-remove="${escapeAttr(id)}" title="移除">${Icons.close}</button>
@@ -333,13 +417,17 @@ window.StrategyModule = {
         availableEl.querySelectorAll('[data-add]').forEach(btn => {
             btn.addEventListener('click', () => {
                 const id = btn.dataset.add;
-                if (!this.draftPool.includes(id)) this.draftPool.push(id);
+                if (!this.draftPool.includes(id)) {
+                    this.draftPool.push(id);
+                    this.ensureDraftParams(id);
+                }
                 this.renderPoolModal();
             });
         });
         selectedEl.querySelectorAll('[data-remove]').forEach(btn => {
             btn.addEventListener('click', () => {
                 this.draftPool = this.draftPool.filter(id => id !== btn.dataset.remove);
+                delete this.draftParams[btn.dataset.remove];
                 this.renderPoolModal();
             });
         });
@@ -349,7 +437,50 @@ window.StrategyModule = {
                 this.renderPoolModal();
             });
         });
+        selectedEl.querySelectorAll('[data-param-strategy]').forEach(input => {
+            input.addEventListener('input', () => {
+                const sid = input.dataset.paramStrategy;
+                const pid = input.dataset.paramId;
+                if (!sid || !pid) return;
+                this.ensureDraftParams(sid);
+                const value = input.type === 'number' ? Number(input.value) : input.value;
+                if (Number.isFinite(value)) this.draftParams[sid][pid] = value;
+            });
+        });
         this.bindDragSort(selectedEl);
+    },
+
+    ensureDraftParams(id) {
+        const strategy = this.strategyMap().get(id);
+        if (!strategy) return;
+        const defaults = this.defaultParams(strategy);
+        const source = this.draftParams[id] || this.strategyParams[id] || {};
+        this.draftParams[id] = Object.assign({}, defaults, source);
+    },
+
+    paramEditorHtml(strategy, id) {
+        const params = strategy.params || [];
+        if (!params.length) return '';
+        this.ensureDraftParams(id);
+        const values = this.draftParams[id] || {};
+        return `
+            <div class="strategy-param-grid">
+                ${params.map(p => `
+                    <label class="strategy-param-field">
+                        <span>${escapeHTML(p.label || p.id)}</span>
+                        <input
+                            type="number"
+                            data-param-strategy="${escapeAttr(id)}"
+                            data-param-id="${escapeAttr(p.id)}"
+                            value="${escapeAttr(values[p.id] ?? p.default)}"
+                            min="${escapeAttr(p.min)}"
+                            max="${escapeAttr(p.max)}"
+                            step="${escapeAttr(p.step ?? (p.type === 'int' ? 1 : 0.01))}"
+                        >
+                    </label>
+                `).join('')}
+            </div>
+        `;
     },
 
     bindDragSort(container) {
@@ -395,6 +526,8 @@ window.StrategyModule = {
         parts.push(`${ids.length} 个策略`);
         if (meta.candidate_count != null) parts.push(`候选 ${meta.candidate_count}`);
         if (meta.hydrated_count != null) parts.push(`精算 ${meta.hydrated_count}`);
+        if (meta.history_ready_ratio != null) parts.push(`K线覆盖 ${(meta.history_ready_ratio * 100).toFixed(0)}%`);
+        if (meta.sector_count != null && meta.sector_count > 0) parts.push(`板块 ${meta.sector_count}`);
         if (meta.elapsed_ms != null) parts.push(`${meta.elapsed_ms} ms`);
         return parts.join(' · ');
     },
@@ -431,6 +564,10 @@ window.StrategyModule = {
     fmt(value, digits = 2) {
         const n = Number(value);
         return Number.isFinite(n) ? n.toFixed(digits) : '-';
+    },
+
+    assetLabel(type) {
+        return ({ stock: '股票', sector: '板块', diagnostic: '诊断' })[type || 'stock'] || '策略';
     },
 };
 

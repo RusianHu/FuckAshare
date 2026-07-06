@@ -1910,6 +1910,22 @@ tr.details-trigger td:first-child { position: relative; }
     border-radius: var(--radius-full);
     padding: 1px 7px;
 }
+.strategy-row-type {
+    display: inline-flex;
+    align-items: center;
+    height: 18px;
+    margin-left: 6px;
+    padding: 0 5px;
+    border-radius: var(--radius-xs);
+    background: var(--bg-hover);
+    color: var(--text-muted);
+    font-size: var(--fs-2xs);
+    font-weight: 500;
+}
+.btn-quick-query:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
 
 /* 策略命中结果 */
 .strategy-result { padding: 0 18px 18px; }
@@ -2072,7 +2088,44 @@ tr.details-trigger td:first-child { position: relative; }
 }
 .strategy-pool-item b { font-size: var(--fs-sm); font-weight: 650; }
 .strategy-pool-item small { margin-top: 2px; color: var(--text-muted); font-size: var(--fs-2xs); }
+.strategy-risk-note { color: var(--accent-orange) !important; }
 .strategy-pool-item em { color: var(--accent-blue); font-style: normal; font-size: 1rem; font-weight: 700; }
+.strategy-param-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+    margin-top: 8px;
+}
+.strategy-param-field {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(70px, 92px);
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    color: var(--text-muted);
+    font-size: var(--fs-2xs);
+}
+.strategy-param-field span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.strategy-param-field input {
+    width: 100%;
+    min-width: 0;
+    height: 26px;
+    padding: 0 6px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-xs);
+    background: var(--bg-input);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+}
+.strategy-param-field input:focus {
+    border-color: var(--accent-blue);
+    outline: none;
+}
 .strategy-drag-handle, .strategy-order-btn, .strategy-remove-btn {
     width: 24px; height: 24px;
     display: inline-flex; align-items: center; justify-content: center;
