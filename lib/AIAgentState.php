@@ -17,7 +17,7 @@ class AIAgentState
     /** @var int */
     public $toolCalls = 0;
 
-    /** @var array<string,bool> */
+    /** @var array<string,string> canonical signature => in_flight/completed */
     public $seenCalls = [];
 
     /** @var array<string,bool> */
@@ -54,4 +54,3 @@ class AIAgentState
         return (int)round((microtime(true) - $this->startedAt) * 1000);
     }
 }
-

@@ -353,13 +353,25 @@ FuckAshare/
 项目提供无框架 PHP CLI 测试脚本。Windows 本地可直接使用仓库内便携 PHP：
 
 ```powershell
+.\php\php.exe ai_tool_runtime_tests.php
 .\php\php.exe dividend_feature_tests.php
 .\php\php.exe dividend_feature_tests.php --live
-# 本地 127.0.0.1:18080 内部端点启动后：
 .\php\php.exe dividend_feature_tests.php --loopback
 ```
 
-`dividend_feature_tests.php` 默认覆盖换算、三档税率、状态、沪深北识别、排序分页、缺行情、stale 缓存及 AI Tool schema/参数；`--live` 连接真实东方财富事件与行情；`--loopback` 验证内部 token、两个新工具和并行 HTTP 执行。真实模型 SSE 与浏览器交互仍需在当前运行配置下单独验收。
+`ai_tool_runtime_tests.php` 覆盖 curl_multi 真实错误码、整批传输失败停止、参数规范化去重、空数据判定和纯数字股票代码 K 线指标。`dividend_feature_tests.php` 默认覆盖换算、三档税率、状态、沪深北识别、排序分页、缺行情、stale 缓存及 AI Tool schema/参数；`--live` 连接真实东方财富事件与行情；`--loopback` 验证内部 token、两个新工具和并行 HTTP 执行。
+
+本地启用 AI 并行工具时，主站和内部执行端点必须使用两个独立 PHP 进程。在项目目录分别启动：
+
+```powershell
+# 主站
+.\php\php.exe -S 127.0.0.1:8081 -t .
+
+# 另一个终端：内部工具执行端点，文档根目录为项目父目录
+.\php\php.exe -S 127.0.0.1:18080 -t ..
+```
+
+本地 `config.php` 对应设置为 `http://127.0.0.1:18080/FuckAshare/ai_tool_exec.php`。内部派发会强制绕过 `HTTP_PROXY/HTTPS_PROXY`；执行端点不可达时会保留 cURL/HTTP 诊断并停止本次工具循环，不会换用其他研究工具掩盖故障。VPS 继续使用 loopback-only Nginx，公网端点应保持 403。
 
 ## 常见问题
 
@@ -389,6 +401,11 @@ FuckAshare/
    - 检查 `tool_output_char_limit` 是否过小
    - 检查上游数据源是否命中缓存降级、熔断或接口失败
    - 对需要更长历史样本的问题，可要求 AI 查询更长 K 线或基金历史数据
+
+7. **AI 工具统一在约 2 秒后失败**
+   - 检查本机 `127.0.0.1:18080` 是否有独立内部执行进程监听
+   - 不要把单线程 PHP 开发服务器的主站端口同时作为内部执行端点
+   - 查看 `tool_call_finished.output_summary` 中的 `curl_errno`、`http_code` 和连接耗时
 
 ## 更新日志
 

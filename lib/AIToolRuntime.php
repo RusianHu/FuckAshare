@@ -34,26 +34,19 @@ class AIToolRuntime
             && !empty($this->options['internal_exec_token'])
             && count($toolCalls) > 0
             && function_exists('curl_multi_init')) {
-            $stateSnapshot = [
-                'toolCalls' => $state->toolCalls,
-                'seenCalls' => $state->seenCalls,
-                'researchState' => $state->researchState,
-                'stopReason' => $state->stopReason,
-            ];
             $parallel = $this->executeToolCallsParallel($toolCalls, $state, $emit, $round, $origin);
             if ($parallel !== null) {
                 return $parallel;
             }
-            $state->toolCalls = $stateSnapshot['toolCalls'];
-            $state->seenCalls = $stateSnapshot['seenCalls'];
-            $state->researchState = $stateSnapshot['researchState'];
-            $state->stopReason = $stateSnapshot['stopReason'];
-            // 内部执行失败，降级串行
+            // 已配置内部执行端点时不切换执行路径，避免掩盖部署/网络故障。
+            $state->stopReason = 'tool_transport_failure';
             $this->stream->agentEvent($emit, 'agent_status', [
                 'run_id' => $state->runId,
                 'round' => $round,
-                'message' => '内部工具执行不可用，已降级为串行执行；长工具期间可能无法持续发送心跳。',
+                'message' => '内部工具执行端点初始化失败，本轮已停止；请检查 loopback 执行服务。',
+                'stop_reason' => 'tool_transport_failure',
             ]);
+            return $this->internalInitFailureMessages($toolCalls, $state, $emit, $round, $origin);
         }
 
         $messages = [];
@@ -110,7 +103,7 @@ class AIToolRuntime
                     'args_summary' => $this->stream->summarizeArgs($args),
                 ]);
 
-                $signature = $name . ':' . md5(json_encode($args, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+                $signature = $this->toolCallSignature($name, $args);
                 if (isset($state->seenCalls[$signature])) {
                     $result = json_encode([
                         'success' => false,
@@ -121,9 +114,10 @@ class AIToolRuntime
                         'meta' => ['updated_at' => date('c')],
                     ], JSON_UNESCAPED_UNICODE);
                 } else {
-                    $state->seenCalls[$signature] = true;
+                    $state->seenCalls[$signature] = 'in_flight';
                     $this->executor->setResearchState($state->researchState);
                     $result = $this->executor->executeForModel($name, $args);
+                    $state->seenCalls[$signature] = 'completed';
                 }
             }
 
@@ -154,7 +148,7 @@ class AIToolRuntime
     /**
      * 并行执行一轮内的多个 toolCall：用 curl_multi 把每个工具派发到本地 ai_tool_exec.php 端点。
      * 串行逻辑的等价并行版：预处理(去重/校验) → 批量发 started 事件 → curl_multi 并发 → 按序回填 + finished 事件。
-     * 任意环节异常返回 null，由调用方降级为串行。
+     * 已配置内部端点时不回退到另一执行路径；传输故障会结构化返回并终止后续工具轮。
      */
     private function executeToolCallsParallel(array $toolCalls, AIAgentState $state, callable $emit, int $round, string $origin): ?array
     {
@@ -188,6 +182,7 @@ class AIToolRuntime
                 'kind' => 'dispatch',
                 'result' => null,
                 'started' => microtime(true),
+                'signature' => '',
             ];
 
             if (!is_array($args)) {
@@ -204,7 +199,8 @@ class AIToolRuntime
                     $args[$key] = null;
                 }
                 $entry['args'] = $args;
-                $signature = $name . ':' . md5(json_encode($args, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+                $signature = $this->toolCallSignature($name, $args);
+                $entry['signature'] = $signature;
                 if (isset($state->seenCalls[$signature])) {
                     $entry['kind'] = 'duplicate';
                     $entry['result'] = json_encode([
@@ -213,7 +209,7 @@ class AIToolRuntime
                         'meta' => ['updated_at' => date('c')],
                     ], JSON_UNESCAPED_UNICODE);
                 } else {
-                    $state->seenCalls[$signature] = true;
+                    $state->seenCalls[$signature] = 'in_flight';
                 }
             }
             $plan[] = $entry;
@@ -258,8 +254,11 @@ class AIToolRuntime
                 return null;
             }
             $handles = [];
+            $multiResults = [];
             $dispatchFailures = [];
             $timeout = (int)($this->options['tool_timeout'] ?? 45);
+            $endpointHost = strtolower((string)(parse_url($endpoint, PHP_URL_HOST) ?? ''));
+            $isLoopbackEndpoint = in_array($endpointHost, ['127.0.0.1', 'localhost', '::1'], true);
             foreach ($dispatchIndices as $idx) {
                 $p = $plan[$idx];
                 $body = json_encode(['token' => $token, 'tool_name' => $p['name'], 'args' => $p['args']], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
@@ -272,7 +271,7 @@ class AIToolRuntime
                 if ($host !== '' && preg_match('#^https?://(?:127\.0\.0\.1|localhost)(?::\d+)?/#i', $endpoint)) {
                     $headers[] = 'Host: ' . $host;
                 }
-                curl_setopt_array($ch, [
+                $curlOptions = [
                     CURLOPT_POST => true,
                     CURLOPT_POSTFIELDS => $body,
                     CURLOPT_HTTPHEADER => $headers,
@@ -280,7 +279,12 @@ class AIToolRuntime
                     CURLOPT_TIMEOUT => $timeout,
                     CURLOPT_CONNECTTIMEOUT => 5,
                     CURLOPT_NOSIGNAL => true,
-                ]);
+                ];
+                if ($isLoopbackEndpoint && defined('CURLOPT_NOPROXY')) {
+                    // 内部令牌和 loopback 请求绝不能进入 HTTP_PROXY/HTTPS_PROXY。
+                    $curlOptions[CURLOPT_NOPROXY] = '*';
+                }
+                curl_setopt_array($ch, $curlOptions);
                 curl_multi_add_handle($mh, $ch);
                 $handles[$idx] = $ch;
             }
@@ -302,9 +306,23 @@ class AIToolRuntime
                 }
             } while ($active > 0);
 
+            // curl_multi 的单请求错误码存放在完成消息中；curl_errno($ch) 可能错误地返回 0。
+            while ($info = curl_multi_info_read($mh)) {
+                $completedIdx = array_search($info['handle'] ?? null, $handles, true);
+                if ($completedIdx !== false) {
+                    $multiResults[$completedIdx] = (int)($info['result'] ?? CURLE_OK);
+                }
+            }
+
             foreach ($dispatchIndices as $idx) {
                 if (!isset($handles[$idx])) {
                     // curl_init 失败的项
+                    $dispatchFailures[] = [
+                        'idx' => $idx,
+                        'errno' => defined('CURLE_FAILED_INIT') ? CURLE_FAILED_INIT : 2,
+                        'http_code' => 0,
+                        'message' => 'curl init failed',
+                    ];
                     $plan[$idx]['result'] = json_encode([
                         'success' => false, 'source' => 'ai_tool', 'action' => $plan[$idx]['name'],
                         'code' => 'parallel_init_failed', 'message' => '并行派发 curl 初始化失败',
@@ -314,14 +332,17 @@ class AIToolRuntime
                 }
                 $ch = $handles[$idx];
                 $body = curl_multi_getcontent($ch);
-                $errno = curl_errno($ch);
+                $errno = (int)($multiResults[$idx] ?? curl_errno($ch));
                 $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+                $connectTimeMs = (int)round((float)curl_getinfo($ch, CURLINFO_CONNECT_TIME) * 1000);
+                $totalTimeMs = (int)round((float)curl_getinfo($ch, CURLINFO_TOTAL_TIME) * 1000);
                 curl_multi_remove_handle($mh, $ch);
                 curl_close($ch);
 
                 if ($errno !== 0 || $httpCode !== 200 || $body === false || $body === '') {
                     $errText = function_exists('curl_strerror') ? (string)curl_strerror($errno) : '';
                     $dispatchFailures[] = [
+                        'idx' => $idx,
                         'errno' => $errno,
                         'http_code' => $httpCode,
                         'message' => $errText,
@@ -330,13 +351,25 @@ class AIToolRuntime
                         'success' => false, 'source' => 'ai_tool', 'action' => $plan[$idx]['name'],
                         'code' => 'parallel_dispatch_failed',
                         'message' => '并行派发失败：' . ($errText !== '' ? $errText . ' ' : '') . "HTTP {$httpCode}",
-                        'meta' => ['updated_at' => date('c')],
+                        'meta' => [
+                            'updated_at' => date('c'),
+                            'curl_errno' => $errno,
+                            'http_code' => $httpCode,
+                            'connect_time_ms' => $connectTimeMs,
+                            'duration_ms' => $totalTimeMs,
+                        ],
                     ], JSON_UNESCAPED_UNICODE);
                 } else {
                     $decoded = json_decode($body, true);
                     if (is_array($decoded) && array_key_exists('success', $decoded)) {
                         $plan[$idx]['result'] = $body;
                     } else {
+                        $dispatchFailures[] = [
+                            'idx' => $idx,
+                            'errno' => 0,
+                            'http_code' => $httpCode,
+                            'message' => 'invalid internal JSON response',
+                        ];
                         $plan[$idx]['result'] = json_encode([
                             'success' => false, 'source' => 'ai_tool', 'action' => $plan[$idx]['name'],
                             'code' => 'parallel_bad_response', 'message' => '并行端点返回非预期 JSON',
@@ -348,18 +381,16 @@ class AIToolRuntime
             curl_multi_close($mh);
 
             if (!empty($dispatchFailures) && count($dispatchFailures) === count($dispatchIndices)) {
-                $shouldFallbackSerial = false;
-                foreach ($dispatchFailures as $failure) {
-                    $httpCode = (int)($failure['http_code'] ?? 0);
-                    $errno = (int)($failure['errno'] ?? 0);
-                    if ($errno !== 0 || in_array($httpCode, [301, 302, 307, 308, 403, 404, 405, 500, 502, 503, 504], true)) {
-                        $shouldFallbackSerial = true;
-                        break;
-                    }
-                }
-                if ($shouldFallbackSerial) {
-                    return null;
-                }
+                $state->stopReason = 'tool_transport_failure';
+                $firstFailure = $dispatchFailures[0];
+                $this->stream->agentEvent($emit, 'agent_status', [
+                    'run_id' => $state->runId,
+                    'round' => $round,
+                    'message' => '内部工具执行端点不可用，本轮工具均未执行；已停止追加工具调用。',
+                    'stop_reason' => 'tool_transport_failure',
+                    'curl_errno' => (int)($firstFailure['errno'] ?? 0),
+                    'http_code' => (int)($firstFailure['http_code'] ?? 0),
+                ]);
             }
         }
 
@@ -367,9 +398,19 @@ class AIToolRuntime
         $messages = [];
         $batchEnd = microtime(true);
         foreach ($plan as $p) {
-            $state->toolCalls++;
+            if ($p['kind'] === 'dispatch') {
+                $state->toolCalls++;
+            }
             $result = (string)$p['result'];
             $decoded = json_decode($result, true);
+            if ($p['kind'] === 'dispatch' && $p['signature'] !== '') {
+                $code = is_array($decoded) ? (string)($decoded['code'] ?? '') : '';
+                if (in_array($code, ['parallel_dispatch_failed', 'parallel_init_failed', 'parallel_bad_response'], true)) {
+                    unset($state->seenCalls[$p['signature']]);
+                } else {
+                    $state->seenCalls[$p['signature']] = 'completed';
+                }
+            }
             $this->recordResearchState($state, $p['name'], $p['args'], is_array($decoded) ? $decoded : []);
             $duration = $p['kind'] === 'dispatch' ? (int)round(($batchEnd - $p['started']) * 1000) : 0;
             $this->stream->agentEvent($emit, 'tool_call_finished', [
@@ -391,6 +432,74 @@ class AIToolRuntime
         }
 
         return $messages;
+    }
+
+    private function internalInitFailureMessages(array $toolCalls, AIAgentState $state, callable $emit, int $round, string $origin): array
+    {
+        $messages = [];
+        $toolLimit = max(1, (int)$this->options['max_tool_calls_per_round']);
+        foreach (array_slice($toolCalls, 0, $toolLimit) as $toolCall) {
+            $name = (string)($toolCall['function']['name'] ?? '');
+            $callId = (string)($toolCall['id'] ?? uniqid('call_', true));
+            $args = json_decode((string)($toolCall['function']['arguments'] ?? '{}'), true);
+            if (!is_array($args)) $args = [];
+            $this->stream->toolStatus($emit, $round, $name, $args, $origin);
+            $this->stream->agentEvent($emit, 'tool_call_started', [
+                'run_id' => $state->runId,
+                'round' => $round,
+                'tool_call_id' => $callId,
+                'tool' => $name,
+                'origin' => $origin,
+                'args_summary' => $this->stream->summarizeArgs($args),
+            ]);
+            $result = json_encode([
+                'success' => false,
+                'source' => 'ai_tool',
+                'action' => $name,
+                'code' => 'parallel_init_failed',
+                'message' => '内部并行执行器初始化失败，工具未执行',
+                'meta' => ['updated_at' => date('c')],
+            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            $decoded = json_decode((string)$result, true);
+            $this->stream->agentEvent($emit, 'tool_call_finished', [
+                'run_id' => $state->runId,
+                'round' => $round,
+                'tool_call_id' => $callId,
+                'tool' => $name,
+                'origin' => $origin,
+                'success' => false,
+                'duration_ms' => 0,
+                'output_summary' => $this->stream->toolOutputSummary(is_array($decoded) ? $decoded : []),
+            ]);
+            $messages[] = [
+                'role' => 'tool',
+                'tool_call_id' => $callId,
+                'name' => $name,
+                'content' => $result,
+            ];
+        }
+        return $messages;
+    }
+
+    private function toolCallSignature(string $name, array $args): string
+    {
+        $canonical = $this->canonicalizeValue($args);
+        return $name . ':' . md5((string)json_encode($canonical, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+    }
+
+    private function canonicalizeValue($value)
+    {
+        if (!is_array($value)) {
+            return $value;
+        }
+        $isList = count($value) === 0 || array_keys($value) === range(0, count($value) - 1);
+        if (!$isList) {
+            ksort($value, SORT_STRING);
+        }
+        foreach ($value as $key => $item) {
+            $value[$key] = $this->canonicalizeValue($item);
+        }
+        return $value;
     }
 
     private function requiredSchemaKeys(string $name): array

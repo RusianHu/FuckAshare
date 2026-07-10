@@ -356,7 +356,7 @@ class AIAgentStreamEmitter
             $summary['message'] = mb_substr($decoded['message'], 0, 160);
         }
         $meta = is_array($decoded['meta'] ?? null) ? $decoded['meta'] : [];
-        foreach (['provider_status', 'duration_ms', 'cache', 'capability_level', 'partial'] as $key) {
+        foreach (['provider_status', 'duration_ms', 'cache', 'capability_level', 'partial', 'curl_errno', 'http_code', 'connect_time_ms'] as $key) {
             if (array_key_exists($key, $meta)) {
                 $summary[$key] = $meta[$key];
             }

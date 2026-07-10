@@ -108,7 +108,10 @@ class DataSourceResult
      */
     public function hasData(): bool
     {
-        return $this->success && $this->data !== null;
+        if (!$this->success || $this->data === null) {
+            return false;
+        }
+        return !is_array($this->data) || count($this->data) > 0;
     }
 
     /**

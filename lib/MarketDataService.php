@@ -355,8 +355,9 @@ class MarketDataService
     {
         $data = $this->cache->get($key);
         if ($data === null) return null;
-
-        return $this->hydrateCacheResult($data);
+        $result = $this->hydrateCacheResult($data);
+        // 兼容清理旧版本写入的“success + []”空缓存，立即重新请求真实数据。
+        return $result !== null && $result->hasData() ? $result : null;
     }
 
     /**

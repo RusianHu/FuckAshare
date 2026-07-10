@@ -211,9 +211,9 @@ return [
             'max_deep_dive_candidates' => 10,   // 市场扫描类请求最多深挖候选数（每个候选会查行情/指标/资金流）
             'tool_timeout' => 180,              // 非流式工具决策/单工具执行耗时预算（秒）；基金长历史统计可能超过 60s
             'tool_output_char_limit' => 60000,  // 单个工具输出回填给模型的最大字符数
-            'parallel_tool_calls' => true,      // 允许模型一次请求多个工具；配置 internal_exec_token+endpoint 后服务端用 curl_multi 内部执行，否则串行
-            'internal_exec_token' => '',        // 内部工具执行鉴权 token；生产环境建议填 32+ 位随机字符串，留空会退回串行阻塞
-            'internal_exec_endpoint' => '',     // 内部工具执行端点 URL；留空时 ai_api.php 自动推导本机 /ai_tool_exec.php
+            'parallel_tool_calls' => true,      // 允许模型一次请求多个工具；配置 token+endpoint 后用 curl_multi 内部执行；端点故障时停止工具循环而不切换工具
+            'internal_exec_token' => '',        // 内部工具执行鉴权 token；生产环境建议填 32+ 位随机字符串；未配置内部派发时使用同进程执行
+            'internal_exec_endpoint' => '',     // 内部工具执行端点 URL；本地 PHP 开发服务器必须另启独立端口，不能自调用主站单线程端口
             'internal_exec_host' => '',         // 可选：仅本机 127.0.0.1 请求必须指定 vhost 时填写；错误填写可能触发 HTTP->HTTPS 301
             'expose_tool_trace' => true,        // 向前端发送 tool_status SSE 事件用于展示进度
             'emit_agent_events' => true,        // 发送 run_started/tool_call_finished/run_finished 等结构化智能体事件

@@ -9,6 +9,7 @@ require_once __DIR__ . '/DataSourceResult.php';
 require_once __DIR__ . '/HttpClient.php';
 require_once __DIR__ . '/CircuitBreaker.php';
 require_once __DIR__ . '/AppConfig.php';
+require_once __DIR__ . '/StockCode.php';
 
 class AshareBridge
 {
@@ -46,6 +47,12 @@ class AshareBridge
             return DataSourceResult::error(self::SOURCE_NAME, 'kline', 'circuit_open', 'Ashare 接口熔断中，暂停请求');
         }
 
+        $stockCode = StockCode::parse($code);
+        if (!$stockCode->isValid() || !$stockCode->isAStock()) {
+            return DataSourceResult::error(self::SOURCE_NAME, 'kline', 'invalid_code', "无效A股代码: {$code}");
+        }
+        $code = $stockCode->toAshare();
+
         $escapedScript   = escapeshellarg($this->scriptPath);
         $escapedCode     = escapeshellarg($code);
         $escapedFreq     = escapeshellarg($frequency);
@@ -71,6 +78,12 @@ class AshareBridge
         }
 
         $this->breaker->success();
+
+        if (!is_array($parsed['data']) || count($parsed['data']) === 0) {
+            return DataSourceResult::error(self::SOURCE_NAME, 'kline', 'empty', 'Ashare 未返回K线数据', [
+                'provider_status' => 200,
+            ]);
+        }
 
         return DataSourceResult::success(self::SOURCE_NAME, 'kline', $parsed['data'], [
             'provider_status' => 200,

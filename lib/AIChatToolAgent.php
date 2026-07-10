@@ -189,6 +189,20 @@ class AIChatToolAgent
                 'requested_tool_calls' => count($toolCalls),
             ]);
 
+            if ($state->stopReason === 'tool_transport_failure') {
+                $messages[] = [
+                    'role' => 'system',
+                    'content' => '内部工具执行端点发生传输故障，本轮请求的工具均未真实执行。禁止改用其他工具或继续重试；请只说明基础设施故障及尚未验证的数据，不要把它误判为财经数据源故障。',
+                ];
+                $checkpointManager->create('ready_for_final_answer', $messages, [
+                    'round' => $round,
+                    'stop_reason' => 'tool_transport_failure',
+                ]);
+                $this->stream->agentEvent($emit, 'final_answer_started', ['run_id' => $state->runId]);
+                $this->streamFinal($messages, $emit, $state, 'tool_transport_failure');
+                return;
+            }
+
             if ($this->toolBatchHasOnlyInvalidArguments($toolMessages)) {
                 $messages[] = [
                     'role' => 'system',
