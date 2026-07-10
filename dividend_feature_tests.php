@@ -29,7 +29,11 @@ class DividendTestProvider implements DividendDataProvider
     {
         $this->calls++;
         if ($this->fail) return DataSourceResult::error($this->sourceName(), 'dividend_detail_raw', 'network_error', 'fake failure');
-        return DataSourceResult::success($this->sourceName(), 'dividend_detail_raw', array_values(array_filter($this->rows(), function ($row) use ($code) { return $row['code'] === $code; })));
+        $rows = array_values(array_filter($this->rows(), function ($row) use ($code) { return $row['code'] === $code; }));
+        if ($code === '600001') {
+            $rows[] = array_merge($rows[0], ['report_date'=>'2001-12-31','record_date'=>'2002-06-18','ex_date'=>'2002-06-19','plan_text'=>'10派1元','cash_per_10'=>1.0]);
+        }
+        return DataSourceResult::success($this->sourceName(), 'dividend_detail_raw', $rows);
     }
     private function rows(): array
     {
@@ -57,6 +61,18 @@ class DividendTestMarket extends MarketDataService
             $items[] = ['code'=>$code,'name'=>$names[$code] ?? $code,'price'=>$prices[$code],'prev_close'=>$prices[$code] - 0.1];
         }
         return DataSourceResult::success('fake_quote', 'quote', $items);
+    }
+    public function kline(string $code, string $frequency = '1d', int $count = 120, string $endDate = '', string $source = self::SOURCE_AUTO, bool $fallback = true, bool $raw = false): DataSourceResult
+    {
+        $rows = [];
+        $start = new DateTimeImmutable('2026-06-25');
+        for ($i = 0; $i < 42; $i++) {
+            $date = $start->modify("+{$i} days");
+            if (in_array((int)$date->format('N'), [6, 7], true)) continue;
+            $base = 10 + $i * 0.03;
+            $rows[] = ['time'=>$date->format('Y-m-d'),'open'=>$base,'close'=>$base + ($i % 2 ? 0.08 : -0.04),'high'=>$base + 0.15,'low'=>$base - 0.12,'volume'=>100000 + $i * 1000];
+        }
+        return DataSourceResult::success('fake_kline', 'kline', $rows);
     }
 }
 
@@ -145,6 +161,10 @@ check(!$invalidMarket->success && $invalidMarket->errorCode === 'invalid_argumen
 
 $detail = $service->detail('600001', 10, 'within_1m');
 check($detail->success && ($detail->data['summary']['cash_dividend_events'] ?? 0) === 1, '个股详情与历史摘要正确');
+$fullDetail = $service->detail('600001', null, 'within_1m');
+check($fullDetail->success && count($fullDetail->data['history'] ?? []) === 2 && ($fullDetail->data['history_scope'] ?? '') === 'all', '完整历史模式不再截断十年前分红');
+$eventMarket = $service->eventMarketWindow('600001', '2026-07-16', 10, 15);
+check($eventMarket->success && !empty($eventMarket->data['rows']) && isset($eventMarket->data['summary']['event_change_pct']), '历史分红事件返回附近日 K 与摘要');
 check(StockCode::parse('920001')->market === 'BJ' && StockCode::parse('920001')->isAStock(), 'StockCode 支持北交所92代码');
 check(StockCode::parse('900901')->market === 'SH' && !StockCode::parse('900901')->isAStock(), '上海 B 股可识别市场但不属于 A 股');
 

@@ -3,7 +3,7 @@
  * 聚合行情服务 API
  * 给前端工作台使用的统一入口
  *
- * action: quote / kline / hot_stock / screener / fundx / stock_flow / sector_flow / hot_stocks / market_breadth / dividend_calendar / dividend_detail
+ * action: quote / kline / hot_stock / screener / fundx / stock_flow / sector_flow / hot_stocks / market_breadth / dividend_calendar / dividend_detail / dividend_event_market
  * source: auto / eastmoney / ashare / xueqiu
  * fallback: 1 / 0
  * raw: 1 / 0
@@ -150,14 +150,27 @@ switch ($action) {
             'maxLength' => SecurityAudit::MAX_CODE_LENGTH,
         ]);
         $years = SecurityAudit::getParam('years', 10, ['int' => true, 'min' => 1, 'max' => 20]);
+        $historyScope = SecurityAudit::getParam('history_scope', 'years', ['whitelist' => ['years', 'all']]);
         $holdingPeriod = SecurityAudit::getParam('holding_period', 'within_1m', ['whitelist' => SecurityAudit::ALLOWED_DIVIDEND_HOLDING_PERIODS]);
-        $result = (new DividendService())->detail($code, $years, $holdingPeriod);
+        $result = (new DividendService())->detail($code, $historyScope === 'all' ? null : $years, $holdingPeriod);
+        break;
+
+    case 'dividend_event_market':
+        $code = SecurityAudit::getParam('code', '', [
+            'required' => true,
+            'pattern' => SecurityAudit::STOCK_CODE_PATTERN,
+            'maxLength' => SecurityAudit::MAX_CODE_LENGTH,
+        ]);
+        $eventDate = SecurityAudit::getParam('event_date', '', ['required' => true, 'pattern' => SecurityAudit::DATE_PATTERN]);
+        $before = SecurityAudit::getParam('before', 10, ['int' => true, 'min' => 5, 'max' => 30]);
+        $after = SecurityAudit::getParam('after', 15, ['int' => true, 'min' => 5, 'max' => 30]);
+        $result = (new DividendService())->eventMarketWindow($code, $eventDate, $before, $after);
         break;
 
     default:
         echo json_encode([
             'success' => false,
-            'message' => '未知 action，支持: quote/kline/hot_stock/screener/fundx/stock_flow/sector_flow/hot_stocks/market_breadth/dividend_calendar/dividend_detail',
+            'message' => '未知 action，支持: quote/kline/hot_stock/screener/fundx/stock_flow/sector_flow/hot_stocks/market_breadth/dividend_calendar/dividend_detail/dividend_event_market',
         ], JSON_UNESCAPED_UNICODE);
         exit;
 }

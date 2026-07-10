@@ -179,12 +179,12 @@ class DividendService
         ]);
     }
 
-    public function detail(string $code, int $years = 10, string $holding = self::HOLD_WITHIN_1M): DataSourceResult
+    public function detail(string $code, ?int $years = 10, string $holding = self::HOLD_WITHIN_1M): DataSourceResult
     {
         $code = trim($code);
         $market = $this->marketOf($code);
         if ($market === null) return DataSourceResult::error('dividend', 'dividend_detail', 'invalid_code', '仅支持沪深北 A 股代码');
-        if ($years < 1 || $years > 20) return DataSourceResult::error('dividend', 'dividend_detail', 'invalid_years', '历史年数必须在1至20之间');
+        if ($years !== null && ($years < 1 || $years > 20)) return DataSourceResult::error('dividend', 'dividend_detail', 'invalid_years', '历史年数必须在1至20之间，或使用完整历史模式');
         if (!in_array($holding, $this->holdingPeriods(), true)) return DataSourceResult::error('dividend', 'dividend_detail', 'invalid_holding_period', '持有期参数无效');
 
         $rawResult = $this->cachedProviderResult(
@@ -195,13 +195,15 @@ class DividendService
         );
         if (!$rawResult->hasData()) return $rawResult;
 
-        $cutoff = (new DateTimeImmutable('today', new DateTimeZone('Asia/Shanghai')))->modify("-{$years} years")->format('Y-m-d');
+        $cutoff = $years === null
+            ? null
+            : (new DateTimeImmutable('today', new DateTimeZone('Asia/Shanghai')))->modify("-{$years} years")->format('Y-m-d');
         $taxRate = $this->taxRate($holding);
         $history = [];
         foreach ((array)$rawResult->data as $row) {
             if (!is_array($row) || ($row['code'] ?? '') !== $code) continue;
             $eventDate = $row['record_date'] ?? $row['report_date'] ?? null;
-            if ($eventDate !== null && $eventDate < $cutoff) continue;
+            if ($cutoff !== null && $eventDate !== null && $eventDate < $cutoff) continue;
             $cash10 = is_numeric($row['cash_per_10'] ?? null) ? (float)$row['cash_per_10'] : null;
             $cashShare = $cash10 !== null ? $cash10 / 10 : null;
             $history[] = [
@@ -265,6 +267,8 @@ class DividendService
             ],
             'holding_period' => $holding,
             'tax_rate_pct' => $taxRate * 100,
+            'history_scope' => $years === null ? 'all' : 'years',
+            'history_years' => $years,
             'source_url' => 'https://data.eastmoney.com/yjfp/detail/' . rawurlencode($code) . '.html',
         ], [
             'partial' => empty($quote),
@@ -272,6 +276,128 @@ class DividendService
             'tax_model' => 'cn_a_share_individual_2015_101',
             'unavailable_fields' => ['pay_date', 'announcement_url'],
             'as_of' => $this->nowIso(),
+        ]);
+    }
+
+    /**
+     * 获取某次除权除息日前后的日 K，并生成便于前端展示的事件摘要。
+     */
+    public function eventMarketWindow(string $code, string $eventDate, int $before = 10, int $after = 15): DataSourceResult
+    {
+        $code = trim($code);
+        $market = $this->marketOf($code);
+        if ($market === null) {
+            return DataSourceResult::error('dividend', 'dividend_event_market', 'invalid_code', '仅支持沪深北 A 股代码');
+        }
+        $event = DateTimeImmutable::createFromFormat('!Y-m-d', $eventDate, new DateTimeZone('Asia/Shanghai'));
+        if (!$event || $event->format('Y-m-d') !== $eventDate) {
+            return DataSourceResult::error('dividend', 'dividend_event_market', 'invalid_date', '事件日期格式无效');
+        }
+        $before = max(5, min(30, $before));
+        $after = max(5, min(30, $after));
+        $endDate = $event->modify('+' . max(30, $after * 3) . ' days')->format('Y-m-d');
+        $count = min(180, $before + $after + 70);
+        $providerCode = $market . $code;
+        $result = $this->market->kline($providerCode, '1d', $count, $endDate, MarketDataService::SOURCE_ASHARE, false, false);
+        if (!$result->hasData()) {
+            return DataSourceResult::error($result->source ?: 'ashare', 'dividend_event_market', $result->errorCode ?: 'kline_unavailable', $result->errorMessage ?: '该次分红附近的日 K 暂不可用', $result->meta);
+        }
+
+        $rows = [];
+        foreach ((array)$result->data as $row) {
+            if (!is_array($row)) continue;
+            $time = substr((string)($row['time'] ?? $row['date'] ?? ''), 0, 10);
+            if ($time === '' || $time > $endDate) continue;
+            $open = $this->numeric($row['open'] ?? null);
+            $close = $this->numeric($row['close'] ?? null);
+            $high = $this->numeric($row['high'] ?? null);
+            $low = $this->numeric($row['low'] ?? null);
+            if ($open === null || $close === null || $high === null || $low === null) continue;
+            $rows[] = [
+                'date' => $time,
+                'open' => $this->round($open, 4),
+                'close' => $this->round($close, 4),
+                'high' => $this->round($high, 4),
+                'low' => $this->round($low, 4),
+                'volume' => $this->round($this->numeric($row['volume'] ?? null), 2),
+                'amount' => $this->round($this->numeric($row['amount'] ?? null), 2),
+                'turnover_rate' => $this->round($this->numeric($row['turnover_rate'] ?? null), 4),
+            ];
+        }
+        usort($rows, function ($a, $b) { return strcmp($a['date'], $b['date']); });
+        if (empty($rows)) {
+            return DataSourceResult::error($result->source, 'dividend_event_market', 'kline_empty', '该次分红附近没有可展示的日 K');
+        }
+
+        $anchor = null;
+        foreach ($rows as $index => $row) {
+            if ($row['date'] >= $eventDate) { $anchor = $index; break; }
+        }
+        if ($anchor === null && $rows[count($rows) - 1]['date'] < $eventDate) {
+            $window = array_slice($rows, -$before);
+            $eventIndex = null;
+        } else {
+            if ($anchor === null) {
+                return DataSourceResult::error($result->source, 'dividend_event_market', 'event_outside_kline', '行情数据未覆盖该次分红日期');
+            }
+            $start = max(0, $anchor - $before);
+            $window = array_slice($rows, $start, $before + $after + 1);
+            $eventIndex = $anchor - $start;
+        }
+        $window = array_values($window);
+        foreach ($window as $index => &$row) {
+            $previous = $index > 0 ? (float)$window[$index - 1]['close'] : null;
+            $row['change_pct'] = $previous && $previous != 0.0 ? $this->round(((float)$row['close'] / $previous - 1) * 100, 4) : null;
+            $row['is_event_day'] = $eventIndex !== null && $index === $eventIndex;
+        }
+        unset($row);
+
+        $eventRow = $eventIndex !== null ? ($window[$eventIndex] ?? null) : null;
+        $preClose = $eventIndex !== null && $eventIndex > 0 ? (float)$window[$eventIndex - 1]['close'] : null;
+        $eventChange = $eventRow && $preClose ? ((float)$eventRow['close'] / $preClose - 1) * 100 : null;
+        $firstClose = (float)($window[0]['close'] ?? 0);
+        $lastClose = (float)($window[count($window) - 1]['close'] ?? 0);
+        $periodChange = $firstClose > 0 ? ($lastClose / $firstClose - 1) * 100 : null;
+        $preVolumes = [];
+        $postVolumes = [];
+        foreach ($window as $index => $row) {
+            if (!is_numeric($row['volume'] ?? null)) continue;
+            if ($eventIndex === null || $index < $eventIndex) $preVolumes[] = (float)$row['volume'];
+            elseif ($index > $eventIndex) $postVolumes[] = (float)$row['volume'];
+        }
+        $preAvg = $this->average($preVolumes);
+        $postAvg = $this->average($postVolumes);
+        $recoveryDays = null;
+        if ($preClose !== null && $eventIndex !== null) {
+            for ($i = $eventIndex; $i < count($window); $i++) {
+                if ((float)$window[$i]['close'] >= $preClose) { $recoveryDays = $i - $eventIndex; break; }
+            }
+        }
+
+        return DataSourceResult::success($result->source, 'dividend_event_market', [
+            'code' => $code,
+            'event_date' => $eventDate,
+            'event_trading_date' => $eventRow['date'] ?? null,
+            'event_index' => $eventIndex,
+            'rows' => $window,
+            'summary' => [
+                'event_change_pct' => $this->round($eventChange, 4),
+                'window_change_pct' => $this->round($periodChange, 4),
+                'window_high' => $this->round(max(array_column($window, 'high')), 4),
+                'window_low' => $this->round(min(array_column($window, 'low')), 4),
+                'pre_close' => $this->round($preClose, 4),
+                'event_close' => $eventRow['close'] ?? null,
+                'pre_avg_volume' => $this->round($preAvg, 2),
+                'post_avg_volume' => $this->round($postAvg, 2),
+                'post_pre_volume_ratio' => $preAvg && $postAvg !== null ? $this->round($postAvg / $preAvg, 4) : null,
+                'recovery_trading_days' => $recoveryDays,
+                'recovered_in_window' => $recoveryDays !== null,
+            ],
+        ], [
+            'as_of' => $this->nowIso(),
+            'requested_before' => $before,
+            'requested_after' => $after,
+            'price_adjustment' => 'provider_default',
         ]);
     }
 
@@ -403,6 +529,16 @@ class DividendService
     private function round(?float $value, int $precision): ?float
     {
         return $value === null ? null : round($value, $precision);
+    }
+
+    private function numeric($value): ?float
+    {
+        return is_numeric($value) ? (float)$value : null;
+    }
+
+    private function average(array $values): ?float
+    {
+        return empty($values) ? null : array_sum($values) / count($values);
     }
 
     private function nowIso(): string

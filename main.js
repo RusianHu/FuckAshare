@@ -125,6 +125,9 @@ const ThemeManager = {
         if (typeof ChartModule !== 'undefined' && ChartModule.chart) {
             ChartModule.updateChartTheme();
         }
+        if (typeof DividendModule !== 'undefined' && DividendModule.eventChart) {
+            DividendModule.updateEventChartTheme();
+        }
 
         // GSAP 入场动画
         if (animate && typeof gsap !== 'undefined') {
@@ -1396,8 +1399,19 @@ const DividendModule = {
     pagination: { page: 1, pages: 1, total: 0 },
     meta: {},
     controller: null,
+    marketController: null,
     timer: null,
     lastFocused: null,
+    detailData: null,
+    detailSelected: null,
+    historyPage: 1,
+    historyPageSize: 8,
+    selectedHistoryIndex: -1,
+    eventChart: null,
+    eventChartSeries: null,
+    eventChartResizeObserver: null,
+    eventChartRows: [],
+    eventChartSummary: {},
 
     init() {
         if (this.initialized || !document.getElementById('panel-dividend')) return;
@@ -1429,7 +1443,13 @@ const DividendModule = {
         });
         document.getElementById('dividend-detail-close')?.addEventListener('click', () => this.closeDetail());
         document.getElementById('dividend-detail-overlay')?.addEventListener('click', e => {
-            if (e.target.id === 'dividend-detail-overlay') this.closeDetail();
+            if (e.target.id === 'dividend-detail-overlay') { this.closeDetail(); return; }
+            const historyItem = e.target.closest('[data-dividend-history-index]');
+            if (historyItem) { this.selectHistoryEvent(Number(historyItem.dataset.dividendHistoryIndex)); return; }
+            const pageButton = e.target.closest('[data-dividend-history-page]');
+            if (pageButton) { this.setHistoryPage(Number(pageButton.dataset.dividendHistoryPage)); return; }
+            const eventNav = e.target.closest('[data-dividend-event-nav]');
+            if (eventNav) this.selectHistoryEvent(this.selectedHistoryIndex + Number(eventNav.dataset.dividendEventNav));
         });
         document.addEventListener('keydown', e => {
             const overlay = document.getElementById('dividend-detail-overlay');
@@ -1602,7 +1622,7 @@ const DividendModule = {
         setTimeout(() => drawer?.focus(), 20);
         try {
             const holding = this.filters().holding_period;
-            const response = await fetch(`market_api.php?action=dividend_detail&code=${encodeURIComponent(item.code)}&years=10&holding_period=${encodeURIComponent(holding)}`, { cache: 'no-store' });
+            const response = await fetch(`market_api.php?action=dividend_detail&code=${encodeURIComponent(item.code)}&history_scope=all&holding_period=${encodeURIComponent(holding)}`, { cache: 'no-store' });
             const payload = await response.json();
             if (!payload.success) throw new Error(payload.message || '加载详情失败');
             this.renderDetail(payload.data || {}, item);
@@ -1614,25 +1634,309 @@ const DividendModule = {
     renderDetail(data, selected) {
         const content = document.getElementById('dividend-detail-content');
         if (!content) return;
+        this.detailData = data;
+        this.detailSelected = selected;
+        this.historyPage = 1;
+        this.selectedHistoryIndex = -1;
         const stock = data.stock || {};
         const summary = data.summary || {};
         const event = data.upcoming_event || selected || {};
         const history = Array.isArray(data.history) ? data.history : [];
-        const maxCash = Math.max(...history.map(row => Number(row.cash_per_share) || 0), 0.0001);
+        const dated = history.map(row => row.record_date || row.ex_date || row.report_date).filter(Boolean);
+        const newest = dated[0] || '-';
+        const oldest = dated[dated.length - 1] || '-';
         content.innerHTML = `
             <section class="dividend-detail-hero">
                 <div class="dividend-detail-hero-row"><div><div class="dividend-detail-name">${escapeHTML(stock.name || selected.name || '-')}</div><div class="dividend-detail-code">${escapeHTML(stock.code || selected.code || '')} · ${(stock.market || selected.market || '').toUpperCase()}</div></div><div><div class="dividend-detail-price">¥${this.number(stock.price, 2)}</div><small>当前价格快照</small></div></div>
                 <div class="dividend-detail-metrics"><div class="dividend-detail-metric"><span>现金分红事件</span><b>${summary.cash_dividend_events ?? 0} 次</b></div><div class="dividend-detail-metric"><span>覆盖年份</span><b>${summary.years_with_cash_dividend ?? 0} 年</b></div><div class="dividend-detail-metric"><span>近5年每股合计</span><b>¥${this.number(summary.five_year_total_cash_per_share, 4)}</b></div></div>
             </section>
             <section class="dividend-detail-section"><h4>当前事件</h4><div class="dividend-current-plan"><b>${escapeHTML(event.plan_text || selected.plan_text || '暂无完整方案文本')}</b><br>登记日 ${escapeHTML(event.record_date || selected.record_date || '-')} · 除息日 ${escapeHTML(event.ex_date || selected.ex_date || '-')} · 派息日未由当前数据源提供</div></section>
-            <section class="dividend-detail-section"><h4>近10年现金分红时间线</h4><div class="dividend-history-list">${history.length ? history.map(row => {
-                const width = Math.max(4, (Number(row.cash_per_share) || 0) / maxCash * 100);
-                return `<div class="dividend-history-item"><time>${escapeHTML(row.record_date || row.report_date || '-')}</time><div><div class="dividend-history-bar"><i style="width:${width.toFixed(1)}%"></i></div><small>${escapeHTML(row.plan_status || '')}</small></div><span class="dividend-history-value">¥${this.number(row.cash_per_share, 6)}</span></div>`;
-            }).join('') : '<p class="placeholder-text">暂无历史现金分红记录</p>'}</div></section>
+            <section class="dividend-detail-section dividend-history-section">
+                <div class="dividend-section-heading"><div><h4>完整历史分红</h4><small>${history.length} 条记录 · ${escapeHTML(oldest)} 至 ${escapeHTML(newest)}</small></div><span class="dividend-history-hint">点选任一次，查看除息日前后日 K</span></div>
+                <div id="dividend-history-list" class="dividend-history-list"></div>
+                <div id="dividend-history-pagination" class="dividend-history-pagination"></div>
+            </section>
+            <section class="dividend-detail-section dividend-market-section"><div id="dividend-event-market" class="dividend-event-market"><p class="placeholder-text">选择一条历史分红，查看附近行情</p></div></section>
             <section class="dividend-detail-section"><a class="btn-sm" href="${escapeAttr(data.source_url || selected.source_url || '#')}" target="_blank" rel="noopener noreferrer">查看数据源详情</a></section>`;
+        this.renderHistoryPage();
+        if (history.length) {
+            const selectedDate = selected.ex_date || selected.record_date || '';
+            let defaultIndex = history.findIndex(row => (row.ex_date || row.record_date || '') === selectedDate);
+            if (defaultIndex < 0) defaultIndex = 0;
+            this.selectHistoryEvent(defaultIndex);
+        }
+    },
+
+    setHistoryPage(page) {
+        const history = Array.isArray(this.detailData?.history) ? this.detailData.history : [];
+        const pages = Math.max(1, Math.ceil(history.length / this.historyPageSize));
+        this.historyPage = Math.max(1, Math.min(pages, page));
+        this.renderHistoryPage();
+    },
+
+    renderHistoryPage() {
+        const history = Array.isArray(this.detailData?.history) ? this.detailData.history : [];
+        const list = document.getElementById('dividend-history-list');
+        const pagination = document.getElementById('dividend-history-pagination');
+        if (!list || !pagination) return;
+        const pages = Math.max(1, Math.ceil(history.length / this.historyPageSize));
+        this.historyPage = Math.max(1, Math.min(pages, this.historyPage));
+        const start = (this.historyPage - 1) * this.historyPageSize;
+        const rows = history.slice(start, start + this.historyPageSize);
+        list.innerHTML = rows.length ? rows.map((row, offset) => {
+            const index = start + offset;
+            const date = row.ex_date || row.record_date || row.report_date || '-';
+            const cash = Number(row.cash_per_share);
+            return `<button type="button" class="dividend-history-item${index === this.selectedHistoryIndex ? ' active' : ''}" data-dividend-history-index="${index}" aria-pressed="${index === this.selectedHistoryIndex ? 'true' : 'false'}">
+                <time>${escapeHTML(date)}</time>
+                <span class="dividend-history-plan"><b>${escapeHTML(row.plan_text || '方案文本暂缺')}</b><small>登记 ${escapeHTML(row.record_date || '-')} · ${escapeHTML(row.plan_status || '状态未知')}</small></span>
+                <span class="dividend-history-value">${Number.isFinite(cash) ? `¥${this.number(cash, 6)}/股` : '非现金方案'}</span>
+                <span class="dividend-history-open">日 K ›</span>
+            </button>`;
+        }).join('') : '<p class="placeholder-text">暂无历史分红记录</p>';
+        pagination.innerHTML = history.length > this.historyPageSize ? `
+            <button class="btn-sm" type="button" data-dividend-history-page="${this.historyPage - 1}" ${this.historyPage <= 1 ? 'disabled' : ''}>上一页</button>
+            <span>第 ${this.historyPage} / ${pages} 页</span>
+            <button class="btn-sm" type="button" data-dividend-history-page="${this.historyPage + 1}" ${this.historyPage >= pages ? 'disabled' : ''}>下一页</button>` : '';
+    },
+
+    async selectHistoryEvent(index) {
+        const history = Array.isArray(this.detailData?.history) ? this.detailData.history : [];
+        if (!Number.isInteger(index) || index < 0 || index >= history.length) return;
+        this.selectedHistoryIndex = index;
+        this.historyPage = Math.floor(index / this.historyPageSize) + 1;
+        this.renderHistoryPage();
+        const panel = document.getElementById('dividend-event-market');
+        const row = history[index];
+        const eventDate = row.ex_date || row.record_date || row.report_date;
+        if (!panel) return;
+        this.destroyEventChart();
+        panel.innerHTML = `<div class="dividend-market-loading"><div class="spinner"></div><span>正在加载 ${escapeHTML(eventDate || '')} 附近日 K...</span></div>`;
+        if (!eventDate) {
+            panel.innerHTML = '<div class="dividend-market-error">该条记录缺少可定位的事件日期。</div>';
+            return;
+        }
+        if (this.marketController) this.marketController.abort();
+        this.marketController = new AbortController();
+        const code = this.detailData?.stock?.code || this.detailSelected?.code || '';
+        try {
+            const params = new URLSearchParams({ action: 'dividend_event_market', code, event_date: eventDate, before: '10', after: '15' });
+            const response = await fetch(`market_api.php?${params}`, { signal: this.marketController.signal, cache: 'no-store' });
+            const payload = await response.json();
+            if (!payload.success) throw new Error(payload.message || '附近日 K 暂不可用');
+            if (index !== this.selectedHistoryIndex) return;
+            this.renderEventMarket(payload.data || {}, row, payload.source || '-');
+        } catch (error) {
+            if (error.name === 'AbortError' || index !== this.selectedHistoryIndex) return;
+            panel.innerHTML = `<div class="dividend-market-error"><b>附近日 K 暂时无法加载</b><span>${escapeHTML(error.message || '行情服务返回异常')}</span><small>分红历史仍可继续翻阅，稍后也可重新点选本条记录。</small></div>`;
+        }
+    },
+
+    renderEventMarket(data, event, source) {
+        const panel = document.getElementById('dividend-event-market');
+        if (!panel) return;
+        const rows = Array.isArray(data.rows) ? data.rows : [];
+        const summary = data.summary || {};
+        const changeClass = value => Number(value) > 0 ? 'price-up' : Number(value) < 0 ? 'price-down' : '';
+        const recovery = !data.event_trading_date
+            ? '等待事件发生'
+            : summary.recovered_in_window
+                ? (Number(summary.recovery_trading_days) === 0 ? '除息当日已收复' : `${summary.recovery_trading_days} 个交易日`)
+                : '窗口内未收复';
+        panel.innerHTML = `
+            <div class="dividend-market-head">
+                <button class="btn-sm" type="button" data-dividend-event-nav="-1" ${this.selectedHistoryIndex <= 0 ? 'disabled' : ''}>‹ 较新一次</button>
+                <div><span>除息事件行情</span><b>${escapeHTML(data.event_date || event.ex_date || event.record_date || '-')}</b></div>
+                <button class="btn-sm" type="button" data-dividend-event-nav="1" ${this.selectedHistoryIndex >= (this.detailData?.history?.length || 1) - 1 ? 'disabled' : ''}>较早一次 ›</button>
+            </div>
+            <div class="dividend-event-plan"><b>${escapeHTML(event.plan_text || '方案文本暂缺')}</b><span>每股现金 ¥${this.number(event.cash_per_share, 6)} · 登记日 ${escapeHTML(event.record_date || '-')} · 除息日 ${escapeHTML(event.ex_date || '-')}</span></div>
+            <div class="dividend-market-summary">
+                <div><span>除息日涨跌</span><b class="${changeClass(summary.event_change_pct)}">${this.signedPercent(summary.event_change_pct)}</b></div>
+                <div><span>窗口涨跌</span><b class="${changeClass(summary.window_change_pct)}">${this.signedPercent(summary.window_change_pct)}</b></div>
+                <div><span>区间高 / 低</span><b>${this.number(summary.window_high, 2)} / ${this.number(summary.window_low, 2)}</b></div>
+                <div><span>除权缺口恢复</span><b>${escapeHTML(recovery)}</b></div>
+                <div><span>除息后量比</span><b>${Number.isFinite(Number(summary.post_pre_volume_ratio)) ? `${this.number(summary.post_pre_volume_ratio, 2)}×` : '—'}</b></div>
+            </div>
+            <div class="dividend-kline-card">
+                <div class="dividend-kline-caption">
+                    <div class="dividend-kline-title"><span class="dividend-kline-chip">日 K</span><div><b>除息前后价格走势</b><small>前 10 / 后 15 个交易日</small></div></div>
+                    <span class="dividend-kline-source">${escapeHTML(source)}</span>
+                </div>
+                <div class="dividend-kline-quote" id="dividend-kline-quote" aria-live="polite">
+                    <time>—</time><span>开 <b>—</b></span><span>高 <b>—</b></span><span>低 <b>—</b></span><span>收 <b>—</b></span><span>涨跌 <b>—</b></span><span>成交量 <b>—</b></span>
+                </div>
+                <div class="dividend-kline-legend"><span><i class="legend-candle-up"></i>上涨</span><span><i class="legend-candle-down"></i>下跌</span><span><i class="legend-ma5"></i>MA5 <b id="dividend-kline-ma5">—</b></span><span><i class="legend-ma10"></i>MA10 <b id="dividend-kline-ma10">—</b></span><span class="legend-event"><i></i>除息日</span></div>
+                <div class="dividend-kline-stage"><div id="dividend-event-kline" role="img" aria-label="${escapeAttr(data.event_date || '')} 附近日 K 蜡烛图"></div></div>
+                <div class="dividend-kline-foot"><span>价格轴</span><i></i><span>成交量</span><small>拖动查看 · 滚轮或双指缩放</small></div>
+            </div>
+            <details class="dividend-kline-details"><summary>展开每日行情明细（${rows.length} 条）</summary><div class="dividend-kline-table-wrap"><table class="dividend-kline-table"><thead><tr><th>日期</th><th>开</th><th>高</th><th>低</th><th>收</th><th>涨跌</th><th>成交量</th></tr></thead><tbody>${rows.map(row => `<tr class="${row.is_event_day ? 'event-day' : ''}"><td>${escapeHTML(row.date || '-')} ${row.is_event_day ? '<em>除息</em>' : ''}</td><td>${this.number(row.open, 2)}</td><td>${this.number(row.high, 2)}</td><td>${this.number(row.low, 2)}</td><td>${this.number(row.close, 2)}</td><td class="${changeClass(row.change_pct)}">${this.signedPercent(row.change_pct)}</td><td>${this.compactNumber(row.volume)}</td></tr>`).join('')}</tbody></table></div></details>
+            <p class="dividend-market-note">行情使用数据源默认价格口径，用于观察事件前后走势；它不能单独证明价格变化由分红造成。</p>`;
+        requestAnimationFrame(() => this.initEventKline(rows, summary));
+    },
+
+    initEventKline(rows, summary = {}) {
+        const container = document.getElementById('dividend-event-kline');
+        if (!container || !rows.length) return;
+        this.destroyEventChart();
+        this.eventChartRows = rows;
+        this.eventChartSummary = summary;
+        if (typeof LightweightCharts === 'undefined') {
+            container.innerHTML = '<div class="dividend-market-error">图表组件未能加载，请展开下方每日行情明细查看。</div>';
+            return;
+        }
+
+        const colors = ChartModule.getChartColors();
+        const css = getComputedStyle(document.documentElement);
+        const cssVar = (name, fallback) => css.getPropertyValue(name).trim() || fallback;
+        const ma5Color = '#e7a829';
+        const ma10Color = cssVar('--accent-blue', '#4d9fff');
+        const accent = cssVar('--accent-blue', '#4d9fff');
+        const eventColor = cssVar('--accent-purple', '#8b6de9');
+        const chart = LightweightCharts.createChart(container, {
+            width: Math.max(320, container.clientWidth),
+            height: 340,
+            layout: { ...colors.layout, fontFamily: cssVar('--font-sans', 'sans-serif'), attributionLogo: false },
+            grid: {
+                vertLines: { color: colors.grid.vertLines.color, style: 2 },
+                horzLines: { color: colors.grid.horzLines.color, style: 2 },
+            },
+            crosshair: {
+                mode: LightweightCharts.CrosshairMode?.Normal ?? 0,
+                vertLine: { color: accent, width: 1, style: 2, labelBackgroundColor: accent },
+                horzLine: { color: colors.rightPriceScale.borderColor, width: 1, style: 2 },
+            },
+            rightPriceScale: {
+                ...colors.rightPriceScale,
+                scaleMargins: { top: 0.1, bottom: 0.28 },
+                minimumWidth: 56,
+            },
+            timeScale: {
+                ...colors.timeScale,
+                timeVisible: false,
+                secondsVisible: false,
+                borderVisible: false,
+                rightOffset: 1,
+                barSpacing: 19,
+                minBarSpacing: 8,
+                fixLeftEdge: true,
+                fixRightEdge: true,
+            },
+            localization: { locale: 'zh-CN', priceFormatter: price => Number(price).toFixed(2) },
+            handleScroll: { mouseWheel: false, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
+            handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
+        });
+        const candleSeries = chart.addCandlestickSeries({
+            ...colors.candle,
+            priceLineVisible: false,
+            lastValueVisible: true,
+            priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
+        });
+        const volumeSeries = chart.addHistogramSeries({
+            priceFormat: { type: 'volume' },
+            priceScaleId: 'volume',
+            priceLineVisible: false,
+            lastValueVisible: false,
+        });
+        chart.priceScale('volume').applyOptions({ scaleMargins: { top: 0.79, bottom: 0.02 } });
+        const ma5Series = chart.addLineSeries({ color: ma5Color, lineWidth: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+        const ma10Series = chart.addLineSeries({ color: ma10Color, lineWidth: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false });
+
+        const closes = rows.map(row => Number(row.close));
+        const ma5 = Indicators.MA(closes, 5);
+        const ma10 = Indicators.MA(closes, 10);
+        candleSeries.setData(rows.map(row => ({ time: row.date, open: Number(row.open), high: Number(row.high), low: Number(row.low), close: Number(row.close) })));
+        volumeSeries.setData(rows.map(row => ({
+            time: row.date,
+            value: Number(row.volume) || 0,
+            color: Number(row.close) >= Number(row.open) ? colors.volume.up : colors.volume.down,
+        })));
+        ma5Series.setData(rows.map((row, index) => ma5[index] === null ? null : ({ time: row.date, value: ma5[index] })).filter(Boolean));
+        ma10Series.setData(rows.map((row, index) => ma10[index] === null ? null : ({ time: row.date, value: ma10[index] })).filter(Boolean));
+        const eventRow = rows.find(row => row.is_event_day);
+        if (eventRow) {
+            candleSeries.setMarkers([{ time: eventRow.date, position: 'aboveBar', color: eventColor, shape: 'arrowDown', text: '除息' }]);
+        }
+        if (Number.isFinite(Number(summary.pre_close))) {
+            candleSeries.createPriceLine({ price: Number(summary.pre_close), color: eventColor, lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: '除息前收盘' });
+        }
+
+        this.eventChart = chart;
+        this.eventChartSeries = { candleSeries, volumeSeries, ma5Series, ma10Series, ma5, ma10 };
+        const fallbackIndex = Math.max(0, eventRow ? rows.indexOf(eventRow) : rows.length - 1);
+        this.updateEventKlineQuote(rows[fallbackIndex], ma5[fallbackIndex], ma10[fallbackIndex]);
+        chart.subscribeCrosshairMove(param => {
+            if (!param?.time || !param.point || param.point.x < 0 || param.point.y < 0) {
+                this.updateEventKlineQuote(rows[fallbackIndex], ma5[fallbackIndex], ma10[fallbackIndex]);
+                return;
+            }
+            const index = rows.findIndex(row => row.date === param.time || this.chartTimeToDate(param.time) === row.date);
+            if (index >= 0) this.updateEventKlineQuote(rows[index], ma5[index], ma10[index]);
+        });
+        chart.timeScale().fitContent();
+
+        this.eventChartResizeObserver = new ResizeObserver(entries => {
+            const width = Math.round(entries[0]?.contentRect?.width || container.clientWidth);
+            if (width > 0 && this.eventChart) this.eventChart.applyOptions({ width, height: window.innerWidth <= 480 ? 310 : 340 });
+        });
+        this.eventChartResizeObserver.observe(container);
+    },
+
+    updateEventKlineQuote(row, ma5, ma10) {
+        const quote = document.getElementById('dividend-kline-quote');
+        if (!quote || !row) return;
+        const cells = quote.querySelectorAll('span b');
+        quote.querySelector('time').textContent = row.date || '—';
+        const values = [this.number(row.open, 2), this.number(row.high, 2), this.number(row.low, 2), this.number(row.close, 2), this.signedPercent(row.change_pct), this.compactNumber(row.volume)];
+        cells.forEach((cell, index) => { cell.textContent = values[index] ?? '—'; });
+        const changeCell = cells[4];
+        if (changeCell) changeCell.className = Number(row.change_pct) > 0 ? 'price-up' : Number(row.change_pct) < 0 ? 'price-down' : '';
+        const ma5Label = document.getElementById('dividend-kline-ma5');
+        const ma10Label = document.getElementById('dividend-kline-ma10');
+        if (ma5Label) ma5Label.textContent = ma5 !== null && Number.isFinite(Number(ma5)) ? this.number(ma5, 2) : '—';
+        if (ma10Label) ma10Label.textContent = ma10 !== null && Number.isFinite(Number(ma10)) ? this.number(ma10, 2) : '—';
+    },
+
+    chartTimeToDate(time) {
+        if (typeof time === 'string') return time;
+        if (time && typeof time === 'object' && 'year' in time) return `${time.year}-${String(time.month).padStart(2, '0')}-${String(time.day).padStart(2, '0')}`;
+        return '';
+    },
+
+    updateEventChartTheme() {
+        if (!this.eventChart || !this.eventChartRows.length) return;
+        const rows = this.eventChartRows;
+        const summary = this.eventChartSummary;
+        requestAnimationFrame(() => this.initEventKline(rows, summary));
+    },
+
+    destroyEventChart() {
+        if (this.eventChartResizeObserver) this.eventChartResizeObserver.disconnect();
+        this.eventChartResizeObserver = null;
+        if (this.eventChart) {
+            try { this.eventChart.remove(); } catch (error) { /* 已被 DOM 清理 */ }
+        }
+        this.eventChart = null;
+        this.eventChartSeries = null;
+    },
+
+    signedPercent(value) {
+        if (value === null || value === undefined || value === '') return '—';
+        const number = Number(value);
+        if (!Number.isFinite(number)) return '—';
+        return `${number > 0 ? '+' : ''}${number.toFixed(2)}%`;
+    },
+
+    compactNumber(value) {
+        const number = Number(value);
+        if (!Number.isFinite(number)) return '—';
+        if (Math.abs(number) >= 1e8) return `${this.number(number / 1e8, 2)}亿`;
+        if (Math.abs(number) >= 1e4) return `${this.number(number / 1e4, 2)}万`;
+        return this.number(number, 0);
     },
 
     closeDetail() {
+        if (this.marketController) this.marketController.abort();
+        this.destroyEventChart();
         const overlay = document.getElementById('dividend-detail-overlay');
         overlay?.classList.remove('open');
         overlay?.setAttribute('aria-hidden', 'true');
