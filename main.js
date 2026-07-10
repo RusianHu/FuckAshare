@@ -13,7 +13,8 @@ const Icons = {
     hot: '<span class="ui-icon" aria-hidden="true"><svg><use href="#icon-hot"></use></svg></span>',
     warning: '<span class="ui-icon" aria-hidden="true"><svg><use href="#icon-warning"></use></svg></span>',
     layers: '<span class="ui-icon" aria-hidden="true"><svg><use href="#icon-layers"></use></svg></span>',
-    settings: '<span class="ui-icon" aria-hidden="true"><svg><use href="#icon-settings"></use></svg></span>'
+    settings: '<span class="ui-icon" aria-hidden="true"><svg><use href="#icon-settings"></use></svg></span>',
+    calendar: '<span class="ui-icon" aria-hidden="true"><svg><use href="#icon-calendar"></use></svg></span>'
 };
 
 function escapeHTML(value) {
@@ -503,7 +504,7 @@ const APP = {
     advisorExpanded: false,
     advisorUnread: 0,
     advisorThinking: false,
-    advisorContext: { assetType: '', assetCode: '', assetName: '', assetLabel: '', stock: '', tab: 'stock', source: '' },
+    advisorContext: { assetType: '', assetCode: '', assetName: '', assetLabel: '', stock: '', tab: 'stock', source: '', dividendEvent: null },
     advisorChatContainer: null,
     advisorUserInput: null,
     advisorLastFocusedElement: null,
@@ -1382,6 +1383,299 @@ const SectorModule = {
             tbody.appendChild(tr);
         });
         table.style.display = 'table';
+    }
+};
+
+// ============================================================
+// 分红日历模块
+// ============================================================
+const DividendModule = {
+    initialized: false,
+    loaded: false,
+    items: [],
+    pagination: { page: 1, pages: 1, total: 0 },
+    meta: {},
+    controller: null,
+    timer: null,
+    lastFocused: null,
+
+    init() {
+        if (this.initialized || !document.getElementById('panel-dividend')) return;
+        this.initialized = true;
+        this.applyWindow(14);
+        document.querySelectorAll('.dividend-window-btn').forEach(btn => btn.addEventListener('click', () => {
+            this.applyWindow(parseInt(btn.dataset.days || '14', 10));
+        }));
+        document.getElementById('dividend-filter-form')?.addEventListener('submit', e => {
+            e.preventDefault();
+            this.setFilterExpanded(false);
+            this.load(1);
+        });
+        document.getElementById('dividend-filter-toggle')?.addEventListener('click', () => {
+            const expanded = document.getElementById('dividend-filter-toggle')?.getAttribute('aria-expanded') === 'true';
+            this.setFilterExpanded(!expanded);
+        });
+        document.getElementById('dividend-refresh-btn')?.addEventListener('click', () => this.load(this.pagination.page || 1, true));
+        document.getElementById('dividend-prev-page')?.addEventListener('click', () => this.load(Math.max(1, this.pagination.page - 1)));
+        document.getElementById('dividend-next-page')?.addEventListener('click', () => this.load(Math.min(this.pagination.pages, this.pagination.page + 1)));
+        document.getElementById('dividend-scan-ai-btn')?.addEventListener('click', () => this.scanWithAI());
+        document.getElementById('panel-dividend')?.addEventListener('click', e => {
+            const button = e.target.closest('[data-dividend-action]');
+            if (!button) return;
+            const item = this.items.find(row => row.code === button.dataset.code);
+            if (!item) return;
+            if (button.dataset.dividendAction === 'detail') this.openDetail(item, button);
+            if (button.dataset.dividendAction === 'ai') this.analyzeWithAI(item);
+        });
+        document.getElementById('dividend-detail-close')?.addEventListener('click', () => this.closeDetail());
+        document.getElementById('dividend-detail-overlay')?.addEventListener('click', e => {
+            if (e.target.id === 'dividend-detail-overlay') this.closeDetail();
+        });
+        document.addEventListener('keydown', e => {
+            const overlay = document.getElementById('dividend-detail-overlay');
+            if (e.key === 'Escape' && overlay?.classList.contains('open')) this.closeDetail();
+            if (e.key === 'Tab' && overlay?.classList.contains('open')) {
+                const focusable = Array.from(overlay.querySelectorAll('button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])')).filter(el => el.offsetParent !== null);
+                if (!focusable.length) return;
+                const first = focusable[0];
+                const last = focusable[focusable.length - 1];
+                if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+                else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+            }
+        });
+    },
+
+    setFilterExpanded(expanded) {
+        const form = document.getElementById('dividend-filter-form');
+        const toggle = document.getElementById('dividend-filter-toggle');
+        form?.classList.toggle('mobile-expanded', Boolean(expanded));
+        toggle?.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        if (toggle) toggle.textContent = expanded ? '收起筛选' : '筛选';
+    },
+
+    applyWindow(days) {
+        const start = new Date();
+        const end = new Date(start);
+        end.setDate(end.getDate() + Math.max(1, days) - 1);
+        const localDate = date => {
+            const y = date.getFullYear();
+            const m = String(date.getMonth() + 1).padStart(2, '0');
+            const d = String(date.getDate()).padStart(2, '0');
+            return `${y}-${m}-${d}`;
+        };
+        const startInput = document.getElementById('dividend-start-date');
+        const endInput = document.getElementById('dividend-end-date');
+        if (startInput) startInput.value = localDate(start);
+        if (endInput) endInput.value = localDate(end);
+        document.querySelectorAll('.dividend-window-btn').forEach(btn => btn.classList.toggle('active', parseInt(btn.dataset.days || '0', 10) === days));
+    },
+
+    filters() {
+        return {
+            start_date: document.getElementById('dividend-start-date')?.value || '',
+            end_date: document.getElementById('dividend-end-date')?.value || '',
+            market: document.getElementById('dividend-market')?.value || 'all',
+            status: document.getElementById('dividend-status')?.value || 'confirmed',
+            holding_period: document.getElementById('dividend-holding')?.value || 'within_1m',
+            min_yield: document.getElementById('dividend-min-yield')?.value || '0',
+            sort_by: document.getElementById('dividend-sort')?.value || 'gross_yield',
+            order: (document.getElementById('dividend-sort')?.value || '') === 'record_date' ? 'asc' : 'desc'
+        };
+    },
+
+    async load(page = 1, force = false) {
+        if (this.controller) this.controller.abort();
+        this.controller = new AbortController();
+        const loading = document.getElementById('dividend-loading');
+        const table = document.getElementById('dividend-table');
+        const mobile = document.getElementById('dividend-mobile-list');
+        const empty = document.getElementById('dividend-empty');
+        const alert = document.getElementById('dividend-alert');
+        if (loading) loading.style.display = 'flex';
+        if (empty) empty.style.display = 'none';
+        if (alert) { alert.style.display = 'none'; alert.className = 'dividend-alert'; }
+        const params = new URLSearchParams({ action: 'dividend_calendar', ...this.filters(), page: String(page), page_size: '50' });
+        if (force) params.set('_', String(Date.now()));
+        try {
+            const response = await fetch(`market_api.php?${params}`, { signal: this.controller.signal, cache: 'no-store' });
+            const payload = await response.json();
+            if (!payload.success) throw new Error(payload.message || '获取分红日历失败');
+            const data = payload.data || {};
+            this.items = Array.isArray(data.items) ? data.items : [];
+            this.pagination = data.pagination || { page, pages: 1, total: this.items.length };
+            this.meta = payload.meta || {};
+            this.loaded = true;
+            this.renderSummary(data.summary || {});
+            this.renderItems();
+            this.renderPagination();
+            const updated = document.getElementById('dividend-updated-at');
+            if (updated) updated.textContent = `数据时间 ${this.formatDateTime(this.meta.as_of || this.meta.updated_at)}`;
+            const resultSummary = document.getElementById('dividend-result-summary');
+            if (resultSummary) resultSummary.textContent = `共 ${this.pagination.total || 0} 项 · 事件源 ${payload.source || '-'} · 行情源 ${this.meta.price_source || '-'}`;
+            const cacheState = this.meta.upstream_cache || this.meta.cache || 'fresh';
+            if (this.meta.partial || cacheState === 'stale' || cacheState === 'stale_fallback') {
+                this.showAlert(`部分数据可能不完整：缺少 ${this.meta.missing_quote_count || 0} 条行情；事件缓存状态 ${cacheState}。`, false);
+            }
+            if (table) table.style.display = this.items.length ? 'table' : 'none';
+            if (mobile) mobile.style.display = this.items.length && window.innerWidth <= 768 ? 'flex' : '';
+            if (empty) empty.style.display = this.items.length ? 'none' : 'block';
+        } catch (error) {
+            if (error.name === 'AbortError') return;
+            this.items = [];
+            if (table) table.style.display = 'none';
+            if (mobile) mobile.innerHTML = '';
+            if (empty) empty.style.display = 'block';
+            this.showAlert(error.message || '获取分红日历失败', true);
+        } finally {
+            if (loading) loading.style.display = 'none';
+        }
+    },
+
+    renderSummary(summary) {
+        const set = (id, value) => { const el = document.getElementById(id); if (el) el.textContent = value; };
+        set('dividend-summary-confirmed', String(summary.confirmed_count ?? 0));
+        set('dividend-summary-soon', String(summary.within_3_days_count ?? 0));
+        set('dividend-summary-max', this.percent(summary.max_gross_yield_pct));
+        set('dividend-summary-median', this.percent(summary.median_net_yield_pct));
+        const holding = this.filters().holding_period;
+        const captions = { within_1m: '个人短持20%税估算', '1m_to_1y': '个人持有10%税估算', over_1y: '个人持有超1年估算' };
+        set('dividend-tax-caption', captions[holding] || '个人税后估算');
+    },
+
+    renderItems() {
+        const tbody = document.getElementById('dividend-table-body');
+        const mobile = document.getElementById('dividend-mobile-list');
+        if (tbody) tbody.innerHTML = this.items.map(item => `
+            <tr>
+                <td><div class="dividend-stock-cell"><span class="dividend-stock-avatar">${escapeHTML((item.market || '').toUpperCase())}</span><div><b>${escapeHTML(item.name || '-')}</b><small>${escapeHTML(item.code || '')}</small></div></div></td>
+                <td><div class="dividend-date-stack"><span>登记 ${escapeHTML(item.record_date || '-')}</span><small>除息 ${escapeHTML(item.ex_date || '-')}</small></div></td>
+                <td><span class="dividend-cash">¥${this.number(item.cash_per_share, 6)}</span></td>
+                <td>¥${this.number(item.price, 2)}</td>
+                <td><span class="dividend-yield">${this.percent(item.gross_yield_pct)}</span></td>
+                <td><span class="dividend-yield dividend-net-yield">${this.percent(item.net_yield_pct)}</span></td>
+                <td><span class="dividend-status-badge${item.implementation_confirmed ? '' : ' unconfirmed'}">${item.implementation_confirmed ? '已实施' : escapeHTML(item.plan_status || '未确认')}</span></td>
+                <td><div class="dividend-row-actions"><button class="btn-sm" data-dividend-action="detail" data-code="${escapeAttr(item.code)}">详情</button><button class="btn-sm btn-ai" data-dividend-action="ai" data-code="${escapeAttr(item.code)}">AI研判</button></div></td>
+            </tr>`).join('');
+        if (mobile) mobile.innerHTML = this.items.map(item => `
+            <article class="dividend-event-card">
+                <div class="dividend-event-card-head"><div class="dividend-event-card-name"><b>${escapeHTML(item.name || '-')}</b><small>${escapeHTML(item.code || '')} · ${(item.market || '').toUpperCase()}</small></div><span class="dividend-status-badge${item.implementation_confirmed ? '' : ' unconfirmed'}">${item.implementation_confirmed ? '已实施' : escapeHTML(item.plan_status || '未确认')}</span></div>
+                <div class="dividend-event-card-yields"><div><span>本次毛率</span><b>${this.percent(item.gross_yield_pct)}</b></div><div><span>税后现金率</span><b>${this.percent(item.net_yield_pct)}</b></div></div>
+                <div class="dividend-event-card-dates">登记日 ${escapeHTML(item.record_date || '-')} · 除息日 ${escapeHTML(item.ex_date || '-')}<br>每股 ¥${this.number(item.cash_per_share, 6)} · 参考价 ¥${this.number(item.price, 2)}</div>
+                <div class="dividend-event-card-foot"><small>距登记日 ${item.days_to_record ?? '-'} 天</small><div class="dividend-row-actions"><button class="btn-sm" data-dividend-action="detail" data-code="${escapeAttr(item.code)}">详情</button><button class="btn-sm btn-ai" data-dividend-action="ai" data-code="${escapeAttr(item.code)}">AI研判</button></div></div>
+            </article>`).join('');
+        if (typeof AnimationManager !== 'undefined') AnimationManager.animateRows('#dividend-table-body tr');
+    },
+
+    renderPagination() {
+        const box = document.getElementById('dividend-pagination');
+        const label = document.getElementById('dividend-page-label');
+        const prev = document.getElementById('dividend-prev-page');
+        const next = document.getElementById('dividend-next-page');
+        const pages = Math.max(1, Number(this.pagination.pages) || 1);
+        const page = Math.max(1, Number(this.pagination.page) || 1);
+        if (box) box.style.display = (this.pagination.total || 0) > 0 ? 'flex' : 'none';
+        if (label) label.textContent = `第 ${page} / ${pages} 页`;
+        if (prev) prev.disabled = page <= 1;
+        if (next) next.disabled = page >= pages;
+    },
+
+    showAlert(message, isError) {
+        const alert = document.getElementById('dividend-alert');
+        if (!alert) return;
+        alert.textContent = message;
+        alert.className = `dividend-alert${isError ? ' error' : ''}`;
+        alert.style.display = 'block';
+    },
+
+    async openDetail(item, trigger) {
+        this.lastFocused = trigger || document.activeElement;
+        const overlay = document.getElementById('dividend-detail-overlay');
+        const drawer = overlay?.querySelector('.dividend-detail-drawer');
+        const content = document.getElementById('dividend-detail-content');
+        const title = document.getElementById('dividend-detail-title');
+        if (!overlay || !content) return;
+        overlay.classList.add('open');
+        overlay.setAttribute('aria-hidden', 'false');
+        document.body.classList.add('dividend-drawer-open');
+        if (title) title.textContent = `${item.name || item.code} · 分红详情`;
+        content.innerHTML = '<div class="loading-spinner"><div class="spinner"></div><span>加载分红历史...</span></div>';
+        setTimeout(() => drawer?.focus(), 20);
+        try {
+            const holding = this.filters().holding_period;
+            const response = await fetch(`market_api.php?action=dividend_detail&code=${encodeURIComponent(item.code)}&years=10&holding_period=${encodeURIComponent(holding)}`, { cache: 'no-store' });
+            const payload = await response.json();
+            if (!payload.success) throw new Error(payload.message || '加载详情失败');
+            this.renderDetail(payload.data || {}, item);
+        } catch (error) {
+            content.innerHTML = `<div class="error-msg">${escapeHTML(error.message || '加载详情失败')}</div>`;
+        }
+    },
+
+    renderDetail(data, selected) {
+        const content = document.getElementById('dividend-detail-content');
+        if (!content) return;
+        const stock = data.stock || {};
+        const summary = data.summary || {};
+        const event = data.upcoming_event || selected || {};
+        const history = Array.isArray(data.history) ? data.history : [];
+        const maxCash = Math.max(...history.map(row => Number(row.cash_per_share) || 0), 0.0001);
+        content.innerHTML = `
+            <section class="dividend-detail-hero">
+                <div class="dividend-detail-hero-row"><div><div class="dividend-detail-name">${escapeHTML(stock.name || selected.name || '-')}</div><div class="dividend-detail-code">${escapeHTML(stock.code || selected.code || '')} · ${(stock.market || selected.market || '').toUpperCase()}</div></div><div><div class="dividend-detail-price">¥${this.number(stock.price, 2)}</div><small>当前价格快照</small></div></div>
+                <div class="dividend-detail-metrics"><div class="dividend-detail-metric"><span>现金分红事件</span><b>${summary.cash_dividend_events ?? 0} 次</b></div><div class="dividend-detail-metric"><span>覆盖年份</span><b>${summary.years_with_cash_dividend ?? 0} 年</b></div><div class="dividend-detail-metric"><span>近5年每股合计</span><b>¥${this.number(summary.five_year_total_cash_per_share, 4)}</b></div></div>
+            </section>
+            <section class="dividend-detail-section"><h4>当前事件</h4><div class="dividend-current-plan"><b>${escapeHTML(event.plan_text || selected.plan_text || '暂无完整方案文本')}</b><br>登记日 ${escapeHTML(event.record_date || selected.record_date || '-')} · 除息日 ${escapeHTML(event.ex_date || selected.ex_date || '-')} · 派息日未由当前数据源提供</div></section>
+            <section class="dividend-detail-section"><h4>近10年现金分红时间线</h4><div class="dividend-history-list">${history.length ? history.map(row => {
+                const width = Math.max(4, (Number(row.cash_per_share) || 0) / maxCash * 100);
+                return `<div class="dividend-history-item"><time>${escapeHTML(row.record_date || row.report_date || '-')}</time><div><div class="dividend-history-bar"><i style="width:${width.toFixed(1)}%"></i></div><small>${escapeHTML(row.plan_status || '')}</small></div><span class="dividend-history-value">¥${this.number(row.cash_per_share, 6)}</span></div>`;
+            }).join('') : '<p class="placeholder-text">暂无历史现金分红记录</p>'}</div></section>
+            <section class="dividend-detail-section"><a class="btn-sm" href="${escapeAttr(data.source_url || selected.source_url || '#')}" target="_blank" rel="noopener noreferrer">查看数据源详情</a></section>`;
+    },
+
+    closeDetail() {
+        const overlay = document.getElementById('dividend-detail-overlay');
+        overlay?.classList.remove('open');
+        overlay?.setAttribute('aria-hidden', 'true');
+        document.body.classList.remove('dividend-drawer-open');
+        this.lastFocused?.focus?.();
+    },
+
+    analyzeWithAI(item) {
+        AdvisorModule.setDividendContext(item);
+        const prompt = `请研判当前分红事件，并由你自主选择必要工具交叉验证。必须调用 fa_get_stock_dividend_profile 核查历史分红；除此之外最多选择 3 个最相关的研究工具，档案已有有效价格时不要重复查询行情，未明确需要大盘背景时不必查询市场宽度。请将彼此独立的查询尽量放在同一工具轮并行执行。\n\n股票：${item.name}（${item.code}）\n方案状态：${item.plan_status}\n股权登记日：${item.record_date}\n除权除息日：${item.ex_date}\n每股含税现金：${item.cash_per_share}元\n价格快照：${item.price ?? '缺失'}元\n本次毛现金率：${item.gross_yield_pct ?? '缺失'}%\n当前税档税后现金率：${item.net_yield_pct ?? '缺失'}%\n数据时间：${this.meta.as_of || '未知'}\n\n请区分事实、推断和不确定性，重点分析是否存在除息前抢跑、波动与资金风险；不要把本次现金率当作年化或无风险收益。`;
+        AdvisorModule.autoSend(prompt);
+    },
+
+    scanWithAI() {
+        APP.advisorContext.dividendEvent = null;
+        APP.advisorContext.source = '分红日历扫描';
+        const f = this.filters();
+        const days = Math.max(1, Math.round((new Date(f.end_date) - new Date(f.start_date)) / 86400000) + 1);
+        AdvisorModule.autoSend(`请使用 fa_get_upcoming_dividends 扫描从 ${f.start_date} 开始未来 ${days} 日的临近分红事件，市场=${f.market}，方案状态=${f.status}，持有期税档=${f.holding_period}，最低本次毛率=${f.min_yield}%。本次先完成全市场召回、排序与风险摘要；除非缺少形成扫描结论的关键事实，否则不要在同一请求中展开多只股票深挖，可建议我从事件行继续进入单股研判。必须说明数据时间、税务口径、事件状态和工具失败项，不要把本次现金率视为无风险收益。`);
+    },
+
+    onTabChange(tabName) {
+        if (tabName === 'dividend') {
+            if (!this.loaded) this.load(1);
+            if (!this.timer) this.timer = setInterval(() => {
+                if (document.visibilityState === 'visible' && document.querySelector('.nav-tab.active')?.dataset.tab === 'dividend') this.load(this.pagination.page || 1);
+            }, 60000);
+        } else if (this.timer) {
+            clearInterval(this.timer);
+            this.timer = null;
+        }
+    },
+
+    number(value, digits = 2) {
+        const number = Number(value);
+        if (!Number.isFinite(number)) return '—';
+        return number.toFixed(digits).replace(/\.0+$/, '').replace(/(\.\d*?)0+$/, '$1');
+    },
+    percent(value) { return Number.isFinite(Number(value)) ? `${Number(value).toFixed(2)}%` : '—'; },
+    formatDateTime(value) {
+        if (!value) return '未知';
+        const date = new Date(value);
+        return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('zh-CN', { hour12: false });
     }
 };
 
@@ -2422,9 +2716,40 @@ const AdvisorModule = {
         APP.advisorContext.assetName = name;
         APP.advisorContext.assetLabel = label;
         APP.advisorContext.stock = type === 'stock' ? code : '';
+        if (source !== '分红日历') APP.advisorContext.dividendEvent = null;
         if (source) APP.advisorContext.source = source;
 
         this.updateContext();
+    },
+
+    /** 设置当前分红事件，并保留为每次请求的临时系统上下文 */
+    setDividendContext(event = {}) {
+        this.setAssetContext('stock', { code: event.code, name: event.name }, '分红日历');
+        APP.advisorContext.dividendEvent = {
+            code: String(event.code || ''),
+            name: String(event.name || ''),
+            plan_status: String(event.plan_status || ''),
+            implementation_confirmed: Boolean(event.implementation_confirmed),
+            record_date: event.record_date || null,
+            ex_date: event.ex_date || null,
+            cash_per_share: event.cash_per_share ?? null,
+            price: event.price ?? null,
+            gross_yield_pct: event.gross_yield_pct ?? null,
+            net_yield_pct: event.net_yield_pct ?? null,
+            holding_period: event.holding_period || 'within_1m',
+            source: event.source || 'eastmoney_dividend',
+            as_of: DividendModule?.meta?.as_of || null
+        };
+        this.updateContext();
+    },
+
+    getTransientContextMessage() {
+        const event = APP.advisorContext?.dividendEvent;
+        if (!event || !event.code) return null;
+        return {
+            role: 'system',
+            content: `当前页面选中的分红事件上下文（仅作页面事实锚点，实时事实仍需调用工具刷新）：${JSON.stringify(event)}。单次现金率不是年化收益；回答需说明事件状态、数据时间、税务估算和除息风险。`
+        };
     },
 
     /** 当前导航模块 */
@@ -2450,7 +2775,7 @@ const AdvisorModule = {
     /** 根据当前页面模块推导顾问资产上下文，避免基金页串用股票代码 */
     resolvePageContext() {
         const tab = this.getActiveTabName();
-        const tabNames = { stock: '股票行情', realtime: '实时看板', strategy: '策略池', sector: '板块资金', fund: '基金分析', ai: 'AI顾问' };
+        const tabNames = { stock: '股票行情', realtime: '实时看板', strategy: '策略池', sector: '板块资金', dividend: '分红日历', xueqiu: '雪球洞察', fund: '基金分析', ai: 'AI顾问' };
         const result = {
             tab,
             tabLabel: tabNames[tab] || tab,
@@ -2459,6 +2784,17 @@ const AdvisorModule = {
             assetName: '',
             assetLabel: ''
         };
+
+        if (tab === 'dividend') {
+            const event = APP.advisorContext.dividendEvent;
+            if (event?.code) {
+                result.assetType = 'stock';
+                result.assetCode = event.code;
+                result.assetName = event.name || '';
+                result.assetLabel = event.name ? `${event.name} (${event.code})` : event.code;
+            }
+            return result;
+        }
 
         if (tab === 'fund') {
             const fund = this.getSelectedFundContext();
@@ -2490,20 +2826,21 @@ const AdvisorModule = {
         const title = this._els.welcome?.querySelector('.welcome-title');
         const sub = this._els.welcome?.querySelector('.welcome-sub');
         const isFund = pageContext?.tab === 'fund';
+        const isDividend = pageContext?.tab === 'dividend';
         const asset = pageContext?.assetLabel || '';
 
         if (title) {
             title.textContent = isFund
                 ? '你好，我可以结合基金净值、估值、排行和产品资料做研究评估。'
-                : '你好，我可以结合行情、资金流和板块数据帮你快速研判。';
+                : (isDividend ? '你好，我可以扫描临近分红事件，并交叉验证分红历史、行情与风险。' : '你好，我可以结合行情、资金流和板块数据帮你快速研判。');
         }
         if (sub) {
             sub.textContent = isFund
                 ? (asset ? `当前基金：${asset}。可以直接问我收益波动、回撤风险、同类对照或持有适配。` : '从搜索结果、自选或排行中打开基金详情后，我会自动接入当前基金上下文。')
-                : '我已接入当前页面数据，可以直接问我股票趋势、主力意图或板块机会。';
+                : (isDividend ? (asset ? `当前分红事件：${asset}。我会先刷新事件事实，再判断历史连续性和短期风险。` : '可以让我扫描未来7/14/30日事件，或在列表中选择一只股票继续研判。') : '我已接入当前页面数据，可以直接问我股票趋势、主力意图或板块机会。');
         }
 
-        this.renderQuickActions(isFund ? this.getFundQuickActions(asset) : this.getStockQuickActions());
+        this.renderQuickActions(isFund ? this.getFundQuickActions(asset) : (isDividend ? this.getDividendQuickActions(asset) : this.getStockQuickActions()));
     },
 
     getStockQuickActions() {
@@ -2522,6 +2859,23 @@ const AdvisorModule = {
             { icon: Icons.flow, text: '评估波动与风险', prompt: `请评估${subject}近期估值涨跌、历史净值波动、最大回撤和申购赎回状态，指出主要风险和跟踪指标。` },
             { icon: Icons.table, text: '对照同类基金排行', prompt: `请结合${subject}与同类基金近1年、近3月排行样本，判断相对强弱、风格适配和替代选择标准。` },
             { icon: Icons.search, text: '检查持有适配度', prompt: `请从基金类型、基金经理、基金公司、规模、费率、业绩基准和投资者画像角度，评估${subject}是否适合继续关注。` }
+        ];
+    },
+
+    getDividendQuickActions(assetLabel = '') {
+        if (assetLabel) {
+            return [
+                { icon: Icons.calendar, text: '核查当前分红历史', prompt: `请针对当前分红事件 ${assetLabel} 调用 fa_get_stock_dividend_profile，核查历史分红连续性和本次方案状态。` },
+                { icon: Icons.chart, text: '检查除息前抢跑', prompt: `请分析当前分红事件 ${assetLabel} 是否存在除息前价格抢跑；调用分红历史、K线指标和资金流工具交叉验证。` },
+                { icon: Icons.warning, text: '审查短持风险', prompt: `请对当前分红事件 ${assetLabel} 做短持风险审查，说明除息、税费、波动和数据缺口。` },
+                { icon: Icons.table, text: '比较同日候选', prompt: '请调用 fa_get_upcoming_dividends，比较与当前事件登记日接近的候选，并明确排序口径。' }
+            ];
+        }
+        return [
+            { icon: Icons.calendar, text: '扫描未来14天', prompt: '请调用 fa_get_upcoming_dividends 扫描未来14天已实施的A股分红事件，按本次毛现金率排序。' },
+            { icon: Icons.table, text: '按短持税后率比较', prompt: '请调用 fa_get_upcoming_dividends，按个人持有不超过1个月的税后现金率比较临近事件。' },
+            { icon: Icons.warning, text: '说明抢息风险', prompt: '请解释临近登记日抢分红的除息、税费和价格波动风险，并结合实时工具给出研究框架。' },
+            { icon: Icons.chart, text: '筛选代表候选', prompt: '请扫描临近分红候选，并对不超过3只代表股票继续调用分红历史、技术指标和资金流工具交叉验证。' }
         ];
     },
 
@@ -2843,7 +3197,13 @@ const AIModule = {
     },
 
     getContextMessages() {
-        const messages = Array.isArray(APP.messageHistory) ? APP.messageHistory : [];
+        const messages = Array.isArray(APP.messageHistory) ? APP.messageHistory.slice() : [];
+        const transient = typeof AdvisorModule !== 'undefined' ? AdvisorModule.getTransientContextMessage() : null;
+        if (transient) {
+            let insertAt = 0;
+            while (insertAt < messages.length && messages[insertAt]?.role === 'system') insertAt++;
+            messages.splice(insertAt, 0, transient);
+        }
         const limit = APP.aiContextLimit || AI_CONTEXT_LIMIT;
         const totalSize = messages.reduce((sum, msg) => sum + this.estimateMessageSize(msg), 0);
         if (totalSize <= limit) return messages.slice();
@@ -3809,6 +4169,7 @@ function switchTab(tabName) {
         if (isActive) activeTab = t;
     });
     document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + tabName));
+    if (typeof DividendModule !== 'undefined') DividendModule.onTabChange(tabName);
 
     // 切换到 AI Tab 时，同步消息历史到 #chat-container
     if (tabName === 'ai' && APP.chatContainer) {
@@ -3865,6 +4226,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // 初始化主题（在 GSAP 之前，以尽早应用主题）
     ThemeManager.init();
+    DividendModule.init();
 
     // 移除主题加载锁，恢复过渡动画（延迟一帧确保首次渲染无闪烁）
     requestAnimationFrame(() => {

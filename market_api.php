@@ -3,7 +3,7 @@
  * 聚合行情服务 API
  * 给前端工作台使用的统一入口
  *
- * action: quote / kline / hot_stock / screener / fundx / stock_flow / sector_flow / hot_stocks / market_breadth
+ * action: quote / kline / hot_stock / screener / fundx / stock_flow / sector_flow / hot_stocks / market_breadth / dividend_calendar / dividend_detail
  * source: auto / eastmoney / ashare / xueqiu
  * fallback: 1 / 0
  * raw: 1 / 0
@@ -12,6 +12,7 @@ header('Content-Type: application/json; charset=utf-8');
 
 require_once __DIR__ . '/SecurityAudit.php';
 require_once __DIR__ . '/lib/MarketDataService.php';
+require_once __DIR__ . '/lib/DividendService.php';
 
 SecurityAudit::init(['endpoint' => 'market_api', 'rate_limit' => 40]);
 
@@ -115,10 +116,48 @@ switch ($action) {
         $result = $service->marketBreadth($scope, $includeLimitStats, $includeIndexQuotes);
         break;
 
+    case 'dividend_calendar':
+        $dividend = new DividendService();
+        $defaults = $dividend->defaults();
+        $startDate = SecurityAudit::getParam('start_date', $defaults['start_date'], ['pattern' => SecurityAudit::DATE_PATTERN]);
+        $endDate = SecurityAudit::getParam('end_date', $defaults['end_date'], ['pattern' => SecurityAudit::DATE_PATTERN]);
+        $dividendMarket = SecurityAudit::getParam('market', 'all', ['whitelist' => SecurityAudit::ALLOWED_DIVIDEND_MARKETS]);
+        $status = SecurityAudit::getParam('status', 'confirmed', ['whitelist' => SecurityAudit::ALLOWED_DIVIDEND_STATUSES]);
+        $holdingPeriod = SecurityAudit::getParam('holding_period', 'within_1m', ['whitelist' => SecurityAudit::ALLOWED_DIVIDEND_HOLDING_PERIODS]);
+        $minYield = SecurityAudit::getParam('min_yield', '0', ['pattern' => SecurityAudit::PERCENT_PATTERN, 'maxLength' => 8]);
+        $sortBy = SecurityAudit::getParam('sort_by', 'gross_yield', ['whitelist' => SecurityAudit::ALLOWED_DIVIDEND_SORT_FIELDS]);
+        $dividendOrder = SecurityAudit::getParam('order', 'desc', ['whitelist' => ['asc', 'desc']]);
+        $page = SecurityAudit::getParam('page', 1, ['int' => true, 'min' => 1, 'max' => 1000]);
+        $pageSize = SecurityAudit::getParam('page_size', 50, ['int' => true, 'min' => 1, 'max' => 100]);
+        $result = $dividend->calendar([
+            'start_date' => $startDate,
+            'end_date' => $endDate,
+            'market' => $dividendMarket,
+            'status' => $status,
+            'holding_period' => $holdingPeriod,
+            'min_yield' => (float)$minYield,
+            'sort_by' => $sortBy,
+            'order' => $dividendOrder,
+            'page' => $page,
+            'page_size' => $pageSize,
+        ]);
+        break;
+
+    case 'dividend_detail':
+        $code = SecurityAudit::getParam('code', '', [
+            'required' => true,
+            'pattern' => SecurityAudit::STOCK_CODE_PATTERN,
+            'maxLength' => SecurityAudit::MAX_CODE_LENGTH,
+        ]);
+        $years = SecurityAudit::getParam('years', 10, ['int' => true, 'min' => 1, 'max' => 20]);
+        $holdingPeriod = SecurityAudit::getParam('holding_period', 'within_1m', ['whitelist' => SecurityAudit::ALLOWED_DIVIDEND_HOLDING_PERIODS]);
+        $result = (new DividendService())->detail($code, $years, $holdingPeriod);
+        break;
+
     default:
         echo json_encode([
             'success' => false,
-            'message' => '未知 action，支持: quote/kline/hot_stock/screener/fundx/stock_flow/sector_flow/hot_stocks/market_breadth',
+            'message' => '未知 action，支持: quote/kline/hot_stock/screener/fundx/stock_flow/sector_flow/hot_stocks/market_breadth/dividend_calendar/dividend_detail',
         ], JSON_UNESCAPED_UNICODE);
         exit;
 }

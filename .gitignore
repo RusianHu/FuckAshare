@@ -16,6 +16,8 @@
 *.credentials
 config.php
 config.local.php
+config.php.bak.*
+config.local.php.bak.*
 
 # ── IDE / 编辑器 ──
 .vscode/

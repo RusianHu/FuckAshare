@@ -382,6 +382,8 @@ class AIAgentStreamEmitter
             'fa_get_sector_flow' => '获取板块资金流',
             'fa_get_hot_stocks' => '查询资金热榜',
             'fa_get_market_breadth' => '获取市场宽度',
+            'fa_get_upcoming_dividends' => '扫描临近分红事件',
+            'fa_get_stock_dividend_profile' => '获取个股分红历史',
             'fa_get_xueqiu_hot_stock' => '查询雪球热度',
             'fa_run_xueqiu_screener' => '运行条件选股',
             'fa_get_xueqiu_feed' => '获取雪球动态',

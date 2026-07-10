@@ -7,6 +7,7 @@ require_once __DIR__ . '/../SecurityAudit.php';
 require_once __DIR__ . '/AIToolRegistry.php';
 require_once __DIR__ . '/MarketDataService.php';
 require_once __DIR__ . '/FundService.php';
+require_once __DIR__ . '/DividendService.php';
 require_once __DIR__ . '/StockCode.php';
 require_once __DIR__ . '/DataSourceResult.php';
 
@@ -17,6 +18,9 @@ class AIToolExecutor
 
     /** @var FundService */
     private $fund;
+
+    /** @var DividendService */
+    private $dividend;
 
     /** @var int */
     private $outputCharLimit;
@@ -30,6 +34,8 @@ class AIToolExecutor
         'fa_get_sector_flow' => 'executeSectorFlow',
         'fa_get_hot_stocks' => 'executeHotStocks',
         'fa_get_market_breadth' => 'executeMarketBreadth',
+        'fa_get_upcoming_dividends' => 'executeUpcomingDividends',
+        'fa_get_stock_dividend_profile' => 'executeStockDividendProfile',
         'fa_get_xueqiu_hot_stock' => 'executeXueqiuHotStock',
         'fa_run_xueqiu_screener' => 'executeXueqiuScreener',
         'fa_get_xueqiu_feed' => 'executeXueqiuFeed',
@@ -60,10 +66,11 @@ class AIToolExecutor
         $this->researchState = $state;
     }
 
-    public function __construct(?MarketDataService $market = null, ?FundService $fund = null, int $outputCharLimit = 30000)
+    public function __construct(?MarketDataService $market = null, ?FundService $fund = null, int $outputCharLimit = 30000, ?DividendService $dividend = null)
     {
         $this->market = $market ?: new MarketDataService();
         $this->fund = $fund ?: new FundService();
+        $this->dividend = $dividend ?: new DividendService(null, $this->market);
         $this->outputCharLimit = max(100, $outputCharLimit);
     }
 
@@ -165,6 +172,37 @@ class AIToolExecutor
             $this->enum($args['scope'] ?? null, SecurityAudit::ALLOWED_MARKET_BREADTH_SCOPES, 'a_share'),
             $this->bool($args['include_limit_stats'] ?? null, true),
             $this->bool($args['include_index_quotes'] ?? null, true)
+        ), $started);
+    }
+
+    private function executeUpcomingDividends(array $args, float $started): array
+    {
+        $start = $this->date($args['start_date'] ?? null, true);
+        if ($start === '') {
+            $start = (new DateTimeImmutable('today', new DateTimeZone('Asia/Shanghai')))->format('Y-m-d');
+        }
+        $days = $this->int($args['days'] ?? null, 1, 60, 14);
+        $end = (new DateTimeImmutable($start, new DateTimeZone('Asia/Shanghai')))->modify('+' . ($days - 1) . ' days')->format('Y-m-d');
+        return $this->fromResult($this->dividend->calendar([
+            'start_date' => $start,
+            'end_date' => $end,
+            'market' => $this->enum($args['market'] ?? null, SecurityAudit::ALLOWED_DIVIDEND_MARKETS, 'all'),
+            'status' => $this->bool($args['confirmed_only'] ?? null, true) ? 'confirmed' : 'all',
+            'holding_period' => $this->enum($args['holding_period'] ?? null, SecurityAudit::ALLOWED_DIVIDEND_HOLDING_PERIODS, 'within_1m'),
+            'min_yield' => $this->number($args['min_gross_yield'] ?? null, 0, 100, 0),
+            'sort_by' => $this->enum($args['sort_by'] ?? null, SecurityAudit::ALLOWED_DIVIDEND_SORT_FIELDS, 'gross_yield'),
+            'order' => $this->enum($args['order'] ?? null, ['asc', 'desc'], 'desc'),
+            'page' => 1,
+            'page_size' => $this->int($args['limit'] ?? null, 1, 50, 20),
+        ]), $started);
+    }
+
+    private function executeStockDividendProfile(array $args, float $started): array
+    {
+        return $this->fromResult($this->dividend->detail(
+            $this->stockCode($args['code'] ?? ''),
+            $this->int($args['years'] ?? null, 1, 20, 10),
+            $this->enum($args['holding_period'] ?? null, SecurityAudit::ALLOWED_DIVIDEND_HOLDING_PERIODS, 'within_1m')
         ), $started);
     }
 
@@ -398,14 +436,26 @@ class AIToolExecutor
         $failures = $includeFailures ? ($state['failures'] ?? []) : [];
 
         $toolNames = array_map(function ($t) { return $t['name'] ?? ''; }, $tools);
-        $coverage = [
-            'candidate_pool' => in_array('fa_screen_funds', $toolNames, true) || in_array('fa_get_fund_rank', $toolNames, true) || in_array('fa_search_funds', $toolNames, true),
-            'fund_info' => in_array('fa_get_fund_info', $toolNames, true),
-            'performance_stats' => in_array('fa_get_fund_performance_stats', $toolNames, true) || in_array('fa_get_fund_history', $toolNames, true),
-            'style_exposure' => in_array('fa_get_fund_holdings_or_index_exposure', $toolNames, true) || in_array('fa_get_index_profile', $toolNames, true),
-            'trade_rules' => in_array('fa_get_fund_trade_rules', $toolNames, true),
-            'scoring' => in_array('fa_score_funds', $toolNames, true),
-        ];
+        if ($assetType === 'stock') {
+            $coverage = [
+                'candidate_pool' => in_array('fa_get_upcoming_dividends', $toolNames, true) || in_array('fa_get_hot_stocks', $toolNames, true) || in_array('fa_run_xueqiu_screener', $toolNames, true),
+                'dividend_events' => in_array('fa_get_upcoming_dividends', $toolNames, true),
+                'dividend_profile' => in_array('fa_get_stock_dividend_profile', $toolNames, true),
+                'quote' => in_array('fa_get_stock_quote', $toolNames, true),
+                'technical' => in_array('fa_calculate_kline_indicators', $toolNames, true) || in_array('fa_get_stock_kline', $toolNames, true),
+                'capital_flow' => in_array('fa_get_stock_flow', $toolNames, true),
+                'market_breadth' => in_array('fa_get_market_breadth', $toolNames, true),
+            ];
+        } else {
+            $coverage = [
+                'candidate_pool' => in_array('fa_screen_funds', $toolNames, true) || in_array('fa_get_fund_rank', $toolNames, true) || in_array('fa_search_funds', $toolNames, true),
+                'fund_info' => in_array('fa_get_fund_info', $toolNames, true),
+                'performance_stats' => in_array('fa_get_fund_performance_stats', $toolNames, true) || in_array('fa_get_fund_history', $toolNames, true),
+                'style_exposure' => in_array('fa_get_fund_holdings_or_index_exposure', $toolNames, true) || in_array('fa_get_index_profile', $toolNames, true),
+                'trade_rules' => in_array('fa_get_fund_trade_rules', $toolNames, true),
+                'scoring' => in_array('fa_score_funds', $toolNames, true),
+            ];
+        }
 
         $candidateSummary = [];
         foreach ($candidates as $code => $c) {
@@ -418,11 +468,18 @@ class AIToolExecutor
 
         $nextSteps = [];
         if ($includeNextSteps) {
-            if (!$coverage['candidate_pool']) $nextSteps[] = '调用 fa_screen_funds 或 fa_get_fund_rank 召回候选池';
-            if (!$coverage['performance_stats']) $nextSteps[] = '调用 fa_get_fund_performance_stats 获取长历史收益与回撤';
-            if (!$coverage['style_exposure']) $nextSteps[] = '调用 fa_get_fund_holdings_or_index_exposure 补充风格画像';
-            if (!$coverage['trade_rules']) $nextSteps[] = '调用 fa_get_fund_trade_rules 确认可投性与限购';
-            if (!$coverage['scoring'] && ($coverage['candidate_pool'] || !empty($candidates))) $nextSteps[] = '调用 fa_score_funds 做确定性评分排序后再给结论';
+            if ($assetType === 'stock') {
+                if (!$coverage['dividend_events']) $nextSteps[] = '调用 fa_get_upcoming_dividends 获取已实施临近分红候选池';
+                if (!$coverage['dividend_profile'] && !empty($candidates)) $nextSteps[] = '对重点候选调用 fa_get_stock_dividend_profile 核查历史分红';
+                if (!$coverage['technical'] && !empty($candidates)) $nextSteps[] = '对重点候选调用 fa_calculate_kline_indicators 检查除息前走势与波动';
+                if (!$coverage['capital_flow'] && !empty($candidates)) $nextSteps[] = '对重点候选调用 fa_get_stock_flow 补充资金面';
+            } else {
+                if (!$coverage['candidate_pool']) $nextSteps[] = '调用 fa_screen_funds 或 fa_get_fund_rank 召回候选池';
+                if (!$coverage['performance_stats']) $nextSteps[] = '调用 fa_get_fund_performance_stats 获取长历史收益与回撤';
+                if (!$coverage['style_exposure']) $nextSteps[] = '调用 fa_get_fund_holdings_or_index_exposure 补充风格画像';
+                if (!$coverage['trade_rules']) $nextSteps[] = '调用 fa_get_fund_trade_rules 确认可投性与限购';
+                if (!$coverage['scoring'] && ($coverage['candidate_pool'] || !empty($candidates))) $nextSteps[] = '调用 fa_score_funds 做确定性评分排序后再给结论';
+            }
         }
 
         $data = [
@@ -434,7 +491,7 @@ class AIToolExecutor
             'next_steps' => $nextSteps,
             'final_answer_requirements' => [
                 '说明候选池召回来源',
-                '说明评分权重或排序依据',
+                $assetType === 'stock' ? '说明事件状态、价格时间和税务口径' : '说明评分权重或排序依据',
                 '说明工具失败和数据缺口',
             ],
         ];
@@ -820,6 +877,15 @@ class AIToolExecutor
         $int = (int)$value;
         if ($int < $min || $int > $max) throw new InvalidArgumentException("参数范围必须在 {$min}-{$max}");
         return $int;
+    }
+
+    private function number($value, float $min, float $max, float $default): float
+    {
+        if ($value === null || $value === '') return $default;
+        if (!is_numeric($value)) throw new InvalidArgumentException('参数必须是数字');
+        $number = (float)$value;
+        if ($number < $min || $number > $max) throw new InvalidArgumentException("参数范围必须在 {$min}-{$max}");
+        return $number;
     }
 
     private function bool($value, bool $default): bool

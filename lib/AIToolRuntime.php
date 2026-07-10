@@ -431,7 +431,7 @@ class AIToolRuntime
         $markCandidate = function (string $code, string $name, string $status) use (&$candidates) {
             if ($code === '' || !preg_match('/^\d{6}$/', $code)) return;
             $existing = $candidates[$code] ?? ['name' => '', 'status' => 'seen'];
-            $rank = ['seen' => 0, 'enriched' => 1, 'screened' => 2, 'stats' => 3, 'rules' => 3, 'exposure' => 4, 'scored' => 5];
+            $rank = ['seen' => 0, 'enriched' => 1, 'dividend_event' => 2, 'screened' => 2, 'stats' => 3, 'rules' => 3, 'dividend_profile' => 4, 'exposure' => 4, 'scored' => 5];
             $newRank = $rank[$status] ?? 0;
             $oldRank = $rank[$existing['status']] ?? 0;
             $status = $newRank >= $oldRank ? $status : $existing['status'];
@@ -444,6 +444,15 @@ class AIToolRuntime
         if ($success && is_array($data)) {
             $listItems = array_values(array_filter($data, 'is_array'));
             switch ($name) {
+                case 'fa_get_upcoming_dividends':
+                    foreach (($data['items'] ?? []) as $c) {
+                        if (is_array($c)) $markCandidate((string)($c['code'] ?? ''), (string)($c['name'] ?? ''), 'dividend_event');
+                    }
+                    break;
+                case 'fa_get_stock_dividend_profile':
+                    $stock = is_array($data['stock'] ?? null) ? $data['stock'] : [];
+                    $markCandidate((string)($stock['code'] ?? $args['code'] ?? ''), (string)($stock['name'] ?? ''), 'dividend_profile');
+                    break;
                 case 'fa_screen_funds':
                     foreach ($listItems as $c) {
                         $markCandidate((string)($c['code'] ?? ''), (string)($c['name'] ?? ''), 'screened');
@@ -500,6 +509,8 @@ class AIToolRuntime
             'fa_get_fund_history' => '历史净值分页部分缺失，已用已取得样本',
             'fa_get_fund_documents' => '文档证据缺失，最终回答需说明数据缺口',
             'fa_get_fund_holdings_or_index_exposure' => '风格暴露降级为基金详情推导',
+            'fa_get_upcoming_dividends' => '临近分红候选池缺失，不能给出实时事件排序',
+            'fa_get_stock_dividend_profile' => '个股分红历史缺失，不能判断分红连续性',
         ];
         return $impacts[$name] ?? '工具失败，结果可能不完整';
     }

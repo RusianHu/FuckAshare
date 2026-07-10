@@ -58,6 +58,7 @@
             <symbol id="icon-flow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M2 12h20"/><path d="m7 16 5-5 3 3 5-5"/></symbol>
             <symbol id="icon-hot" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></symbol>
             <symbol id="icon-sector" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="14" x="2" y="5" rx="2"/><path d="M2 10h20"/></symbol>
+            <symbol id="icon-calendar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/><path d="M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01"/></symbol>
             <symbol id="icon-fund" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="14" x="2" y="5" rx="2"/><circle cx="12" cy="12" r="3"/></symbol>
             <symbol id="icon-ai" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.2 18.8 7v7.8L12 20.8l-6.8-6V7L12 3.2z"/><path d="M8.4 10.2c1.1-1.6 2.5-2.4 4.2-2.1 1.6.2 2.8 1.3 3.3 2.8"/><path d="M15.6 13.8c-1.1 1.6-2.5 2.4-4.2 2.1-1.6-.2-2.8-1.3-3.3-2.8"/><path d="M8 5.6 5.6 3.8"/><path d="M16 18.4l2.4 1.8"/><circle cx="12" cy="12" r="1.8" fill="currentColor" stroke="none"/><path d="M19.2 4.2v2.2M18.1 5.3h2.2"/><path d="M4.8 17.6v2.2M3.7 18.7h2.2"/></symbol>
             <symbol id="icon-star" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></symbol>
@@ -92,6 +93,7 @@
             <button class="nav-tab" data-tab="realtime">实时看板</button>
             <button class="nav-tab" data-tab="strategy">策略池</button>
             <button class="nav-tab" data-tab="sector">资金与板块</button>
+            <button class="nav-tab" data-tab="dividend">分红日历</button>
             <button class="nav-tab" data-tab="xueqiu">雪球洞察</button>
             <button class="nav-tab" data-tab="fund">基金分析</button>
             <button class="nav-tab" data-tab="ai">AI顾问</button>
@@ -415,6 +417,80 @@
                             </table>
                         </div>
                     </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 分红日历页 -->
+        <div class="tab-panel" id="panel-dividend">
+            <div class="dividend-layout">
+                <div class="card dividend-filter-card">
+                    <div class="card-header dividend-title-row">
+                        <div>
+                            <h3><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-calendar"></use></svg></span> 临近分红日历</h3>
+                            <p class="dividend-subtitle">仅展示普通 A 股；本次现金率不是年化收益，除息、税费和价格波动会影响总回报。</p>
+                        </div>
+                        <div class="dividend-title-actions">
+                            <span id="dividend-updated-at" class="data-timestamp">尚未更新</span>
+                            <button id="dividend-filter-toggle" class="btn-sm dividend-filter-toggle" type="button" aria-controls="dividend-filter-form" aria-expanded="false">筛选</button>
+                            <button id="dividend-refresh-btn" class="btn-sm" type="button"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-refresh"></use></svg></span> 刷新</button>
+                        </div>
+                    </div>
+                    <form id="dividend-filter-form" class="dividend-filters" autocomplete="off">
+                        <div class="dividend-window-tabs" role="group" aria-label="日期窗口">
+                            <button type="button" class="dividend-window-btn" data-days="7">7日</button>
+                            <button type="button" class="dividend-window-btn active" data-days="14">14日</button>
+                            <button type="button" class="dividend-window-btn" data-days="30">30日</button>
+                        </div>
+                        <label><span>开始日期</span><input id="dividend-start-date" type="date" required></label>
+                        <label><span>结束日期</span><input id="dividend-end-date" type="date" required></label>
+                        <label><span>市场</span><select id="dividend-market"><option value="all">全部A股</option><option value="sh">沪市</option><option value="sz">深市</option><option value="bj">北交所</option></select></label>
+                        <label><span>方案状态</span><select id="dividend-status"><option value="confirmed">仅实施确认</option><option value="all">含未确认方案</option></select></label>
+                        <label><span>持有期税档</span><select id="dividend-holding"><option value="within_1m">≤1个月 · 20%</option><option value="1m_to_1y">1个月–1年 · 10%</option><option value="over_1y">超过1年 · 0%</option></select></label>
+                        <label><span>最低毛率</span><input id="dividend-min-yield" type="number" min="0" max="100" step="0.1" value="0" inputmode="decimal"></label>
+                        <label><span>排序</span><select id="dividend-sort"><option value="gross_yield">本次毛率</option><option value="net_yield">税后现金率</option><option value="record_date">登记日</option><option value="cash_per_share">每股现金</option></select></label>
+                        <button class="btn-sm btn-accent dividend-query-btn" type="submit">查询</button>
+                    </form>
+                </div>
+
+                <div id="dividend-summary" class="dividend-summary-grid" aria-live="polite">
+                    <div class="dividend-summary-card"><span>实施事件</span><b id="dividend-summary-confirmed">—</b><small>当前筛选范围</small></div>
+                    <div class="dividend-summary-card"><span>3日内登记</span><b id="dividend-summary-soon">—</b><small>含登记日当天</small></div>
+                    <div class="dividend-summary-card"><span>最高本次毛率</span><b id="dividend-summary-max">—</b><small>按当前价格快照</small></div>
+                    <div class="dividend-summary-card"><span>税后率中位数</span><b id="dividend-summary-median">—</b><small id="dividend-tax-caption">个人短持估算</small></div>
+                </div>
+
+                <div class="card dividend-results-card">
+                    <div class="card-header dividend-results-head">
+                        <div>
+                            <h3><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-table"></use></svg></span> 事件清单</h3>
+                            <span id="dividend-result-summary" class="dividend-result-summary"></span>
+                        </div>
+                        <button id="dividend-scan-ai-btn" class="btn-sm btn-ai" type="button"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-ai"></use></svg></span> AI扫描研判</button>
+                    </div>
+                    <div id="dividend-alert" class="dividend-alert" role="status" style="display:none;"></div>
+                    <div id="dividend-loading" class="dividend-loading" style="display:none;" aria-live="polite">
+                        <div class="spinner"></div><span>正在合并分红事件与行情...</span>
+                    </div>
+                    <div class="dividend-table-wrapper">
+                        <table id="dividend-table" style="display:none;">
+                            <thead><tr><th>股票</th><th>登记 / 除息</th><th>每股现金</th><th>参考价</th><th>本次毛率</th><th>税后现金率</th><th>状态</th><th>操作</th></tr></thead>
+                            <tbody id="dividend-table-body"></tbody>
+                        </table>
+                    </div>
+                    <div id="dividend-mobile-list" class="dividend-mobile-list"></div>
+                    <div id="dividend-empty" class="placeholder-text dividend-empty" style="display:none;">当前条件下没有可展示的分红事件</div>
+                    <div id="dividend-pagination" class="dividend-pagination" style="display:none;">
+                        <button id="dividend-prev-page" class="btn-sm" type="button">上一页</button>
+                        <span id="dividend-page-label">第 1 页</span>
+                        <button id="dividend-next-page" class="btn-sm" type="button">下一页</button>
+                    </div>
+                </div>
+
+                <div class="dividend-note-grid">
+                    <div class="card dividend-note-card"><h4>税务口径</h4><p>个人持有不超过1个月、1个月至1年、超过1年的税率估算分别为20%、10%、0%。税款通常在卖出时按实际持有批次补扣，本页不读取账户持仓。</p></div>
+                    <div class="card dividend-note-card"><h4>风险口径</h4><p>除息参考价通常会相应调整。现金分红不是额外的无风险收益；页面不推测缺失的派息日，也不把单次现金率年化。</p></div>
+                    <div class="card dividend-note-card"><h4>数据与授权</h4><p>首版事件与行情来自东方财富公开页面接口，并保留可替换 Provider。公开商业化使用前需确认数据展示授权。</p></div>
                 </div>
             </div>
         </div>
@@ -750,6 +826,16 @@
     <div class="ai-advisor-backdrop" id="ai-advisor-backdrop" aria-hidden="true"></div>
 
     <!-- 股票详情弹窗 -->
+    <div class="dividend-detail-overlay" id="dividend-detail-overlay" aria-hidden="true">
+        <aside class="dividend-detail-drawer" role="dialog" aria-modal="true" aria-labelledby="dividend-detail-title" tabindex="-1">
+            <div class="dividend-detail-header">
+                <div><span class="dividend-detail-eyebrow">分红档案</span><h3 id="dividend-detail-title">股票分红详情</h3></div>
+                <button id="dividend-detail-close" class="modal-close-btn" type="button" aria-label="关闭分红详情">×</button>
+            </div>
+            <div id="dividend-detail-content" class="dividend-detail-content"><div class="loading-spinner"><div class="spinner"></div><span>加载分红历史...</span></div></div>
+        </aside>
+    </div>
+
     <div class="modal-overlay" id="stock-modal-overlay" style="display:none;">
         <div class="modal-dialog" id="stock-modal">
             <div class="modal-header-bar">

@@ -79,10 +79,9 @@ class StockCode
     private static function inferMarket(string $code): string
     {
         if (preg_match('/^68/', $code)) return 'SH';
-        if (preg_match('/^[6]/', $code)) return 'SH';
-        if (preg_match('/^[03]/', $code)) return 'SZ';
-        if (preg_match('/^4/', $code)) return 'BJ';
-        if (preg_match('/^8/', $code)) return 'BJ';
+        if (preg_match('/^(?:6|900)/', $code)) return 'SH';
+        if (preg_match('/^(?:0|3|200)/', $code)) return 'SZ';
+        if (preg_match('/^(?:4|8|92)/', $code)) return 'BJ';
         return 'UNKNOWN';
     }
 
@@ -121,7 +120,17 @@ class StockCode
     /** 是否为 A 股 */
     public function isAStock(): bool
     {
-        return in_array($this->market, ['SH', 'SZ'], true);
+        if (!in_array($this->market, ['SH', 'SZ', 'BJ'], true)) {
+            return false;
+        }
+
+        // 沪市 900xxx、深市 200xxx 为 B 股，不应混入 A 股事件扫描。
+        if (($this->market === 'SH' && preg_match('/^900/', $this->code))
+            || ($this->market === 'SZ' && preg_match('/^200/', $this->code))) {
+            return false;
+        }
+
+        return true;
     }
 
     /** 是否有效 */

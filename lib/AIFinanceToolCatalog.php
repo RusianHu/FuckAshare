@@ -82,6 +82,30 @@ class AIFinanceToolCatalog
                     'include_index_quotes' => ['type' => ['boolean', 'null'], 'description' => 'Whether to include major index quotes. Default true.'],
                 ]
             ),
+            'fa_get_upcoming_dividends' => AIToolSchema::tool(
+                'fa_get_upcoming_dividends',
+                'Scan upcoming A-share dividend record-date events, merge current quotes, and deterministically calculate one-off gross and personal after-tax cash yields. Use this first for dividend calendar, record date, ex-dividend date, dividend capture, or near-term high-dividend questions. This is an event yield, not an annualized return.',
+                [
+                    'start_date' => AIToolSchema::nullableString('Start date in YYYY-MM-DD. Default today in Asia/Shanghai.'),
+                    'days' => AIToolSchema::nullableInteger('Inclusive calendar window length. Default 14, max 60.', 1, 60),
+                    'market' => AIToolSchema::nullableEnum(['all', 'sh', 'sz', 'bj'], 'A-share market filter. Default all.'),
+                    'confirmed_only' => AIToolSchema::nullableBoolean('Only include implemented/confirmed distributions. Default true.'),
+                    'holding_period' => AIToolSchema::nullableEnum(['within_1m', '1m_to_1y', 'over_1y'], 'Personal investor holding-period tax estimate. Default within_1m.'),
+                    'min_gross_yield' => AIToolSchema::nullableNumber('Minimum one-off gross cash yield percent. Default 0.', 0, 100),
+                    'sort_by' => AIToolSchema::nullableEnum(['gross_yield', 'net_yield', 'record_date', 'cash_per_share'], 'Deterministic sort field. Default gross_yield.'),
+                    'order' => AIToolSchema::nullableEnum(['asc', 'desc'], 'Sort direction. Default desc.'),
+                    'limit' => AIToolSchema::nullableInteger('Maximum candidates returned. Default 20, max 50.', 1, 50),
+                ]
+            ),
+            'fa_get_stock_dividend_profile' => AIToolSchema::tool(
+                'fa_get_stock_dividend_profile',
+                'Get one A-share stock current/upcoming dividend event, normalized cash-dividend history, current quote, and deterministic history summary. Use this to assess dividend consistency after discovering a candidate.',
+                [
+                    'code' => $stockCode,
+                    'years' => AIToolSchema::nullableInteger('History window in years. Default 10, max 20.', 1, 20),
+                    'holding_period' => AIToolSchema::nullableEnum(['within_1m', '1m_to_1y', 'over_1y'], 'Personal investor holding-period tax estimate. Default within_1m.'),
+                ]
+            ),
             'fa_get_xueqiu_hot_stock' => AIToolSchema::tool(
                 'fa_get_xueqiu_hot_stock',
                 'Get Xueqiu hot stock ranking for attention and sentiment context.',

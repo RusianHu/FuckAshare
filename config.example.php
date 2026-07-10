@@ -80,6 +80,7 @@ return [
         'eastmoney' => ['failure_threshold' => 5, 'cooldown' => 30],  // ✅ 东方财富；默认 5 次 / 30s
         'ashare'    => ['failure_threshold' => 3, 'cooldown' => 60],  // ✅ Ashare(Python 腾讯/新浪)；默认 3 次 / 60s
         'fund'      => ['failure_threshold' => 5, 'cooldown' => 30],  // ✅ 东方财富基金；默认 5 次 / 30s
+        'eastmoney_dividend' => ['failure_threshold' => 3, 'cooldown' => 60], // ✅ 东方财富分红公司行动
     ],
 
     // ════════════════════════════════════════════════════════════
@@ -120,6 +121,20 @@ return [
         'score'          => 120,    // ✅ fa_score_funds 评分结果；默认 120s
         'holdings'       => 3600,   // ✅ fa_get_fund_holdings 基金十大持仓+占净值比；默认 3600s
         'index_kline'    => 300,    // ✅ 跟踪指数 K 线（跟踪误差计算的基准序列）；默认 300s
+    ],
+
+    // ── 股票分红日历 ──
+    'dividend' => [
+        'enabled'             => true,
+        'provider'            => 'eastmoney', // 预留可替换 Provider；首版仅 eastmoney
+        'default_window_days' => 14,
+        'max_window_days'     => 60,
+        'quote_batch_size'    => 200,
+        'calendar_ttl'        => 900,
+        'detail_ttl'          => 1800,
+        'negative_cache_ttl'  => 20,
+        'stampede_lock_ttl'   => 5,
+        'stampede_wait_ms'    => 500,
     ],
 
     // ════════════════════════════════════════════════════════════

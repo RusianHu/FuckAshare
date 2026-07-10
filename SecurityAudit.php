@@ -38,6 +38,9 @@ class SecurityAudit
     /** 日期：YYYY-MM-DD */
     const DATE_PATTERN = '/^\d{4}-\d{2}-\d{2}$/';
 
+    /** 0-100 的百分比小数，最多 4 位小数 */
+    const PERCENT_PATTERN = '/^(?:\d{1,2}(?:\.\d{1,4})?|100(?:\.0{1,4})?)$/';
+
     /** K 线频率白名单 */
     const ALLOWED_FREQUENCIES = ['1m', '5m', '15m', '30m', '60m', '1d', '1w', '1M'];
 
@@ -72,6 +75,14 @@ class SecurityAudit
     const ALLOWED_SCREENER_TYPES = ['11', '82', '30', '', 'ashare', 'hk', 'us', 'sh_sz', 'sh', 'sz', 'bj', 'kcb', 'cyb'];
 
     const ALLOWED_MARKET_BREADTH_SCOPES = ['a_share', 'sh', 'sz', 'core_indices'];
+
+    const ALLOWED_DIVIDEND_MARKETS = ['all', 'sh', 'sz', 'bj'];
+
+    const ALLOWED_DIVIDEND_STATUSES = ['confirmed', 'all'];
+
+    const ALLOWED_DIVIDEND_HOLDING_PERIODS = ['within_1m', '1m_to_1y', 'over_1y'];
+
+    const ALLOWED_DIVIDEND_SORT_FIELDS = ['gross_yield', 'net_yield', 'record_date', 'cash_per_share'];
 
     /** 搜索关键词最大长度 */
     const MAX_KEYWORD_LENGTH = 100;
