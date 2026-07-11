@@ -1,3 +1,7 @@
+<?php
+require_once __DIR__ . '/lib/AppConfig.php';
+$dividendAutoRefreshSeconds = max(300, min(1800, (int)AppConfig::get('dividend.auto_refresh_seconds', 600)));
+?>
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -850,6 +854,11 @@
         <p>by <a href="https://yanshanlaosiji.top" target="_blank">雁山老司机</a> · <span class="ui-icon" aria-hidden="true"><svg><use href="#icon-warning"></use></svg></span> 仅供娱乐研究，不构成投资建议</p>
     </footer>
 
+    <script>
+        window.FA_RUNTIME_CONFIG = Object.freeze({
+            dividendAutoRefreshSeconds: <?= json_encode($dividendAutoRefreshSeconds) ?>
+        });
+    </script>
     <script src="strategy_pool.js"></script>
     <script src="main.js"></script>
 </body>

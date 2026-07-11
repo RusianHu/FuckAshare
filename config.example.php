@@ -130,6 +130,7 @@ return [
         'default_window_days' => 14,
         'max_window_days'     => 60,
         'quote_batch_size'    => 200,
+        'auto_refresh_seconds' => 600, // 交易时段前端静默刷新；限制为 300–1800s
         'calendar_ttl'        => 900,
         'detail_ttl'          => 1800,
         'negative_cache_ttl'  => 20,

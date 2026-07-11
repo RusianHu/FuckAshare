@@ -498,6 +498,7 @@ const APP = {
     config: {
         maxQueryStocks: 50,
         autoRefreshInterval: 30,
+        dividendAutoRefreshSeconds: Math.max(300, Math.min(1800, Number(window.FA_RUNTIME_CONFIG?.dividendAutoRefreshSeconds) || 600)),
         superQueryMaxConcurrent: 3,
         collapseLongUserMessages: true,
         longUserMessageThreshold: 4000
@@ -1399,6 +1400,7 @@ const DividendModule = {
     pagination: { page: 1, pages: 1, total: 0 },
     meta: {},
     controller: null,
+    loadRequestId: 0,
     marketController: null,
     timer: null,
     lastFocused: null,
@@ -1503,23 +1505,26 @@ const DividendModule = {
         };
     },
 
-    async load(page = 1, force = false) {
+    async load(page = 1, force = false, silent = false) {
         if (this.controller) this.controller.abort();
         this.controller = new AbortController();
+        const controller = this.controller;
+        const requestId = ++this.loadRequestId;
         const loading = document.getElementById('dividend-loading');
         const table = document.getElementById('dividend-table');
         const mobile = document.getElementById('dividend-mobile-list');
         const empty = document.getElementById('dividend-empty');
         const alert = document.getElementById('dividend-alert');
-        if (loading) loading.style.display = 'flex';
-        if (empty) empty.style.display = 'none';
-        if (alert) { alert.style.display = 'none'; alert.className = 'dividend-alert'; }
+        if (!silent && loading) loading.style.display = 'flex';
+        if (!silent && empty) empty.style.display = 'none';
+        if (!silent && alert) { alert.style.display = 'none'; alert.className = 'dividend-alert'; }
         const params = new URLSearchParams({ action: 'dividend_calendar', ...this.filters(), page: String(page), page_size: '50' });
         if (force) params.set('_', String(Date.now()));
         try {
-            const response = await fetch(`market_api.php?${params}`, { signal: this.controller.signal, cache: 'no-store' });
+            const response = await fetch(`market_api.php?${params}`, { signal: controller.signal, cache: 'no-store' });
             const payload = await response.json();
             if (!payload.success) throw new Error(payload.message || '获取分红日历失败');
+            if (requestId !== this.loadRequestId) return;
             const data = payload.data || {};
             this.items = Array.isArray(data.items) ? data.items : [];
             this.pagination = data.pagination || { page, pages: 1, total: this.items.length };
@@ -1541,14 +1546,32 @@ const DividendModule = {
             if (empty) empty.style.display = this.items.length ? 'none' : 'block';
         } catch (error) {
             if (error.name === 'AbortError') return;
+            if (requestId !== this.loadRequestId) return;
+            if (silent) {
+                console.warn('分红日历自动刷新失败:', error);
+                return;
+            }
             this.items = [];
             if (table) table.style.display = 'none';
             if (mobile) mobile.innerHTML = '';
             if (empty) empty.style.display = 'block';
             this.showAlert(error.message || '获取分红日历失败', true);
         } finally {
-            if (loading) loading.style.display = 'none';
+            if (requestId === this.loadRequestId && !silent && loading) loading.style.display = 'none';
         }
+    },
+
+    isAShareTradingSession(date = new Date()) {
+        const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
+            timeZone: 'Asia/Shanghai',
+            weekday: 'short',
+            hour: '2-digit',
+            minute: '2-digit',
+            hourCycle: 'h23'
+        }).formatToParts(date).filter(part => part.type !== 'literal').map(part => [part.type, part.value]));
+        if (parts.weekday === 'Sat' || parts.weekday === 'Sun') return false;
+        const minutes = Number(parts.hour) * 60 + Number(parts.minute);
+        return (minutes >= 570 && minutes <= 690) || (minutes >= 780 && minutes <= 900);
     },
 
     renderSummary(summary) {
@@ -1962,8 +1985,11 @@ const DividendModule = {
         if (tabName === 'dividend') {
             if (!this.loaded) this.load(1);
             if (!this.timer) this.timer = setInterval(() => {
-                if (document.visibilityState === 'visible' && document.querySelector('.nav-tab.active')?.dataset.tab === 'dividend') this.load(this.pagination.page || 1);
-            }, 60000);
+                const tabActive = document.querySelector('.nav-tab.active')?.dataset.tab === 'dividend';
+                if (document.visibilityState === 'visible' && tabActive && this.isAShareTradingSession()) {
+                    this.load(this.pagination.page || 1, false, true);
+                }
+            }, APP.config.dividendAutoRefreshSeconds * 1000);
         } else if (this.timer) {
             clearInterval(this.timer);
             this.timer = null;
