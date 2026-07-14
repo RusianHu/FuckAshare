@@ -112,6 +112,7 @@ return [
         'history'        => 300,    // ✅ 历史净值；默认 300s
         'index_profile'    => 3600, // ✅ 基金跟踪指数画像（跟踪指数代码/名称等）；默认 3600s
         'dividend_history' => 300,  // ✅ 基金分红历史；默认 300s
+        'dividend_profile' => 300,  // ✅ 基金分红档案（直接事件+公告+目标 ETF）；默认 300s
         'documents'        => 1800, // ✅ 基金公告/文档列表；默认 1800s
         'detail'         => 3600,   // ✅ 基金 F10 详情（聚合工具复用）；默认 3600s
         'performance_stats' => 300, // ✅ fa_get_fund_performance_stats 长历史统计；默认 300s

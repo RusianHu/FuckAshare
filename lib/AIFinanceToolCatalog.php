@@ -184,11 +184,22 @@ class AIFinanceToolCatalog
             ),
             'fa_get_fund_dividend_history' => AIToolSchema::tool(
                 'fa_get_fund_dividend_history',
-                'Get fund dividend/distribution records parsed from historical NAV dividend cells.',
+                'Get the fund share class historical dividend event table, including record, ex-dividend, cash payment dates and cash per unit. Use for bare history; use fa_get_fund_dividend_profile for current, future-date, announcement, or ETF-linkage questions.',
                 [
                     'code' => $fundCode,
                     'page' => AIToolSchema::nullableInteger('Page number.', 1, 200),
                     'page_size' => AIToolSchema::nullableInteger('Page size.', 1, 100),
+                ]
+            ),
+            'fa_get_fund_dividend_profile' => AIToolSchema::tool(
+                'fa_get_fund_dividend_profile',
+                'Build a current dividend evidence profile for a fund. It checks direct dividend events, current dividend announcements, manager first-party evidence when supported, and resolves a link fund target ETF so asset-level ETF dividends are not confused with direct cash distributions to link-fund holders. Prefer this for questions about future dates, this month, whether a dividend is coming, or announcement verification.',
+                [
+                    'code' => $fundCode,
+                    'limit' => AIToolSchema::nullableInteger('Maximum dividend events per fund. Default 10.', 1, 50),
+                    'include_related' => AIToolSchema::nullableBoolean('Whether to resolve and inspect a link fund target ETF. Default true.'),
+                    'include_announcements' => AIToolSchema::nullableBoolean('Whether to inspect current dividend announcements. Default true.'),
+                    'announcement_limit' => AIToolSchema::nullableInteger('Maximum dividend announcements per fund. Default 5.', 1, 20),
                 ]
             ),
             'fa_get_fund_documents' => AIToolSchema::tool(

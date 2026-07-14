@@ -46,6 +46,7 @@ class AIToolExecutor
         'fa_get_fund_rank' => 'executeFundRank',
         'fa_get_index_profile' => 'executeIndexProfile',
         'fa_get_fund_dividend_history' => 'executeFundDividendHistory',
+        'fa_get_fund_dividend_profile' => 'executeFundDividendProfile',
         'fa_get_fund_documents' => 'executeFundDocuments',
         'fa_screen_funds' => 'executeScreenFunds',
         'fa_get_fund_performance_stats' => 'executeFundPerformanceStats',
@@ -289,6 +290,17 @@ class AIToolExecutor
         ), $started);
     }
 
+    private function executeFundDividendProfile(array $args, float $started): array
+    {
+        return $this->fromResult($this->fund->dividendProfile(
+            $this->fundCode($args['code'] ?? ''),
+            $this->int($args['limit'] ?? null, 1, 50, 10),
+            $this->bool($args['include_related'] ?? null, true),
+            $this->bool($args['include_announcements'] ?? null, true),
+            $this->int($args['announcement_limit'] ?? null, 1, 20, 5)
+        ), $started);
+    }
+
     private function executeFundDocuments(array $args, float $started): array
     {
         return $this->fromResult($this->fund->fundDocuments(
@@ -452,6 +464,7 @@ class AIToolExecutor
                 'fund_info' => in_array('fa_get_fund_info', $toolNames, true),
                 'performance_stats' => in_array('fa_get_fund_performance_stats', $toolNames, true) || in_array('fa_get_fund_history', $toolNames, true),
                 'style_exposure' => in_array('fa_get_fund_holdings_or_index_exposure', $toolNames, true) || in_array('fa_get_index_profile', $toolNames, true),
+                'dividend_evidence' => in_array('fa_get_fund_dividend_profile', $toolNames, true) || in_array('fa_get_fund_dividend_history', $toolNames, true),
                 'trade_rules' => in_array('fa_get_fund_trade_rules', $toolNames, true),
                 'scoring' => in_array('fa_score_funds', $toolNames, true),
             ];
@@ -477,6 +490,7 @@ class AIToolExecutor
                 if (!$coverage['candidate_pool']) $nextSteps[] = '调用 fa_screen_funds 或 fa_get_fund_rank 召回候选池';
                 if (!$coverage['performance_stats']) $nextSteps[] = '调用 fa_get_fund_performance_stats 获取长历史收益与回撤';
                 if (!$coverage['style_exposure']) $nextSteps[] = '调用 fa_get_fund_holdings_or_index_exposure 补充风格画像';
+                if (preg_match('/分红|派息|收益分配/u', $focus) && !$coverage['dividend_evidence']) $nextSteps[] = '调用 fa_get_fund_dividend_profile 核验直接分红、最新公告和目标 ETF 事件';
                 if (!$coverage['trade_rules']) $nextSteps[] = '调用 fa_get_fund_trade_rules 确认可投性与限购';
                 if (!$coverage['scoring'] && ($coverage['candidate_pool'] || !empty($candidates))) $nextSteps[] = '调用 fa_score_funds 做确定性评分排序后再给结论';
             }

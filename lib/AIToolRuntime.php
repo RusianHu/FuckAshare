@@ -562,6 +562,15 @@ class AIToolRuntime
                     $stock = is_array($data['stock'] ?? null) ? $data['stock'] : [];
                     $markCandidate((string)($stock['code'] ?? $args['code'] ?? ''), (string)($stock['name'] ?? ''), 'dividend_profile');
                     break;
+                case 'fa_get_fund_dividend_profile':
+                    $fund = is_array($data['query_fund'] ?? null) ? $data['query_fund'] : [];
+                    $markCandidate((string)($fund['code'] ?? $args['code'] ?? ''), (string)($fund['name'] ?? ''), 'dividend_profile');
+                    foreach (($data['related_funds'] ?? []) as $relatedFund) {
+                        if (is_array($relatedFund)) {
+                            $markCandidate((string)($relatedFund['code'] ?? ''), (string)($relatedFund['name'] ?? ''), 'dividend_profile');
+                        }
+                    }
+                    break;
                 case 'fa_screen_funds':
                     foreach ($listItems as $c) {
                         $markCandidate((string)($c['code'] ?? ''), (string)($c['name'] ?? ''), 'screened');
@@ -617,6 +626,7 @@ class AIToolRuntime
             'fa_get_fund_estimate' => '盘中估值缺失，不影响长期统计',
             'fa_get_fund_history' => '历史净值分页部分缺失，已用已取得样本',
             'fa_get_fund_documents' => '文档证据缺失，最终回答需说明数据缺口',
+            'fa_get_fund_dividend_profile' => '基金分红、公告或目标 ETF 关系证据缺失，不能确认当前事件归属',
             'fa_get_fund_holdings_or_index_exposure' => '风格暴露降级为基金详情推导',
             'fa_get_upcoming_dividends' => '临近分红候选池缺失，不能给出实时事件排序',
             'fa_get_stock_dividend_profile' => '个股分红历史缺失，不能判断分红连续性',

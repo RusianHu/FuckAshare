@@ -50,6 +50,7 @@ class FundService
         'history'     => 300,    // 历史净值：5 分钟
         'index_profile' => 3600, // 基金跟踪指数画像：1 小时
         'dividend_history' => 300,
+        'dividend_profile' => 300,
         'documents'   => 1800,   // 基金公告列表：30 分钟
         'detail'      => 3600,   // 基金 F10 详情：1 小时
         'performance_stats' => 300, // 长历史统计：5 分钟
@@ -427,69 +428,155 @@ class FundService
     }
 
     /**
-     * 基金历史分红记录（从历史净值分红送配列提取）
+     * 基金历史分红记录。
+     *
+     * 直接读取东方财富分红送配页。该页按“分红事件”列出权益登记日、
+     * 除息日、每份金额和现金发放日；不要再把历史净值页的 records/pages
+     * 误当成分红次数和分红分页。
      */
     public function dividendHistory(string $code, int $page = 1, int $pageSize = 100): DataSourceResult
     {
+        if (!preg_match('/^\d{6}$/', $code)) {
+            return DataSourceResult::error(self::SOURCE_NAME, 'dividend_history', 'invalid_code', '基金代码格式不正确');
+        }
         $page = max(1, min($page, 200));
         $pageSize = max(1, min($pageSize, 100));
         $key = $this->cacheKey('dividend_history', "{$code}:{$page}:{$pageSize}");
 
         return $this->useCache('dividend_history', $key, function() use ($code, $page, $pageSize) {
             return $this->withBreaker('dividend_history', function() use ($code, $page, $pageSize) {
-                $url = 'https://fundf10.eastmoney.com/F10DataApi.aspx?' . http_build_query([
-                    'type' => 'lsjz',
-                    'code' => $code,
-                    'page' => $page,
-                    'per'  => $pageSize,
-                    'sdate' => '',
-                    'edate' => '',
-                    'rt' => sprintf('%.6f', microtime(true)),
-                ]);
+                $url = "https://fundf10.eastmoney.com/fhsp_{$code}.html";
 
                 $resp = $this->http->get($url, [
-                    'Referer' => "https://fundf10.eastmoney.com/jjjz_{$code}.html",
-                    'Accept'  => '*/*',
+                    'Referer' => "https://fundf10.eastmoney.com/fhsp_{$code}.html",
+                    'Accept'  => 'text/html,*/*',
                 ]);
 
                 if ($resp['error'] || $resp['http_code'] !== 200) {
                     return DataSourceResult::error(self::SOURCE_NAME, 'dividend_history', 'network_error', '请求失败: ' . ($resp['error'] ?: "HTTP {$resp['http_code']}"));
                 }
 
-                $parsed = $this->parseHistoryResponse($resp['body']);
+                $parsed = $this->parseDividendHistoryPage($resp['body']);
                 if ($parsed === null) {
                     return DataSourceResult::error(self::SOURCE_NAME, 'dividend_history', 'parse_error', '解析基金分红历史失败');
                 }
 
-                $items = [];
-                foreach ($parsed['items'] as $row) {
-                    $dividend = trim((string)($row['dividend'] ?? ''));
-                    if ($dividend === '') continue;
-                    $items[] = [
-                        'date' => $row['date'] ?? '',
-                        'nav' => $row['nav'] ?? '',
-                        'acc_nav' => $row['acc_nav'] ?? '',
-                        'growth_rate' => $row['growth_rate'] ?? '',
-                        'dividend' => $dividend,
-                        'cash_per_unit' => $this->parseCashDividendPerUnit($dividend),
-                        'purchase_status' => $row['purchase_status'] ?? '',
-                        'redeem_status' => $row['redeem_status'] ?? '',
-                    ];
-                    if (count($items) >= $pageSize) {
-                        break;
-                    }
-                }
+                $total = count($parsed['items']);
+                $pages = $total > 0 ? (int)ceil($total / $pageSize) : 0;
+                $items = array_slice($parsed['items'], ($page - 1) * $pageSize, $pageSize);
 
                 return DataSourceResult::success(self::SOURCE_NAME, 'dividend_history', $items, [
                     'code' => $code,
-                    'page' => $parsed['page'],
+                    'fund_name' => $parsed['fund_name'],
+                    'page' => $page,
                     'page_size' => $pageSize,
-                    'records' => $parsed['records'],
-                    'pages' => $parsed['pages'],
+                    'records' => $total,
+                    'pages' => $pages,
+                    'total_dividend_events' => $total,
                     'dividend_records_in_page' => count($items),
-                    'source_note' => '记录来自历史净值表的分红送配列。',
+                    'annual_summary' => $parsed['annual_summary'],
+                    'source_url' => $url,
+                    'source_note' => '记录来自基金分红送配事件表；records/pages 均为分红事件语义，不是历史净值记录。',
                 ]);
             });
+        });
+    }
+
+    /**
+     * 基金分红档案：聚合本基金、最新分红公告及联接基金目标 ETF 的分红事件。
+     */
+    public function dividendProfile(string $code, int $limit = 10, bool $includeRelated = true, bool $includeAnnouncements = true, int $announcementLimit = 5): DataSourceResult
+    {
+        if (!preg_match('/^\d{6}$/', $code)) {
+            return DataSourceResult::error(self::SOURCE_NAME, 'dividend_profile', 'invalid_code', '基金代码格式不正确');
+        }
+        $limit = max(1, min($limit, 50));
+        $announcementLimit = max(1, min($announcementLimit, 20));
+        $key = $this->cacheKey('dividend_profile', implode(':', [$code, $limit, (int)$includeRelated, (int)$includeAnnouncements, $announcementLimit]));
+
+        return $this->useCache('dividend_profile', $key, function() use ($code, $limit, $includeRelated, $includeAnnouncements, $announcementLimit) {
+            $detail = $this->fetchFundDetail($code);
+            if ($detail === null) {
+                return DataSourceResult::error(self::SOURCE_NAME, 'dividend_profile', 'empty_data', '基金详情未返回，无法建立分红档案');
+            }
+
+            $isLinkFund = preg_match('/联接/u', (string)($detail['name'] ?? '') . ' ' . (string)($detail['full_name'] ?? '')) === 1;
+            $direct = $this->buildDividendProfileEntry($detail, 'self', $limit, $includeAnnouncements, $announcementLimit, null);
+            $related = [];
+            $relationshipFailures = [];
+
+            if ($includeRelated && $isLinkFund) {
+                $resolved = $this->resolveTargetEtf($detail);
+                if ($resolved !== null) {
+                    $related[] = $this->buildDividendProfileEntry(
+                        $resolved['fund'],
+                        'target_etf',
+                        $limit,
+                        $includeAnnouncements,
+                        $announcementLimit,
+                        $resolved['resolution']
+                    );
+                } else {
+                    $relationshipFailures[] = [
+                        'relationship' => 'target_etf',
+                        'reason' => '未能用同基金公司、同跟踪指数和非联接 ETF 候选唯一确认目标 ETF 代码',
+                    ];
+                }
+            }
+
+            $allEntries = array_merge([$direct], $related);
+            $upcoming = [];
+            foreach ($allEntries as $entry) {
+                foreach ($entry['events'] ?? [] as $event) {
+                    if (($event['event_stage'] ?? '') !== 'completed') {
+                        $upcoming[] = [
+                            'relationship' => $entry['relationship'],
+                            'code' => $entry['code'],
+                            'name' => $entry['name'],
+                            'event' => $event,
+                        ];
+                    }
+                }
+            }
+            usort($upcoming, function($a, $b) {
+                $ad = (string)($a['event']['pay_date'] ?? $a['event']['ex_date'] ?? $a['event']['record_date'] ?? '');
+                $bd = (string)($b['event']['pay_date'] ?? $b['event']['ex_date'] ?? $b['event']['record_date'] ?? '');
+                return strcmp($ad, $bd);
+            });
+            $hasEntryFailures = false;
+            $allAnnouncementsChecked = $includeAnnouncements;
+            foreach ($allEntries as $entry) {
+                if (!empty($entry['failures'])) {
+                    $hasEntryFailures = true;
+                }
+                if ($includeAnnouncements && empty($entry['announcements_checked'])) {
+                    $allAnnouncementsChecked = false;
+                }
+            }
+
+            return DataSourceResult::success('fund_dividend_profile', 'dividend_profile', [
+                'query_fund' => [
+                    'code' => $code,
+                    'name' => (string)($detail['name'] ?? ''),
+                    'full_name' => (string)($detail['full_name'] ?? ''),
+                    'fund_company' => (string)($detail['fund_company'] ?? ''),
+                    'is_link_fund' => $isLinkFund,
+                    'index_code' => (string)($detail['index_code'] ?? ''),
+                    'index_name' => (string)($detail['index_name'] ?? ''),
+                ],
+                'direct_fund' => $direct,
+                'related_funds' => $related,
+                'upcoming_or_in_progress_events' => $upcoming,
+                'relationship_failures' => $relationshipFailures,
+                'scope_note' => '目标 ETF 分红属于联接基金资产层面的收入，不等同于向联接基金份额持有人直接派发现金；两层事件必须分别表述。',
+            ], [
+                'code' => $code,
+                'as_of_date' => date('Y-m-d'),
+                'include_related' => $includeRelated,
+                'include_announcements' => $includeAnnouncements,
+                'announcement_checked' => $allAnnouncementsChecked,
+                'partial' => $hasEntryFailures || !empty($relationshipFailures),
+            ]);
         });
     }
 
@@ -498,6 +585,9 @@ class FundService
      */
     public function fundDocuments(string $code, int $page = 1, int $pageSize = 20, string $docType = 'all', bool $includeContent = false, int $contentLimit = 6000): DataSourceResult
     {
+        if (!preg_match('/^\d{6}$/', $code)) {
+            return DataSourceResult::error(self::SOURCE_NAME, 'documents', 'invalid_code', '基金代码格式不正确');
+        }
         $page = max(1, min($page, 200));
         $pageSize = max(1, min($pageSize, 100));
         $docType = $docType === '' ? 'all' : $docType;
@@ -506,24 +596,32 @@ class FundService
 
         return $this->useCache('documents', $key, function() use ($code, $page, $pageSize, $docType, $includeContent, $contentLimit) {
             return $this->withBreaker('documents', function() use ($code, $page, $pageSize, $docType, $includeContent, $contentLimit) {
-                $url = 'https://fundf10.eastmoney.com/F10DataApi.aspx?' . http_build_query([
-                    'type' => 'jjgg',
-                    'code' => $code,
-                    'page' => $page,
-                    'per'  => $pageSize,
-                    'rt' => sprintf('%.6f', microtime(true)),
+                // 旧 F10DataApi.aspx?type=jjgg 已长期停留在旧公告；当前网页实际使用此 JSON API。
+                $providerType = [
+                    'all' => 0,
+                    'prospectus' => 1,
+                    'contract' => 1,
+                    'dividend' => 2,
+                    'periodic_report' => 3,
+                    'other' => 6,
+                ][$docType] ?? 0;
+                $url = 'https://api.fund.eastmoney.com/f10/JJGG?' . http_build_query([
+                    'fundcode' => $code,
+                    'pageIndex' => $page,
+                    'pageSize' => $pageSize,
+                    'type' => $providerType,
                 ]);
 
                 $resp = $this->http->get($url, [
                     'Referer' => "https://fundf10.eastmoney.com/jjgg_{$code}.html",
-                    'Accept'  => '*/*',
+                    'Accept'  => 'application/json,text/plain,*/*',
                 ]);
 
                 if ($resp['error'] || $resp['http_code'] !== 200) {
                     return DataSourceResult::error(self::SOURCE_NAME, 'documents', 'network_error', '请求失败: ' . ($resp['error'] ?: "HTTP {$resp['http_code']}"));
                 }
 
-                $parsed = $this->parseDocumentsResponse($resp['body']);
+                $parsed = $this->parseEastmoneyDocumentsResponse($resp['body']);
                 if ($parsed === null) {
                     return DataSourceResult::error(self::SOURCE_NAME, 'documents', 'parse_error', '解析基金公告列表失败');
                 }
@@ -553,9 +651,279 @@ class FundService
                     'records' => $parsed['records'],
                     'pages' => $parsed['pages'],
                     'returned' => count($items),
+                    'provider_type' => $providerType,
+                    'source_url' => $url,
+                    'source_note' => '公告来自东方财富当前 F10 JSON 公告接口；分红公告 type=2。',
                 ]);
             });
         });
+    }
+
+    private function buildDividendProfileEntry(array $detail, string $relationship, int $limit, bool $includeAnnouncements, int $announcementLimit, ?array $resolution): array
+    {
+        $code = (string)($detail['code'] ?? '');
+        $name = (string)($detail['name'] ?? '');
+        $company = (string)($detail['fund_company'] ?? '');
+        $failures = [];
+
+        $history = $this->dividendHistory($code, 1, $limit);
+        $events = $history->hasData() ? $history->data : [];
+        if (!$history->success) {
+            $failures[] = ['source' => 'eastmoney_dividend_events', 'code' => $history->errorCode, 'message' => $history->errorMessage];
+        }
+
+        $announcements = [];
+        $announcementsChecked = false;
+        if ($includeAnnouncements) {
+            $docs = $this->fundDocuments($code, 1, $announcementLimit, 'dividend', false, 1000);
+            $announcementsChecked = $docs->success;
+            if ($docs->hasData()) {
+                $announcements = $docs->data;
+            } elseif (!$docs->success) {
+                $failures[] = ['source' => 'eastmoney_dividend_announcements', 'code' => $docs->errorCode, 'message' => $docs->errorMessage];
+            }
+        }
+
+        $firstParty = [
+            'provider' => null,
+            'status' => 'not_configured_for_manager',
+            'events_checked' => false,
+            'announcements_checked' => false,
+        ];
+        if (strpos($this->normalizeFundCompany($company), '南方') !== false) {
+            $southern = $this->fetchSouthernDividendEvidence($code, $limit, $includeAnnouncements ? $announcementLimit : 0);
+            $firstParty = $southern['verification'];
+            if (!empty($southern['events'])) {
+                $events = $this->mergeDividendEvents($southern['events'], $events, $limit);
+            }
+            if ($includeAnnouncements && !empty($southern['announcements'])) {
+                $announcements = $this->mergeDividendAnnouncements($southern['announcements'], $announcements, $announcementLimit);
+                $announcementsChecked = true;
+            }
+            foreach ($southern['failures'] as $failure) {
+                $failures[] = $failure;
+            }
+        }
+
+        $latestEvent = $events[0] ?? null;
+        return [
+            'relationship' => $relationship,
+            'code' => $code,
+            'name' => $name,
+            'full_name' => (string)($detail['full_name'] ?? ''),
+            'fund_company' => $company,
+            'index_code' => (string)($detail['index_code'] ?? ''),
+            'index_name' => (string)($detail['index_name'] ?? ''),
+            'relationship_resolution' => $resolution,
+            'latest_event' => $latestEvent,
+            'events' => array_slice($events, 0, $limit),
+            'announcements' => array_slice($announcements, 0, $announcementLimit),
+            'announcements_checked' => $announcementsChecked,
+            'first_party_verification' => $firstParty,
+            'failures' => $failures,
+            'interpretation_note' => $relationship === 'target_etf'
+                ? '这是目标 ETF 自身向 ETF 持有人派发的事件，不是查询基金份额的直接现金分红。该收入会进入联接基金资产，再由联接基金按自身公告决定是否分配。'
+                : '这是查询基金份额自身的分红事件。',
+        ];
+    }
+
+    private function fetchSouthernDividendEvidence(string $code, int $eventLimit, int $announcementLimit): array
+    {
+        $events = [];
+        $announcements = [];
+        $failures = [];
+        $eventsChecked = false;
+        $announcementsChecked = false;
+        $headers = [
+            'Referer' => "https://www.nffund.com/new/personal-financing/detail.html?fundCode={$code}",
+            'Accept' => 'application/json,text/plain,*/*',
+            'Content-Type' => 'application/x-www-form-urlencoded; charset=UTF-8',
+        ];
+
+        $eventResp = $this->http->post(
+            'https://www.nffund.com/nfwebApi/fund/dividends',
+            http_build_query(['fundCode' => $code, 'startDate' => '', 'endDate' => '', 'curPage' => 1, 'pageSize' => max(20, $eventLimit)]),
+            $headers
+        );
+        if (!$eventResp['error'] && $eventResp['http_code'] === 200) {
+            $parsedEvents = $this->parseSouthernDividendResponse($eventResp['body']);
+            if ($parsedEvents !== null) {
+                $eventsChecked = true;
+                $events = array_slice($parsedEvents, 0, $eventLimit);
+            } else {
+                $failures[] = ['source' => 'nffund_official_dividends', 'code' => 'parse_error', 'message' => '南方基金官方分红接口解析失败'];
+            }
+        } else {
+            $failures[] = ['source' => 'nffund_official_dividends', 'code' => 'network_error', 'message' => $eventResp['error'] ?: "HTTP {$eventResp['http_code']}"];
+        }
+
+        if ($announcementLimit > 0) {
+            $noticeResp = $this->http->post(
+                'https://www.nffund.com/nfwebApi/notice/fundAnnouncement',
+                http_build_query([
+                    'fundCode' => $code,
+                    'title' => '分红',
+                    'infoType' => '',
+                    'tabsid' => 'newgg',
+                    'type' => 0,
+                    'curPage' => 1,
+                    'pageSize' => $announcementLimit,
+                ]),
+                $headers
+            );
+            if (!$noticeResp['error'] && $noticeResp['http_code'] === 200) {
+                $parsedNotices = $this->parseSouthernAnnouncementResponse($noticeResp['body']);
+                if ($parsedNotices !== null) {
+                    $announcementsChecked = true;
+                    $announcements = array_slice($parsedNotices, 0, $announcementLimit);
+                } else {
+                    $failures[] = ['source' => 'nffund_official_announcements', 'code' => 'parse_error', 'message' => '南方基金官方公告接口解析失败'];
+                }
+            } else {
+                $failures[] = ['source' => 'nffund_official_announcements', 'code' => 'network_error', 'message' => $noticeResp['error'] ?: "HTTP {$noticeResp['http_code']}"];
+            }
+        }
+
+        return [
+            'events' => $events,
+            'announcements' => $announcements,
+            'failures' => $failures,
+            'verification' => [
+                'provider' => 'nffund_official',
+                'status' => $eventsChecked ? 'available' : 'unavailable',
+                'events_checked' => $eventsChecked,
+                'announcements_checked' => $announcementsChecked,
+                'product_url' => "https://www.nffund.com/new/personal-financing/detail.html?fundCode={$code}",
+            ],
+        ];
+    }
+
+    private function mergeDividendEvents(array $preferred, array $secondary, int $limit): array
+    {
+        $merged = [];
+        foreach (array_merge($preferred, $secondary) as $event) {
+            $key = implode('|', [
+                (string)($event['record_date'] ?? ''),
+                (string)($event['ex_date'] ?? ''),
+                (string)($event['pay_date'] ?? ''),
+                number_format((float)($event['cash_per_unit'] ?? 0), 8, '.', ''),
+            ]);
+            if (!isset($merged[$key])) {
+                $merged[$key] = $event;
+                $merged[$key]['sources'] = array_values(array_unique((array)($event['sources'] ?? [])));
+            } else {
+                $merged[$key]['sources'] = array_values(array_unique(array_merge(
+                    (array)($merged[$key]['sources'] ?? []),
+                    (array)($event['sources'] ?? [])
+                )));
+            }
+        }
+        $items = array_values($merged);
+        usort($items, function($a, $b) {
+            return strcmp((string)($b['record_date'] ?? ''), (string)($a['record_date'] ?? ''));
+        });
+        return array_slice($items, 0, $limit);
+    }
+
+    private function mergeDividendAnnouncements(array $preferred, array $secondary, int $limit): array
+    {
+        $merged = [];
+        foreach (array_merge($preferred, $secondary) as $item) {
+            $key = (string)($item['date'] ?? '') . '|' . preg_replace('/\s+/u', '', (string)($item['title'] ?? ''));
+            if (!isset($merged[$key])) {
+                $merged[$key] = $item;
+            } else {
+                $merged[$key]['source_urls'] = array_values(array_unique(array_filter(array_merge(
+                    (array)($merged[$key]['source_urls'] ?? [$merged[$key]['url'] ?? '']),
+                    (array)($item['source_urls'] ?? [$item['url'] ?? ''])
+                ))));
+            }
+        }
+        $items = array_values($merged);
+        usort($items, function($a, $b) {
+            return strcmp((string)($b['date'] ?? ''), (string)($a['date'] ?? ''));
+        });
+        return array_slice($items, 0, $limit);
+    }
+
+    private function resolveTargetEtf(array $detail): ?array
+    {
+        $name = (string)($detail['name'] ?? '');
+        if (preg_match('/联接/u', $name) !== 1) {
+            return null;
+        }
+
+        $base = preg_replace('/联接(?:基金)?[A-Z]?(?:类)?$/ui', '', $name);
+        $companyCore = $this->normalizeFundCompany((string)($detail['fund_company'] ?? ''));
+        if ($companyCore !== '') {
+            $base = preg_replace('/^' . preg_quote($companyCore, '/') . '/u', '', $base);
+        }
+        $base = trim((string)$base);
+        $core = preg_replace('/^(标普|中证|上证|深证|国证|恒生|富时|MSCI|纳斯达克)+/ui', '', $base);
+        $queries = array_values(array_unique(array_filter([$base, $core])));
+
+        $candidates = [];
+        foreach (array_slice($queries, 0, 2) as $query) {
+            $result = $this->search($query);
+            if (!$result->hasData()) continue;
+            foreach ($result->data as $candidate) {
+                $candidateCode = (string)($candidate['code'] ?? '');
+                $candidateName = (string)($candidate['name'] ?? '');
+                if ($candidateCode === '' || $candidateCode === (string)($detail['code'] ?? '')) continue;
+                if (stripos($candidateName, 'ETF') === false || preg_match('/联接/u', $candidateName)) continue;
+                $candidates[$candidateCode] = $candidate;
+            }
+        }
+        if (empty($candidates)) {
+            return null;
+        }
+
+        $info = $this->info(array_slice(array_keys($candidates), 0, 20));
+        if (!$info->hasData()) {
+            return null;
+        }
+
+        $ranked = [];
+        foreach ($info->data as $candidateDetail) {
+            $score = 20; // 已满足 ETF 且非联接
+            $sameCompany = $companyCore !== '' && $this->normalizeFundCompany((string)($candidateDetail['fund_company'] ?? '')) === $companyCore;
+            $sameIndex = (string)($detail['index_code'] ?? '') !== ''
+                && (string)($candidateDetail['index_code'] ?? '') === (string)($detail['index_code'] ?? '');
+            if ($sameCompany) $score += 50;
+            if ($sameIndex) $score += 50;
+            $ranked[] = [
+                'score' => $score,
+                'same_company' => $sameCompany,
+                'same_index' => $sameIndex,
+                'fund' => $candidateDetail,
+            ];
+        }
+        usort($ranked, function($a, $b) { return $b['score'] <=> $a['score']; });
+        $best = $ranked[0] ?? null;
+        if ($best === null || $best['score'] < 70) {
+            return null;
+        }
+        if (isset($ranked[1]) && $ranked[1]['score'] === $best['score']) {
+            return null;
+        }
+
+        return [
+            'fund' => $best['fund'],
+            'resolution' => [
+                'confidence' => ($best['same_company'] && $best['same_index']) ? 'high' : 'medium',
+                'score' => $best['score'],
+                'same_fund_company' => $best['same_company'],
+                'same_tracking_index_code' => $best['same_index'],
+                'search_queries' => $queries,
+                'evidence_note' => '由联接基金名称召回非联接 ETF，再用基金公司和跟踪指数代码进行唯一确认。',
+            ],
+        ];
+    }
+
+    private function normalizeFundCompany(string $company): string
+    {
+        $company = preg_replace('/(基金管理|股份|有限责任|有限公司|基金)/u', '', $company);
+        return preg_replace('/[\s·・()（）]/u', '', (string)$company);
     }
 
     // ── 缓存层 (Phase 2 重构) ──
@@ -2596,6 +2964,180 @@ class FundService
             return (int)$matches[1];
         }
         return 0;
+    }
+
+    private function parseDividendHistoryPage(string $body): ?array
+    {
+        if (!preg_match('/<table\b[^>]*class=[\'\"][^\'\"]*cfxq[^\'\"]*[\'\"][^>]*>[\s\S]*?<tbody>([\s\S]*?)<\/tbody>/iu', $body, $tableMatch)) {
+            return null;
+        }
+
+        $fundName = '';
+        if (preg_match('/累计分红[^<]*<\/label>/u', $body, $summaryBlock)) {
+            if (preg_match('/<a\b[^>]*>(.*?)<\/a>/iu', $summaryBlock[0], $nameMatch)) {
+                $fundName = $this->cleanHtmlCell($nameMatch[1]);
+            }
+        }
+        if ($fundName === '' && preg_match('/<a\b[^>]*href=[\'\"](?:https?:)?\/\/fund\.eastmoney\.com\/\d{6}\.html[\'\"][^>]*>(.*?)<\/a>/iu', $body, $nameMatch)) {
+            $fundName = $this->cleanHtmlCell($nameMatch[1]);
+        }
+
+        $annualSummary = '';
+        if (preg_match('/(\d{4}年度[\s\S]{0,200}?累计分红[0-9.]+元\/份)/u', strip_tags($body), $summaryMatch)) {
+            $annualSummary = preg_replace('/\s+/u', '', $summaryMatch[1]);
+        }
+
+        preg_match_all('/<tr\b[^>]*>([\s\S]*?)<\/tr>/iu', $tableMatch[1], $rowMatches);
+        $items = [];
+        foreach ($rowMatches[1] as $row) {
+            preg_match_all('/<td\b[^>]*>([\s\S]*?)<\/td>/iu', $row, $cellMatches);
+            if (count($cellMatches[1]) < 5) continue;
+            $cells = array_map([$this, 'cleanHtmlCell'], $cellMatches[1]);
+            $recordDate = (string)($cells[1] ?? '');
+            $exDate = (string)($cells[2] ?? '');
+            $dividend = (string)($cells[3] ?? '');
+            $payDate = (string)($cells[4] ?? '');
+            if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $recordDate)) continue;
+            $cash = $this->parseCashDividendPerUnit($dividend);
+            $items[] = [
+                'year' => preg_replace('/\D/', '', (string)($cells[0] ?? '')),
+                'record_date' => $recordDate,
+                'ex_date' => $exDate,
+                'pay_date' => $payDate,
+                'cash_per_unit' => $cash,
+                'dividend' => $dividend,
+                'date' => $recordDate,
+                'event_stage' => $this->dividendEventStage($recordDate, $exDate, $payDate),
+                'sources' => ['eastmoney_choice'],
+            ];
+        }
+        if (empty($items) && strpos($tableMatch[1], '暂无分红') === false) {
+            return null;
+        }
+
+        return [
+            'fund_name' => $fundName,
+            'annual_summary' => $annualSummary,
+            'items' => $items,
+        ];
+    }
+
+    private function parseEastmoneyDocumentsResponse(string $body): ?array
+    {
+        $parsed = HttpClient::parseJson($body);
+        if (!$parsed['ok'] || !is_array($parsed['data'] ?? null)) {
+            return null;
+        }
+        $json = $parsed['data'];
+        if ((int)($json['ErrCode'] ?? -1) !== 0 || !is_array($json['Data'] ?? null)) {
+            return null;
+        }
+        $typeNames = [1 => '发行运作', 2 => '分红送配', 3 => '定期报告', 4 => '人事调整', 5 => '基金销售', 6 => '其他公告'];
+        $items = [];
+        foreach ($json['Data'] as $item) {
+            if (!is_array($item)) continue;
+            $id = (string)($item['ID'] ?? '');
+            $fundCode = (string)($item['FUNDCODE'] ?? '');
+            $date = (string)($item['PUBLISHDATEDesc'] ?? $item['PUBLISHDATE'] ?? '');
+            if (strlen($date) >= 10) $date = substr($date, 0, 10);
+            $category = (int)($item['NEWCATEGORY'] ?? 0);
+            $items[] = [
+                'title' => (string)($item['TITLE'] ?? $item['ShortTitle'] ?? ''),
+                'announcement_type' => $typeNames[$category] ?? '其他公告',
+                'date' => $date,
+                'url' => ($fundCode !== '' && $id !== '') ? "https://fund.eastmoney.com/gonggao/{$fundCode},{$id}.html" : '',
+                'pdf_url' => $id !== '' ? "https://pdf.dfcfw.com/pdf/H2_{$id}_1.pdf" : '',
+                'provider_category' => $category,
+                'source' => 'eastmoney_f10_current',
+            ];
+        }
+        $pageSize = max(1, (int)($json['PageSize'] ?? count($items) ?: 1));
+        $records = (int)($json['TotalCount'] ?? count($items));
+        return [
+            'items' => $items,
+            'records' => $records,
+            'pages' => $records > 0 ? (int)ceil($records / $pageSize) : 0,
+            'page' => max(1, (int)($json['PageIndex'] ?? 1)),
+        ];
+    }
+
+    private function parseSouthernDividendResponse(string $body): ?array
+    {
+        $parsed = HttpClient::parseJson($body);
+        if (!$parsed['ok'] || !is_array($parsed['data'] ?? null)) return null;
+        $json = $parsed['data'];
+        if (($json['code'] ?? '') !== 'ETS-5BP00000') return null;
+        $rows = $json['data']['jjfhlist']['list'] ?? null;
+        if (!is_array($rows)) return null;
+        $events = [];
+        foreach ($rows as $row) {
+            if (!is_array($row)) continue;
+            $recordDate = $this->normalizeCompactDate((string)($row['f8'] ?? $row['f3'] ?? ''));
+            $exDate = $this->normalizeCompactDate((string)($row['f9'] ?? ''));
+            $payDate = $this->normalizeCompactDate((string)($row['f10'] ?? ''));
+            if ($recordDate === '') continue;
+            $cash = isset($row['f7f6']) && is_numeric($row['f7f6']) ? (float)$row['f7f6'] : (isset($row['f7']) && is_numeric($row['f7']) ? (float)$row['f7'] : null);
+            $events[] = [
+                'year' => substr($recordDate, 0, 4),
+                'record_date' => $recordDate,
+                'ex_date' => $exDate,
+                'pay_date' => $payDate,
+                'cash_per_unit' => $cash,
+                'dividend' => $cash !== null ? '每份派现金' . number_format($cash, 4, '.', '') . '元' : '',
+                'date' => $recordDate,
+                'event_stage' => $this->dividendEventStage($recordDate, $exDate, $payDate),
+                'sources' => ['nffund_official'],
+            ];
+        }
+        return $events;
+    }
+
+    private function parseSouthernAnnouncementResponse(string $body): ?array
+    {
+        $parsed = HttpClient::parseJson($body);
+        if (!$parsed['ok'] || !is_array($parsed['data'] ?? null)) return null;
+        $json = $parsed['data'];
+        if (($json['code'] ?? '') !== 'ETS-5BP00000') return null;
+        $rows = $json['data']['list'] ?? null;
+        if (!is_array($rows)) return null;
+        $items = [];
+        foreach ($rows as $row) {
+            if (!is_array($row)) continue;
+            $path = (string)($row['linkUrl'] ?? '');
+            if ($path !== '' && strpos($path, 'http') !== 0) {
+                $path = 'https://www.nffund.com' . (strpos($path, '/') === 0 ? $path : '/' . $path);
+            }
+            $items[] = [
+                'title' => (string)($row['title'] ?? ''),
+                'announcement_type' => (string)($row['typeName'] ?? '临时报告'),
+                'date' => (string)($row['createTimeString'] ?? substr((string)($row['publishTime'] ?? ''), 0, 10)),
+                'url' => $path,
+                'pdf_url' => $path,
+                'doc_type' => 'dividend',
+                'source' => 'nffund_official',
+                'source_urls' => array_values(array_filter([$path])),
+            ];
+        }
+        return $items;
+    }
+
+    private function normalizeCompactDate(string $date): string
+    {
+        $digits = preg_replace('/\D/', '', $date);
+        if (strlen($digits) !== 8) return '';
+        return substr($digits, 0, 4) . '-' . substr($digits, 4, 2) . '-' . substr($digits, 6, 2);
+    }
+
+    private function dividendEventStage(string $recordDate, string $exDate, string $payDate): string
+    {
+        $today = date('Y-m-d');
+        if ($recordDate === $today) return 'record_date_today';
+        if ($exDate === $today) return 'ex_date_today';
+        if ($payDate === $today) return 'payment_today';
+        if ($recordDate !== '' && $recordDate > $today) return 'announced_upcoming_record_date';
+        if ($exDate !== '' && $exDate > $today) return 'announced_upcoming_ex_date';
+        if ($payDate !== '' && $payDate > $today) return 'payment_pending';
+        return 'completed';
     }
 
     private function parseHistoryResponse(string $body): ?array

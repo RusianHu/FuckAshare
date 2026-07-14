@@ -300,7 +300,8 @@ FuckAshare/
 | `fa_get_fund_history` | 基金历史净值 |
 | `fa_get_fund_rank` | 基金同类排行 |
 | `fa_get_index_profile` | 基金跟踪指数画像、业绩基准、投资策略依据 |
-| `fa_get_fund_dividend_history` | 基金历史分红/派息记录 |
+| `fa_get_fund_dividend_history` | 基金份额类别的历史分红事件表（登记/除息/发放日、每份金额） |
+| `fa_get_fund_dividend_profile` | 基金分红证据档案（直接事件、最新公告、联接基金目标 ETF 与官方核验） |
 | `fa_get_fund_documents` | 基金公告/报告/合同/招募说明书及可选正文 |
 | `fa_screen_funds` | 多关键词+多排行召回主题基金候选池（红利等主题） |
 | `fa_get_fund_performance_stats` | 分页拉取长历史净值并计算收益/回撤/波动/胜率 |
