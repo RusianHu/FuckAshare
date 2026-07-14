@@ -2963,6 +2963,10 @@ body.watchlist-open .ai-advisor-panel { right: 364px; }
    [5] 模块层 — 分红日历
    ============================================================ */
 .dividend-layout { display: flex; flex-direction: column; gap: 16px; }
+/* 模式切换依赖 hidden；必须压过下方 flex/grid display 规则。 */
+[data-stock-only][hidden],
+[data-fund-only][hidden],
+[data-mode-text][hidden] { display: none !important; }
 .dividend-filter-card { overflow: visible; }
 .dividend-title-row, .dividend-results-head { align-items: flex-start; gap: 16px; }
 .dividend-title-row > div:first-child, .dividend-results-head > div:first-child { min-width: 0; }
@@ -3018,6 +3022,26 @@ body.watchlist-open .ai-advisor-panel { right: 364px; }
 .dividend-net-yield { color: var(--accent-orange); }
 .dividend-status-badge { display: inline-flex; align-items: center; gap: 5px; padding: 4px 8px; border-radius: var(--radius-full); font-size: var(--fs-2xs); font-weight: 700; white-space: nowrap; background: var(--accent-green-bg); color: var(--accent-green); }
 .dividend-status-badge.unconfirmed { color: var(--accent-orange); background: var(--accent-orange-bg); }
+.dividend-mode-toggle { display: inline-flex; gap: 2px; padding: 3px; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-sm); }
+.dividend-mode-btn { padding: 5px 14px; border: none; border-radius: calc(var(--radius-sm) - 2px); background: transparent; color: var(--text-muted); font-size: var(--fs-xs); font-weight: 700; cursor: pointer; transition: var(--transition-fast); }
+.dividend-mode-btn:hover { color: var(--text-primary); }
+.dividend-mode-btn.active { background: var(--accent-blue); color: #fff; box-shadow: 0 1px 3px color-mix(in srgb, var(--accent-blue) 45%, transparent); }
+.dividend-nav-date { display: block; color: var(--text-muted); font-size: var(--fs-2xs); font-family: var(--font-mono); }
+.dividend-ratio-note { display: block; color: var(--text-muted); font-size: var(--fs-2xs); margin-top: 2px; }
+.dividend-fund-ratio { display: flex; align-items: baseline; gap: 10px; margin-top: 10px; padding: 10px 12px; border: 1px solid var(--border-light); border-radius: var(--radius-sm); background: var(--bg-secondary); }
+.dividend-fund-ratio span { color: var(--text-muted); font-size: var(--fs-xs); }
+.dividend-fund-ratio b { color: var(--accent-red); font-size: var(--fs-lg); font-weight: 800; font-variant-numeric: tabular-nums; }
+.dividend-fund-ratio small { color: var(--text-muted); font-size: var(--fs-2xs); margin-left: auto; }
+.dividend-announcement-list { display: flex; flex-direction: column; gap: 8px; }
+.dividend-announcement-item { display: flex; gap: 10px; align-items: baseline; padding: 10px 12px; border: 1px solid var(--border-light); border-radius: var(--radius-sm); background: var(--bg-secondary); color: var(--text-primary); text-decoration: none; transition: var(--transition-fast); }
+.dividend-announcement-item:hover { border-color: var(--accent-blue); background: var(--bg-hover); }
+.dividend-announcement-item span { color: var(--text-muted); font-size: var(--fs-2xs); font-family: var(--font-mono); flex-shrink: 0; }
+.dividend-announcement-item b { font-weight: 600; font-size: var(--fs-sm); }
+.dividend-related-list { display: flex; flex-direction: column; gap: 10px; }
+.dividend-related-item { padding: 11px 12px; border: 1px solid var(--border-light); border-radius: var(--radius-sm); background: var(--bg-secondary); }
+.dividend-related-item b { color: var(--text-primary); font-size: var(--fs-sm); }
+.dividend-related-item small { display: block; color: var(--text-muted); font-size: var(--fs-2xs); margin-top: 2px; }
+.dividend-related-note { display: block; color: var(--text-muted); font-size: var(--fs-2xs); margin-top: 6px; line-height: 1.5; }
 .dividend-row-actions { display: flex; gap: 6px; white-space: nowrap; }
 .dividend-row-actions .btn-sm { min-height: 32px; padding: 5px 9px; }
 .dividend-mobile-list { display: none; }
@@ -3025,6 +3049,7 @@ body.watchlist-open .ai-advisor-panel { right: 364px; }
 .dividend-pagination { display: flex; align-items: center; justify-content: center; gap: 14px; padding: 14px 18px; border-top: 1px solid var(--border-light); }
 .dividend-pagination span { min-width: 100px; text-align: center; color: var(--text-secondary); font-size: var(--fs-xs); }
 .dividend-note-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.dividend-note-grid[data-fund-only] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .dividend-note-card { padding: 17px 18px; margin: 0; }
 .dividend-note-card h4 { margin: 0 0 7px; color: var(--text-primary); }
 .dividend-note-card p { margin: 0; color: var(--text-muted); font-size: var(--fs-xs); line-height: 1.65; }

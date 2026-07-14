@@ -499,6 +499,7 @@ const APP = {
         maxQueryStocks: 50,
         autoRefreshInterval: 30,
         dividendAutoRefreshSeconds: Math.max(300, Math.min(1800, Number(window.FA_RUNTIME_CONFIG?.dividendAutoRefreshSeconds) || 600)),
+        fundDividendAutoRefreshSeconds: Math.max(300, Math.min(1800, Number(window.FA_RUNTIME_CONFIG?.fundDividendAutoRefreshSeconds) || 900)),
         superQueryMaxConcurrent: 3,
         collapseLongUserMessages: true,
         longUserMessageThreshold: 4000
@@ -1395,17 +1396,20 @@ const SectorModule = {
 // ============================================================
 const DividendModule = {
     initialized: false,
+    mode: 'stock',
     loaded: false,
     items: [],
     pagination: { page: 1, pages: 1, total: 0 },
     meta: {},
     controller: null,
     loadRequestId: 0,
+    savedStates: { stock: null, fund: null },
     marketController: null,
     timer: null,
     lastFocused: null,
     detailData: null,
     detailSelected: null,
+    detailMode: 'stock',
     historyPage: 1,
     historyPageSize: 8,
     selectedHistoryIndex: -1,
@@ -1421,6 +1425,9 @@ const DividendModule = {
         this.applyWindow(14);
         document.querySelectorAll('.dividend-window-btn').forEach(btn => btn.addEventListener('click', () => {
             this.applyWindow(parseInt(btn.dataset.days || '14', 10));
+        }));
+        document.querySelectorAll('.dividend-mode-btn').forEach(btn => btn.addEventListener('click', () => {
+            this.switchMode(btn.dataset.dividendMode || 'stock');
         }));
         document.getElementById('dividend-filter-form')?.addEventListener('submit', e => {
             e.preventDefault();
@@ -1438,10 +1445,11 @@ const DividendModule = {
         document.getElementById('panel-dividend')?.addEventListener('click', e => {
             const button = e.target.closest('[data-dividend-action]');
             if (!button) return;
-            const item = this.items.find(row => row.code === button.dataset.code);
-            if (!item) return;
-            if (button.dataset.dividendAction === 'detail') this.openDetail(item, button);
-            if (button.dataset.dividendAction === 'ai') this.analyzeWithAI(item);
+            const item = this.items.find(row => row.code === button.dataset.code && (row.record_date || '') === (button.dataset.recordDate || ''));
+            const fallback = item || this.items.find(row => row.code === button.dataset.code);
+            if (!fallback) return;
+            if (button.dataset.dividendAction === 'detail') this.openDetail(fallback, button);
+            if (button.dataset.dividendAction === 'ai') this.analyzeWithAI(fallback);
         });
         document.getElementById('dividend-detail-close')?.addEventListener('click', () => this.closeDetail());
         document.getElementById('dividend-detail-overlay')?.addEventListener('click', e => {
@@ -1465,6 +1473,80 @@ const DividendModule = {
                 else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
             }
         });
+    },
+
+    switchMode(mode) {
+        if (mode === this.mode || !['stock', 'fund'].includes(mode)) return;
+        // 保存当前模式状态（含共享日期窗口，股票/基金专属筛选由 DOM 显隐自然保留）
+        this.savedStates[this.mode] = {
+            loaded: this.loaded,
+            items: this.items,
+            pagination: this.pagination,
+            meta: this.meta,
+            start_date: document.getElementById('dividend-start-date')?.value || '',
+            end_date: document.getElementById('dividend-end-date')?.value || '',
+            window_days: parseInt(document.querySelector('.dividend-window-btn.active')?.dataset.days || '14', 10),
+        };
+        // 中止旧请求，防止旧响应覆盖新模式
+        if (this.controller) this.controller.abort();
+        this.controller = null;
+        this.loadRequestId++;
+        this.mode = mode;
+        // 恢复目标模式状态
+        const saved = this.savedStates[mode];
+        if (saved) {
+            this.loaded = saved.loaded;
+            this.items = saved.items || [];
+            this.pagination = saved.pagination || { page: 1, pages: 1, total: 0 };
+            this.meta = saved.meta || {};
+            // 恢复共享日期窗口
+            if (saved.start_date) { const s = document.getElementById('dividend-start-date'); if (s) s.value = saved.start_date; }
+            if (saved.end_date) { const e = document.getElementById('dividend-end-date'); if (e) e.value = saved.end_date; }
+            document.querySelectorAll('.dividend-window-btn').forEach(btn => btn.classList.toggle('active', parseInt(btn.dataset.days || '0', 10) === (saved.window_days || 14)));
+        } else {
+            this.loaded = false;
+            this.items = [];
+            this.pagination = { page: 1, pages: 1, total: 0 };
+            this.meta = {};
+        }
+        this.updateModeDom();
+        this.restartAutoRefreshTimer();
+        if (this.loaded) {
+            this.renderSummary(this.meta.__summary || {});
+            this.renderItems();
+            this.renderPagination();
+            const updated = document.getElementById('dividend-updated-at');
+            if (updated) updated.textContent = `数据时间 ${this.formatDateTime(this.meta.as_of || this.meta.updated_at)}`;
+            const table = document.getElementById('dividend-table');
+            const mobile = document.getElementById('dividend-mobile-list');
+            const empty = document.getElementById('dividend-empty');
+            if (table) table.style.display = this.items.length ? 'table' : 'none';
+            if (mobile) mobile.style.display = this.items.length && window.innerWidth <= 768 ? 'flex' : '';
+            if (empty) empty.style.display = this.items.length ? 'none' : 'block';
+        } else {
+            // 首次切换才加载
+            this.applyWindow(14);
+            this.load(1);
+        }
+    },
+
+    updateModeDom() {
+        const isFund = this.mode === 'fund';
+        document.querySelectorAll('[data-stock-only]').forEach(el => { el.hidden = isFund; });
+        document.querySelectorAll('[data-fund-only]').forEach(el => { el.hidden = !isFund; });
+        document.querySelectorAll('[data-mode-text]').forEach(el => { el.hidden = (el.dataset.modeText !== this.mode); });
+        document.querySelectorAll('.dividend-mode-btn').forEach(btn => {
+            const active = btn.dataset.dividendMode === this.mode;
+            btn.classList.toggle('active', active);
+            btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+        });
+        const thead = document.getElementById('dividend-table-head');
+        if (thead) thead.innerHTML = isFund
+            ? '<tr><th>基金</th><th>登记 / 除息 / 发放</th><th>每份分红</th><th>参考净值</th><th>本次分配比例</th><th>事件阶段</th><th>操作</th></tr>'
+            : '<tr><th>股票</th><th>登记 / 除息</th><th>每股现金</th><th>参考价</th><th>本次毛率</th><th>税后现金率</th><th>状态</th><th>操作</th></tr>';
+        const loading = document.getElementById('dividend-loading');
+        const span = loading?.querySelector('span');
+        if (span) span.textContent = isFund ? '正在合并基金分红事件与净值...' : '正在合并分红事件与行情...';
     },
 
     setFilterExpanded(expanded) {
@@ -1493,6 +1575,18 @@ const DividendModule = {
     },
 
     filters() {
+        if (this.mode === 'fund') {
+            const sortBy = document.getElementById('dividend-fund-sort')?.value || 'record_date';
+            return {
+                asset_type: 'fund',
+                start_date: document.getElementById('dividend-start-date')?.value || '',
+                end_date: document.getElementById('dividend-end-date')?.value || '',
+                fund_category: document.getElementById('dividend-fund-category')?.value || 'all',
+                min_distribution_ratio: document.getElementById('dividend-min-ratio')?.value || '0',
+                sort_by: sortBy,
+                order: sortBy === 'record_date' ? 'asc' : 'desc',
+            };
+        }
         return {
             start_date: document.getElementById('dividend-start-date')?.value || '',
             end_date: document.getElementById('dividend-end-date')?.value || '',
@@ -1501,7 +1595,7 @@ const DividendModule = {
             holding_period: document.getElementById('dividend-holding')?.value || 'within_1m',
             min_yield: document.getElementById('dividend-min-yield')?.value || '0',
             sort_by: document.getElementById('dividend-sort')?.value || 'gross_yield',
-            order: (document.getElementById('dividend-sort')?.value || '') === 'record_date' ? 'asc' : 'desc'
+            order: (document.getElementById('dividend-sort')?.value || '') === 'record_date' ? 'asc' : 'desc',
         };
     },
 
@@ -1529,6 +1623,7 @@ const DividendModule = {
             this.items = Array.isArray(data.items) ? data.items : [];
             this.pagination = data.pagination || { page, pages: 1, total: this.items.length };
             this.meta = payload.meta || {};
+            this.meta.__summary = data.summary || {};
             this.loaded = true;
             this.renderSummary(data.summary || {});
             this.renderItems();
@@ -1536,10 +1631,13 @@ const DividendModule = {
             const updated = document.getElementById('dividend-updated-at');
             if (updated) updated.textContent = `数据时间 ${this.formatDateTime(this.meta.as_of || this.meta.updated_at)}`;
             const resultSummary = document.getElementById('dividend-result-summary');
-            if (resultSummary) resultSummary.textContent = `共 ${this.pagination.total || 0} 项 · 事件源 ${payload.source || '-'} · 行情源 ${this.meta.price_source || '-'}`;
+            if (resultSummary) resultSummary.textContent = this.mode === 'fund'
+                ? `共 ${this.pagination.total || 0} 项 · 事件源 ${payload.source || '-'} · 净值源 ${this.meta.nav_source || '-'}`
+                : `共 ${this.pagination.total || 0} 项 · 事件源 ${payload.source || '-'} · 行情源 ${this.meta.price_source || '-'}`;
             const cacheState = this.meta.upstream_cache || this.meta.cache || 'fresh';
             if (this.meta.partial || cacheState === 'stale' || cacheState === 'stale_fallback') {
-                this.showAlert(`部分数据可能不完整：缺少 ${this.meta.missing_quote_count || 0} 条行情；事件缓存状态 ${cacheState}。`, false);
+                const missing = this.mode === 'fund' ? (this.meta.missing_nav_count || 0) : (this.meta.missing_quote_count || 0);
+                this.showAlert(`部分数据可能不完整：缺少 ${missing} 条${this.mode === 'fund' ? '净值' : '行情'}；事件缓存状态 ${cacheState}。`, false);
             }
             if (table) table.style.display = this.items.length ? 'table' : 'none';
             if (mobile) mobile.style.display = this.items.length && window.innerWidth <= 768 ? 'flex' : '';
@@ -1575,6 +1673,15 @@ const DividendModule = {
     },
 
     renderSummary(summary) {
+        if (this.mode === 'fund') {
+            const set = (id, value) => { const el = document.getElementById(id); if (el) el.textContent = value; };
+            set('dividend-fund-summary-count', String(summary.event_count ?? 0));
+            set('dividend-fund-summary-soon', String(summary.within_3_days_count ?? 0));
+            set('dividend-fund-summary-max', this.percent(summary.max_distribution_ratio_pct));
+            set('dividend-fund-summary-median', this.percent(summary.median_distribution_ratio_pct));
+            set('dividend-fund-summary-coverage', `覆盖 ${summary.ratio_coverage_count ?? 0} 条`);
+            return;
+        }
         const set = (id, value) => { const el = document.getElementById(id); if (el) el.textContent = value; };
         set('dividend-summary-confirmed', String(summary.confirmed_count ?? 0));
         set('dividend-summary-soon', String(summary.within_3_days_count ?? 0));
@@ -1585,7 +1692,20 @@ const DividendModule = {
         set('dividend-tax-caption', captions[holding] || '个人税后估算');
     },
 
+    fundStageLabel(stage) {
+        return { upcoming_record: '待登记', upcoming_ex: '待除息', payment_pending: '待发放', completed: '已完成' }[stage] || stage || '-';
+    },
+
+    fundRatioStatusNote(item) {
+        if (item.currency_status === 'unknown') return '未知币种，不计算比例';
+        if (item.ratio_status === 'missing_nav') return '缺最新净值，比例暂缺';
+        if (item.ratio_status === 'nav_not_pre_ex') return '净值日期不早于除息日，比例暂缺';
+        if (item.ratio_status === 'currency_unverified') return '币种未确认，比例暂缺';
+        return '';
+    },
+
     renderItems() {
+        if (this.mode === 'fund') { this.renderFundItems(); return; }
         const tbody = document.getElementById('dividend-table-body');
         const mobile = document.getElementById('dividend-mobile-list');
         if (tbody) tbody.innerHTML = this.items.map(item => `
@@ -1597,15 +1717,45 @@ const DividendModule = {
                 <td><span class="dividend-yield">${this.percent(item.gross_yield_pct)}</span></td>
                 <td><span class="dividend-yield dividend-net-yield">${this.percent(item.net_yield_pct)}</span></td>
                 <td><span class="dividend-status-badge${item.implementation_confirmed ? '' : ' unconfirmed'}">${item.implementation_confirmed ? '已实施' : escapeHTML(item.plan_status || '未确认')}</span></td>
-                <td><div class="dividend-row-actions"><button class="btn-sm" data-dividend-action="detail" data-code="${escapeAttr(item.code)}">详情</button><button class="btn-sm btn-ai" data-dividend-action="ai" data-code="${escapeAttr(item.code)}">AI研判</button></div></td>
+                <td><div class="dividend-row-actions"><button class="btn-sm" data-dividend-action="detail" data-code="${escapeAttr(item.code)}" data-record-date="${escapeAttr(item.record_date || '')}">详情</button><button class="btn-sm btn-ai" data-dividend-action="ai" data-code="${escapeAttr(item.code)}" data-record-date="${escapeAttr(item.record_date || '')}">AI研判</button></div></td>
             </tr>`).join('');
         if (mobile) mobile.innerHTML = this.items.map(item => `
             <article class="dividend-event-card">
                 <div class="dividend-event-card-head"><div class="dividend-event-card-name"><b>${escapeHTML(item.name || '-')}</b><small>${escapeHTML(item.code || '')} · ${(item.market || '').toUpperCase()}</small></div><span class="dividend-status-badge${item.implementation_confirmed ? '' : ' unconfirmed'}">${item.implementation_confirmed ? '已实施' : escapeHTML(item.plan_status || '未确认')}</span></div>
                 <div class="dividend-event-card-yields"><div><span>本次毛率</span><b>${this.percent(item.gross_yield_pct)}</b></div><div><span>税后现金率</span><b>${this.percent(item.net_yield_pct)}</b></div></div>
                 <div class="dividend-event-card-dates">登记日 ${escapeHTML(item.record_date || '-')} · 除息日 ${escapeHTML(item.ex_date || '-')}<br>每股 ¥${this.number(item.cash_per_share, 6)} · 参考价 ¥${this.number(item.price, 2)}</div>
-                <div class="dividend-event-card-foot"><small>距登记日 ${item.days_to_record ?? '-'} 天</small><div class="dividend-row-actions"><button class="btn-sm" data-dividend-action="detail" data-code="${escapeAttr(item.code)}">详情</button><button class="btn-sm btn-ai" data-dividend-action="ai" data-code="${escapeAttr(item.code)}">AI研判</button></div></div>
+                <div class="dividend-event-card-foot"><small>距登记日 ${item.days_to_record ?? '-'} 天</small><div class="dividend-row-actions"><button class="btn-sm" data-dividend-action="detail" data-code="${escapeAttr(item.code)}" data-record-date="${escapeAttr(item.record_date || '')}">详情</button><button class="btn-sm btn-ai" data-dividend-action="ai" data-code="${escapeAttr(item.code)}" data-record-date="${escapeAttr(item.record_date || '')}">AI研判</button></div></div>
             </article>`).join('');
+        if (typeof AnimationManager !== 'undefined') AnimationManager.animateRows('#dividend-table-body tr');
+    },
+
+    renderFundItems() {
+        const tbody = document.getElementById('dividend-table-body');
+        const mobile = document.getElementById('dividend-mobile-list');
+        const cashText = item => item.currency_status === 'unknown' ? `${this.number(item.cash_per_unit, 4)}` : `¥${this.number(item.cash_per_unit, 6)}`;
+        const navText = item => item.nav === null || item.nav === undefined ? '-' : `¥${this.number(item.nav, 4)}`;
+        if (tbody) tbody.innerHTML = this.items.map(item => {
+            const note = this.fundRatioStatusNote(item);
+            return `<tr>
+                <td><div class="dividend-stock-cell"><span class="dividend-stock-avatar">${escapeHTML((item.fund_category || 'fund').slice(0, 4))}</span><div><b>${escapeHTML(item.name || '-')}</b><small>${escapeHTML(item.code || '')}${item.fund_type ? ' · ' + escapeHTML(item.fund_type) : ''}</small></div></div></td>
+                <td><div class="dividend-date-stack"><span>登记 ${escapeHTML(item.record_date || '-')}</span><small>除息 ${escapeHTML(item.ex_date || '-')} · 发放 ${escapeHTML(item.pay_date || '-')}</small></div></td>
+                <td><span class="dividend-cash">${cashText(item)}</span></td>
+                <td>${navText(item)}${item.nav_date ? `<small class="dividend-nav-date">${escapeHTML(item.nav_date)}</small>` : ''}</td>
+                <td><span class="dividend-yield">${this.percent(item.distribution_ratio_pct)}</span>${note ? `<small class="dividend-ratio-note">${escapeHTML(note)}</small>` : ''}</td>
+                <td><span class="dividend-status-badge ${item.event_stage === 'completed' ? '' : ' unconfirmed'}">${escapeHTML(this.fundStageLabel(item.event_stage))}</span></td>
+                <td><div class="dividend-row-actions"><button class="btn-sm" data-dividend-action="detail" data-code="${escapeAttr(item.code)}" data-record-date="${escapeAttr(item.record_date || '')}">详情</button><button class="btn-sm btn-ai" data-dividend-action="ai" data-code="${escapeAttr(item.code)}" data-record-date="${escapeAttr(item.record_date || '')}">AI研判</button></div></td>
+            </tr>`;
+        }).join('');
+        if (mobile) mobile.innerHTML = this.items.map(item => {
+            const note = this.fundRatioStatusNote(item);
+            return `<article class="dividend-event-card">
+                <div class="dividend-event-card-head"><div class="dividend-event-card-name"><b>${escapeHTML(item.name || '-')}</b><small>${escapeHTML(item.code || '')} · ${escapeHTML(item.fund_type || item.fund_category || '-')}</small></div><span class="dividend-status-badge ${item.event_stage === 'completed' ? '' : ' unconfirmed'}">${escapeHTML(this.fundStageLabel(item.event_stage))}</span></div>
+                <div class="dividend-event-card-yields"><div><span>每份分红</span><b>${cashText(item)}</b></div><div><span>分配比例</span><b>${this.percent(item.distribution_ratio_pct)}</b></div></div>
+                <div class="dividend-event-card-dates">登记日 ${escapeHTML(item.record_date || '-')} · 除息日 ${escapeHTML(item.ex_date || '-')}<br>发放日 ${escapeHTML(item.pay_date || '-')} · 参考净值 ${navText(item)}${item.nav_date ? `（${escapeHTML(item.nav_date)}）` : ''}</div>
+                ${note ? `<small class="dividend-ratio-note">${escapeHTML(note)}</small>` : ''}
+                <div class="dividend-event-card-foot"><small>距登记日 ${item.days_to_record ?? '-'} 天</small><div class="dividend-row-actions"><button class="btn-sm" data-dividend-action="detail" data-code="${escapeAttr(item.code)}" data-record-date="${escapeAttr(item.record_date || '')}">详情</button><button class="btn-sm btn-ai" data-dividend-action="ai" data-code="${escapeAttr(item.code)}" data-record-date="${escapeAttr(item.record_date || '')}">AI研判</button></div></div>
+            </article>`;
+        }).join('');
         if (typeof AnimationManager !== 'undefined') AnimationManager.animateRows('#dividend-table-body tr');
     },
 
@@ -1632,6 +1782,7 @@ const DividendModule = {
 
     async openDetail(item, trigger) {
         this.lastFocused = trigger || document.activeElement;
+        this.detailMode = this.mode;
         const overlay = document.getElementById('dividend-detail-overlay');
         const drawer = overlay?.querySelector('.dividend-detail-drawer');
         const content = document.getElementById('dividend-detail-content');
@@ -1640,17 +1791,68 @@ const DividendModule = {
         overlay.classList.add('open');
         overlay.setAttribute('aria-hidden', 'false');
         document.body.classList.add('dividend-drawer-open');
-        if (title) title.textContent = `${item.name || item.code} · 分红详情`;
+        if (title) title.textContent = `${item.name || item.code} · ${this.mode === 'fund' ? '基金分红详情' : '分红详情'}`;
         content.innerHTML = '<div class="loading-spinner"><div class="spinner"></div><span>加载分红历史...</span></div>';
         setTimeout(() => drawer?.focus(), 20);
         try {
-            const holding = this.filters().holding_period;
-            const response = await fetch(`market_api.php?action=dividend_detail&code=${encodeURIComponent(item.code)}&history_scope=all&holding_period=${encodeURIComponent(holding)}`, { cache: 'no-store' });
+            let response;
+            if (this.mode === 'fund') {
+                const params = new URLSearchParams({ action: 'dividend_detail', asset_type: 'fund', code: item.code, event_date: item.record_date || '' });
+                response = await fetch(`market_api.php?${params}`, { cache: 'no-store' });
+            } else {
+                const holding = this.filters().holding_period;
+                response = await fetch(`market_api.php?action=dividend_detail&code=${encodeURIComponent(item.code)}&history_scope=all&holding_period=${encodeURIComponent(holding)}`, { cache: 'no-store' });
+            }
             const payload = await response.json();
             if (!payload.success) throw new Error(payload.message || '加载详情失败');
-            this.renderDetail(payload.data || {}, item);
+            if (this.mode === 'fund') this.renderFundDetail(payload.data || {}, item);
+            else this.renderDetail(payload.data || {}, item);
         } catch (error) {
             content.innerHTML = `<div class="error-msg">${escapeHTML(error.message || '加载详情失败')}</div>`;
+        }
+    },
+
+    renderFundDetail(data, selected) {
+        const content = document.getElementById('dividend-detail-content');
+        if (!content) return;
+        this.detailData = data;
+        this.detailSelected = selected;
+        this.historyPage = 1;
+        this.selectedHistoryIndex = -1;
+        const fund = data.fund || {};
+        const summary = data.summary || {};
+        const event = data.selected_event || selected || {};
+        const history = Array.isArray(data.history) ? data.history : [];
+        const announcements = Array.isArray(data.announcements) ? data.announcements : [];
+        const related = Array.isArray(data.related_funds) ? data.related_funds : [];
+        const dated = history.map(row => row.record_date || row.ex_date).filter(Boolean);
+        const newest = dated[0] || '-';
+        const oldest = dated[dated.length - 1] || '-';
+        const annStatusMap = { verified: '公告已核验', checked_unmatched: '公告未匹配', check_failed: '公告核验失败', not_checked: '未检查公告' };
+        const ratio = (event.cash_per_unit !== null && event.cash_per_unit !== undefined && fund.nav) ? this.percent((Number(event.cash_per_unit) / Number(fund.nav)) * 100) : '-';
+        const cashText = fund.currency_status === 'unknown' ? this.number(event.cash_per_unit, 4) : `¥${this.number(event.cash_per_unit, 6)}`;
+        content.innerHTML = `
+            <section class="dividend-detail-hero">
+                <div class="dividend-detail-hero-row"><div><div class="dividend-detail-name">${escapeHTML(fund.name || selected.name || '-')}</div><div class="dividend-detail-code">${escapeHTML(fund.code || selected.code || '')}${fund.fund_type ? ' · ' + escapeHTML(fund.fund_type) : ''}</div></div><div><div class="dividend-detail-price">${fund.nav ? '¥' + this.number(fund.nav, 4) : '-'}</div><small>最新单位净值${fund.nav_date ? ' · ' + escapeHTML(fund.nav_date) : ''}</small></div></div>
+                <div class="dividend-detail-metrics"><div class="dividend-detail-metric"><span>现金分红事件</span><b>${summary.cash_dividend_events ?? 0} 次</b></div><div class="dividend-detail-metric"><span>覆盖年份</span><b>${summary.years_with_cash_dividend ?? 0} 年</b></div><div class="dividend-detail-metric"><span>近5年每份合计</span><b>¥${this.number(summary.five_year_total_cash_per_unit, 4)}</b></div></div>
+            </section>
+            <section class="dividend-detail-section"><h4>当前事件</h4><div class="dividend-current-plan"><b>每份分红 ${cashText}</b><br>登记日 ${escapeHTML(event.record_date || selected.record_date || '-')} · 除息日 ${escapeHTML(event.ex_date || selected.ex_date || '-')} · 发放日 ${escapeHTML(event.pay_date || '-')}</div>
+            <div class="dividend-fund-ratio"><span>参考分配比例（按最新净值）</span><b>${ratio}</b><small>状态：${escapeHTML(annStatusMap[data.announcement_match_status] || data.announcement_match_status || '-')}</small></div></section>
+            ${announcements.length ? `<section class="dividend-detail-section"><h4>分红公告证据</h4><div class="dividend-announcement-list">${announcements.map(a => `<a class="dividend-announcement-item" href="${escapeAttr(a.url || a.pdf_url || '#')}" target="_blank" rel="noopener noreferrer"><span>${escapeHTML(a.date || '-')}</span><b>${escapeHTML(a.title || '未命名公告')}</b></a>`).join('')}</div></section>` : ''}
+            ${related.length ? `<section class="dividend-detail-section"><h4>联接基金与目标 ETF</h4><div class="dividend-related-list">${related.map(r => `<div class="dividend-related-item"><div><b>${escapeHTML(r.name || r.code || '-')}</b><small>${escapeHTML(r.code || '')} · ${escapeHTML(r.relationship || 'target_etf')}</small></div><small class="dividend-related-note">${escapeHTML(r.interpretation_note || '目标 ETF 分红属于资产层收入，不等同于向联接基金持有人直接派现。')}</small></div>`).join('')}</div><p class="dividend-market-note">${escapeHTML(data.scope_note || '')}</p></section>` : ''}
+            <section class="dividend-detail-section dividend-history-section">
+                <div class="dividend-section-heading"><div><h4>完整历史分红</h4><small>${history.length} 条记录 · ${escapeHTML(oldest)} 至 ${escapeHTML(newest)}</small></div><span class="dividend-history-hint">点选任一次，查看除息日前后净值</span></div>
+                <div id="dividend-history-list" class="dividend-history-list"></div>
+                <div id="dividend-history-pagination" class="dividend-history-pagination"></div>
+            </section>
+            <section class="dividend-detail-section dividend-market-section"><div id="dividend-event-market" class="dividend-event-market"><p class="placeholder-text">选择一条历史分红，查看附近净值</p></div></section>
+            <section class="dividend-detail-section"><a class="btn-sm" href="${escapeAttr(fund.source_url || selected.source_url || '#')}" target="_blank" rel="noopener noreferrer">查看数据源详情</a></section>`;
+        this.renderHistoryPage();
+        if (history.length) {
+            const selectedDate = selected.record_date || '';
+            let defaultIndex = history.findIndex(row => (row.record_date || '') === selectedDate);
+            if (defaultIndex < 0) defaultIndex = 0;
+            this.selectHistoryEvent(defaultIndex);
         }
     },
 
@@ -1706,8 +1908,19 @@ const DividendModule = {
         this.historyPage = Math.max(1, Math.min(pages, this.historyPage));
         const start = (this.historyPage - 1) * this.historyPageSize;
         const rows = history.slice(start, start + this.historyPageSize);
+        const isFund = this.detailMode === 'fund';
         list.innerHTML = rows.length ? rows.map((row, offset) => {
             const index = start + offset;
+            if (isFund) {
+                const date = row.ex_date || row.record_date || '-';
+                const cash = Number(row.cash_per_unit);
+                return `<button type="button" class="dividend-history-item${index === this.selectedHistoryIndex ? ' active' : ''}" data-dividend-history-index="${index}" aria-pressed="${index === this.selectedHistoryIndex ? 'true' : 'false'}">
+                    <time>${escapeHTML(date)}</time>
+                    <span class="dividend-history-plan"><b>每份 ${Number.isFinite(cash) ? '¥' + this.number(cash, 6) : '非现金'}</b><small>登记 ${escapeHTML(row.record_date || '-')} · ${escapeHTML(this.fundStageLabel(row.event_stage))}</small></span>
+                    <span class="dividend-history-value">${escapeHTML(row.pay_date || '发放日 -')}</span>
+                    <span class="dividend-history-open">净值 ›</span>
+                </button>`;
+            }
             const date = row.ex_date || row.record_date || row.report_date || '-';
             const cash = Number(row.cash_per_share);
             return `<button type="button" class="dividend-history-item${index === this.selectedHistoryIndex ? ' active' : ''}" data-dividend-history-index="${index}" aria-pressed="${index === this.selectedHistoryIndex ? 'true' : 'false'}">
@@ -1731,28 +1944,102 @@ const DividendModule = {
         this.renderHistoryPage();
         const panel = document.getElementById('dividend-event-market');
         const row = history[index];
-        const eventDate = row.ex_date || row.record_date || row.report_date;
+        const eventDate = this.detailMode === 'fund' ? (row.ex_date || row.record_date) : (row.ex_date || row.record_date || row.report_date);
         if (!panel) return;
         this.destroyEventChart();
-        panel.innerHTML = `<div class="dividend-market-loading"><div class="spinner"></div><span>正在加载 ${escapeHTML(eventDate || '')} 附近日 K...</span></div>`;
+        panel.innerHTML = `<div class="dividend-market-loading"><div class="spinner"></div><span>正在加载 ${escapeHTML(eventDate || '')} 附近${this.detailMode === 'fund' ? '净值' : '日 K'}...</span></div>`;
         if (!eventDate) {
             panel.innerHTML = '<div class="dividend-market-error">该条记录缺少可定位的事件日期。</div>';
             return;
         }
         if (this.marketController) this.marketController.abort();
         this.marketController = new AbortController();
-        const code = this.detailData?.stock?.code || this.detailSelected?.code || '';
+        const code = this.detailData?.fund?.code || this.detailData?.stock?.code || this.detailSelected?.code || '';
         try {
-            const params = new URLSearchParams({ action: 'dividend_event_market', code, event_date: eventDate, before: '10', after: '15' });
+            const params = this.detailMode === 'fund'
+                ? new URLSearchParams({ action: 'dividend_event_market', asset_type: 'fund', code, event_date: eventDate, before: '10', after: '15' })
+                : new URLSearchParams({ action: 'dividend_event_market', code, event_date: eventDate, before: '10', after: '15' });
             const response = await fetch(`market_api.php?${params}`, { signal: this.marketController.signal, cache: 'no-store' });
             const payload = await response.json();
-            if (!payload.success) throw new Error(payload.message || '附近日 K 暂不可用');
+            if (!payload.success) throw new Error(payload.message || (this.detailMode === 'fund' ? '附近净值暂不可用' : '附近日 K 暂不可用'));
             if (index !== this.selectedHistoryIndex) return;
-            this.renderEventMarket(payload.data || {}, row, payload.source || '-');
+            if (this.detailMode === 'fund') this.renderFundEventMarket(payload.data || {}, row, payload.source || '-');
+            else this.renderEventMarket(payload.data || {}, row, payload.source || '-');
         } catch (error) {
             if (error.name === 'AbortError' || index !== this.selectedHistoryIndex) return;
-            panel.innerHTML = `<div class="dividend-market-error"><b>附近日 K 暂时无法加载</b><span>${escapeHTML(error.message || '行情服务返回异常')}</span><small>分红历史仍可继续翻阅，稍后也可重新点选本条记录。</small></div>`;
+            panel.innerHTML = `<div class="dividend-market-error"><b>${this.detailMode === 'fund' ? '附近净值暂时无法加载' : '附近日 K 暂时无法加载'}</b><span>${escapeHTML(error.message || '服务返回异常')}</span><small>分红历史仍可继续翻阅，稍后也可重新点选本条记录。</small></div>`;
         }
+    },
+
+    renderFundEventMarket(data, event, source) {
+        const panel = document.getElementById('dividend-event-market');
+        if (!panel) return;
+        const rows = Array.isArray(data.rows) ? data.rows : [];
+        const summary = data.summary || {};
+        const changeClass = value => Number(value) > 0 ? 'price-up' : Number(value) < 0 ? 'price-down' : '';
+        const pending = data.post_event_data_pending || summary.post_event_data_pending;
+        panel.innerHTML = `
+            <div class="dividend-market-head">
+                <button class="btn-sm" type="button" data-dividend-event-nav="-1" ${this.selectedHistoryIndex <= 0 ? 'disabled' : ''}>‹ 较新一次</button>
+                <div><span>除息事件净值</span><b>${escapeHTML(data.event_date || event.ex_date || event.record_date || '-')}</b></div>
+                <button class="btn-sm" type="button" data-dividend-event-nav="1" ${this.selectedHistoryIndex >= (this.detailData?.history?.length || 1) - 1 ? 'disabled' : ''}>较早一次 ›</button>
+            </div>
+            <div class="dividend-event-plan"><b>每份分红 ${event.cash_per_unit !== null && event.cash_per_unit !== undefined ? '¥' + this.number(event.cash_per_unit, 6) : '-'}</b><span>登记日 ${escapeHTML(event.record_date || '-')} · 除息日 ${escapeHTML(event.ex_date || '-')}</span></div>
+            <div class="dividend-market-summary">
+                <div><span>除息前净值</span><b>${summary.pre_event_nav !== null && summary.pre_event_nav !== undefined ? '¥' + this.number(summary.pre_event_nav, 4) : '-'}</b></div>
+                <div><span>区间高 / 低</span><b>${this.number(summary.window_high, 4)} / ${this.number(summary.window_low, 4)}</b></div>
+                <div><span>后置数据</span><b>${pending ? '待除息后更新' : '已含除息后'}</b></div>
+            </div>
+            <div class="dividend-kline-card">
+                <div class="dividend-kline-caption">
+                    <div class="dividend-kline-title"><span class="dividend-kline-chip">净值</span><div><b>除息前后单位净值</b><small>前 10 / 后 15 个日历日</small></div></div>
+                    <span class="dividend-kline-source">${escapeHTML(source)}</span>
+                </div>
+                <div class="dividend-kline-stage"><div id="dividend-event-kline" role="img" aria-label="${escapeAttr(data.event_date || '')} 附近净值走势"></div></div>
+            </div>
+            <details class="dividend-kline-details"><summary>展开每日净值明细（${rows.length} 条）</summary><div class="dividend-kline-table-wrap"><table class="dividend-kline-table"><thead><tr><th>日期</th><th>单位净值</th><th>累计净值</th><th>日增长率</th></tr></thead><tbody>${rows.map(row => `<tr class="${row.is_event_day ? 'event-day' : ''}"><td>${escapeHTML(row.date || '-')} ${row.is_event_day ? '<em>除息</em>' : ''}</td><td>${this.number(row.nav, 4)}</td><td>${this.number(row.acc_nav, 4)}</td><td class="${changeClass(row.growth_rate)}">${this.signedPercent(row.growth_rate)}</td></tr>`).join('')}</tbody></table></div></details>
+            <p class="dividend-market-note">净值窗口用于观察事件前后走势；除息后单位净值会相应下降，不能单独证明变化由分红造成。${pending ? '事件尚未除息，除息后净值将在更新后补齐。' : ''}</p>`;
+        requestAnimationFrame(() => this.initFundNavChart(rows));
+    },
+
+    initFundNavChart(rows) {
+        const container = document.getElementById('dividend-event-kline');
+        if (!container || !rows.length) return;
+        this.destroyEventChart();
+        this.eventChartRows = rows;
+        if (typeof LightweightCharts === 'undefined') {
+            container.innerHTML = '<div class="dividend-market-error">图表组件未能加载，请展开下方每日净值明细查看。</div>';
+            return;
+        }
+        const colors = ChartModule.getChartColors();
+        const css = getComputedStyle(document.documentElement);
+        const cssVar = (name, fallback) => css.getPropertyValue(name).trim() || fallback;
+        const accent = cssVar('--accent-blue', '#4d9fff');
+        const eventColor = cssVar('--accent-purple', '#8b6de9');
+        const chart = LightweightCharts.createChart(container, {
+            width: Math.max(320, container.clientWidth),
+            height: 340,
+            layout: { ...colors.layout, fontFamily: cssVar('--font-sans', 'sans-serif'), attributionLogo: false },
+            grid: { vertLines: { color: colors.grid.vertLines.color, style: 2 }, horzLines: { color: colors.grid.horzLines.color, style: 2 } },
+            rightPriceScale: { ...colors.rightPriceScale, scaleMargins: { top: 0.1, bottom: 0.1 }, minimumWidth: 56 },
+            timeScale: { ...colors.timeScale, timeVisible: false, secondsVisible: false, borderVisible: false, rightOffset: 1, barSpacing: 19, minBarSpacing: 8, fixLeftEdge: true, fixRightEdge: true },
+            localization: { locale: 'zh-CN', priceFormatter: price => Number(price).toFixed(4) },
+            handleScroll: { mouseWheel: false, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
+            handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
+        });
+        const navSeries = chart.addLineSeries({ color: accent, lineWidth: 2, priceLineVisible: false, lastValueVisible: true, priceFormat: { type: 'price', precision: 4, minMove: 0.0001 } });
+        const navData = rows.map(row => ({ time: row.date, value: Number(row.nav) }));
+        navSeries.setData(navData);
+        if (rows.some(row => row.is_event_day)) {
+            const eventRow = rows.find(row => row.is_event_day);
+            navSeries.createPriceLine({ price: Number(eventRow.nav), color: eventColor, lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: '除息' });
+        }
+        chart.timeScale().fitContent();
+        this.eventChart = chart;
+        this.eventChartSeries = navSeries;
+        const ro = new ResizeObserver(() => { if (this.eventChart) this.eventChart.applyOptions({ width: Math.max(320, container.clientWidth) }); });
+        ro.observe(container);
+        this.eventChartResizeObserver = ro;
     },
 
     renderEventMarket(data, event, source) {
@@ -1969,6 +2256,11 @@ const DividendModule = {
 
     analyzeWithAI(item) {
         AdvisorModule.setDividendContext(item);
+        if (this.mode === 'fund') {
+            const prompt = `请研判当前基金分红事件，并由你自主选择必要工具交叉验证。必须调用 fa_get_fund_dividend_profile 核查直接分红、最新公告与目标 ETF 事件；除此之外最多选择 3 个最相关的研究工具，彼此独立的查询尽量放在同一轮并行执行。\n\n基金：${item.name}（${item.code}）\n基金类型：${item.fund_type || item.fund_category || '-'}\n登记日：${item.record_date}\n除息日：${item.ex_date}\n发放日：${item.pay_date || '-'}\n每份分红：${item.cash_per_unit ?? '缺失'}元\n参考净值：${item.nav ?? '缺失'}（${item.nav_date || '日期缺失'}）\n本次分配比例：${item.distribution_ratio_pct ?? '缺失'}%\n比例状态：${item.ratio_status || '-'}\n事件阶段：${this.fundStageLabel(item.event_stage)}\n数据时间：${this.meta.as_of || '未知'}\n\n请区分事实、推断和不确定性；分红来自基金财产、净值会相应下降，不是额外或无风险收益；不要把分配比例称为年化收益，不要套用股票红利税档；公告未核验时不得声称“没有公告”。`;
+            AdvisorModule.autoSend(prompt);
+            return;
+        }
         const prompt = `请研判当前分红事件，并由你自主选择必要工具交叉验证。必须调用 fa_get_stock_dividend_profile 核查历史分红；除此之外最多选择 3 个最相关的研究工具，档案已有有效价格时不要重复查询行情，未明确需要大盘背景时不必查询市场宽度。请将彼此独立的查询尽量放在同一工具轮并行执行。\n\n股票：${item.name}（${item.code}）\n方案状态：${item.plan_status}\n股权登记日：${item.record_date}\n除权除息日：${item.ex_date}\n每股含税现金：${item.cash_per_share}元\n价格快照：${item.price ?? '缺失'}元\n本次毛现金率：${item.gross_yield_pct ?? '缺失'}%\n当前税档税后现金率：${item.net_yield_pct ?? '缺失'}%\n数据时间：${this.meta.as_of || '未知'}\n\n请区分事实、推断和不确定性，重点分析是否存在除息前抢跑、波动与资金风险；不要把本次现金率当作年化或无风险收益。`;
         AdvisorModule.autoSend(prompt);
     },
@@ -1977,19 +2269,41 @@ const DividendModule = {
         APP.advisorContext.dividendEvent = null;
         APP.advisorContext.source = '分红日历扫描';
         const f = this.filters();
+        if (this.mode === 'fund') {
+            const days = Math.max(1, Math.round((new Date(f.end_date) - new Date(f.start_date)) / 86400000) + 1);
+            AdvisorModule.autoSend(`请使用 fa_get_upcoming_fund_dividends 扫描从 ${f.start_date} 开始未来 ${days} 日的基金分红事件，基金类型=${f.fund_category}，最低分配比例=${f.min_distribution_ratio}%，排序=${f.sort_by}。本次先完成全市场召回、排序与风险摘要；除非缺少形成扫描结论的关键事实，否则不要在同一请求中展开多只基金深挖，可建议我从事件行继续进入单基金研判。必须说明数据时间、比例口径、事件状态和工具失败项；不要把分配比例视为年化或无风险收益，不要套用股票红利税档。`);
+            return;
+        }
         const days = Math.max(1, Math.round((new Date(f.end_date) - new Date(f.start_date)) / 86400000) + 1);
         AdvisorModule.autoSend(`请使用 fa_get_upcoming_dividends 扫描从 ${f.start_date} 开始未来 ${days} 日的临近分红事件，市场=${f.market}，方案状态=${f.status}，持有期税档=${f.holding_period}，最低本次毛率=${f.min_yield}%。本次先完成全市场召回、排序与风险摘要；除非缺少形成扫描结论的关键事实，否则不要在同一请求中展开多只股票深挖，可建议我从事件行继续进入单股研判。必须说明数据时间、税务口径、事件状态和工具失败项，不要把本次现金率视为无风险收益。`);
+    },
+
+    restartAutoRefreshTimer() {
+        if (this.timer) {
+            clearInterval(this.timer);
+            this.timer = null;
+        }
+        const tabActive = document.querySelector('.nav-tab.active')?.dataset.tab === 'dividend';
+        if (!tabActive) return;
+        const seconds = this.mode === 'fund'
+            ? APP.config.fundDividendAutoRefreshSeconds
+            : APP.config.dividendAutoRefreshSeconds;
+        this.timer = setInterval(() => {
+                const tabActive = document.querySelector('.nav-tab.active')?.dataset.tab === 'dividend';
+                if (document.visibilityState !== 'visible' || !tabActive) return;
+                // 基金模式刷新不受 A 股交易时段判断限制；股票模式保持原逻辑
+                if (this.mode === 'fund') {
+                    this.load(this.pagination.page || 1, false, true);
+                } else if (this.isAShareTradingSession()) {
+                    this.load(this.pagination.page || 1, false, true);
+                }
+            }, seconds * 1000);
     },
 
     onTabChange(tabName) {
         if (tabName === 'dividend') {
             if (!this.loaded) this.load(1);
-            if (!this.timer) this.timer = setInterval(() => {
-                const tabActive = document.querySelector('.nav-tab.active')?.dataset.tab === 'dividend';
-                if (document.visibilityState === 'visible' && tabActive && this.isAShareTradingSession()) {
-                    this.load(this.pagination.page || 1, false, true);
-                }
-            }, APP.config.dividendAutoRefreshSeconds * 1000);
+            this.restartAutoRefreshTimer();
         } else if (this.timer) {
             clearInterval(this.timer);
             this.timer = null;
@@ -3054,28 +3368,58 @@ const AdvisorModule = {
 
     /** 设置当前分红事件，并保留为每次请求的临时系统上下文 */
     setDividendContext(event = {}) {
-        this.setAssetContext('stock', { code: event.code, name: event.name }, '分红日历');
-        APP.advisorContext.dividendEvent = {
-            code: String(event.code || ''),
-            name: String(event.name || ''),
-            plan_status: String(event.plan_status || ''),
-            implementation_confirmed: Boolean(event.implementation_confirmed),
-            record_date: event.record_date || null,
-            ex_date: event.ex_date || null,
-            cash_per_share: event.cash_per_share ?? null,
-            price: event.price ?? null,
-            gross_yield_pct: event.gross_yield_pct ?? null,
-            net_yield_pct: event.net_yield_pct ?? null,
-            holding_period: event.holding_period || 'within_1m',
-            source: event.source || 'eastmoney_dividend',
-            as_of: DividendModule?.meta?.as_of || null
-        };
+        const isFund = DividendModule?.mode === 'fund';
+        this.setAssetContext(isFund ? 'fund' : 'stock', { code: event.code, name: event.name }, '分红日历');
+        if (isFund) {
+            APP.advisorContext.dividendEvent = {
+                assetType: 'fund',
+                code: String(event.code || ''),
+                name: String(event.name || ''),
+                fund_type: String(event.fund_type || event.fund_category || ''),
+                record_date: event.record_date || null,
+                ex_date: event.ex_date || null,
+                pay_date: event.pay_date || null,
+                cash_per_unit: event.cash_per_unit ?? null,
+                currency_status: String(event.currency_status || ''),
+                nav: event.nav ?? null,
+                nav_date: event.nav_date || null,
+                distribution_ratio_pct: event.distribution_ratio_pct ?? null,
+                ratio_status: String(event.ratio_status || ''),
+                event_stage: String(event.event_stage || ''),
+                announcement_match_status: String(event.announcement_match_status || 'not_checked'),
+                source: event.source || 'eastmoney_fund_dividend',
+                as_of: DividendModule?.meta?.as_of || null
+            };
+        } else {
+            APP.advisorContext.dividendEvent = {
+                assetType: 'stock',
+                code: String(event.code || ''),
+                name: String(event.name || ''),
+                plan_status: String(event.plan_status || ''),
+                implementation_confirmed: Boolean(event.implementation_confirmed),
+                record_date: event.record_date || null,
+                ex_date: event.ex_date || null,
+                cash_per_share: event.cash_per_share ?? null,
+                price: event.price ?? null,
+                gross_yield_pct: event.gross_yield_pct ?? null,
+                net_yield_pct: event.net_yield_pct ?? null,
+                holding_period: event.holding_period || 'within_1m',
+                source: event.source || 'eastmoney_dividend',
+                as_of: DividendModule?.meta?.as_of || null
+            };
+        }
         this.updateContext();
     },
 
     getTransientContextMessage() {
         const event = APP.advisorContext?.dividendEvent;
         if (!event || !event.code) return null;
+        if (event.assetType === 'fund') {
+            return {
+                role: 'system',
+                content: `当前页面选中的基金分红事件上下文（仅作页面事实锚点，实时事实仍需调用工具刷新）：${JSON.stringify(event)}。分配比例不是年化收益；分红来自基金财产、净值会相应下降；不要套用股票红利税档；公告未核验时不得声称“没有公告”。`
+            };
+        }
         return {
             role: 'system',
             content: `当前页面选中的分红事件上下文（仅作页面事实锚点，实时事实仍需调用工具刷新）：${JSON.stringify(event)}。单次现金率不是年化收益；回答需说明事件状态、数据时间、税务估算和除息风险。`

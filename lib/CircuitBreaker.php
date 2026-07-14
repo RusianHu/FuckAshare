@@ -47,6 +47,7 @@ class CircuitBreaker
         'ashare'     => ['failureThreshold' => 3,  'cooldown' => 60],
         'fund'       => ['failureThreshold' => 5,  'cooldown' => 30],
         'eastmoney_dividend' => ['failureThreshold' => 3, 'cooldown' => 60],
+        'eastmoney_fund_dividend' => ['failureThreshold' => 3, 'cooldown' => 60],
     ];
 
     public function __construct(string $source, int $failureThreshold = 0, int $cooldown = 0)

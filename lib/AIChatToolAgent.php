@@ -435,6 +435,18 @@ class AIChatToolAgent
             ];
         }
 
+        if ($name === 'fa_get_upcoming_fund_dividends' && $this->looksLikeFundDividendScanRequest($latestUser)) {
+            return [
+                'start_date' => (new DateTimeImmutable('today', new DateTimeZone('Asia/Shanghai')))->format('Y-m-d'),
+                'days' => $this->requestedFundDividendDays($latestUser),
+                'fund_category' => $this->requestedFundDividendCategory($latestUser),
+                'min_distribution_ratio' => 0,
+                'sort_by' => 'record_date',
+                'order' => 'asc',
+                'limit' => $this->requestedTopN($latestUser, 20),
+            ];
+        }
+
         if ($name === 'fa_get_market_breadth' && $this->looksLikeMarketBreadthRequest($latestUser)) {
             return [
                 'scope' => $this->requestedMarketBreadthScope($latestUser),
@@ -643,6 +655,38 @@ class AIChatToolAgent
         return 'all';
     }
 
+    /**
+     * 是否像全市场基金分红扫描请求（未指定单只基金代码）。
+     */
+    private function looksLikeFundDividendScanRequest(string $text): bool
+    {
+        if ($this->extractFundCodes($text) !== []) return false;
+        return (bool)preg_match('/(基金|ETF|etf|QDII|qdii|LOF|lof|REIT|FOF).{0,12}(分红|派息|收益分配|登记日|除息)/u', $text)
+            || (bool)preg_match('/(分红|派息|收益分配).{0,12}(基金|ETF|etf)/u', $text);
+    }
+
+    private function requestedFundDividendDays(string $text): int
+    {
+        if (preg_match('/(未来|接下来|近)?\s*(\d{1,2})\s*(?:天|日)/u', $text, $m)) return max(1, min(60, (int)$m[2]));
+        if (preg_match('/(本周|一周|近一周|这周)/u', $text)) return 7;
+        if (preg_match('/(本月|近一月|一个月|这月)/u', $text)) return 30;
+        if (preg_match('/(近半月|半个月|两周| fortnight)/u', $text)) return 14;
+        return 14;
+    }
+
+    private function requestedFundDividendCategory(string $text): string
+    {
+        if (preg_match('/(股票型|股票基金|主动权益)/u', $text)) return 'stock';
+        if (preg_match('/(混合型|混合基金)/u', $text)) return 'mixed';
+        if (preg_match('/(债券型|债券基金|债基)/u', $text)) return 'bond';
+        if (preg_match('/(货币(?:型|基金)?)/u', $text)) return 'money';
+        if (preg_match('/(QDII|qdii|海外|港股|美股)/u', $text)) return 'qdii';
+        if (preg_match('/(FOF|fof)/u', $text)) return 'fof';
+        if (preg_match('/(REIT|基础设施)/u', $text)) return 'reit';
+        if (preg_match('/(指数型|指数基金|ETF|etf)/u', $text)) return 'index';
+        return 'all';
+    }
+
     private function shouldContinueAfterToolRound(array $toolCalls, array $originalMessages): bool
     {
         $latestUser = $this->latestUserContent($originalMessages);
@@ -773,6 +817,7 @@ class AIChatToolAgent
             'fa_get_index_profile',
             'fa_get_fund_dividend_history',
             'fa_get_fund_dividend_profile',
+            'fa_get_upcoming_fund_dividends',
             'fa_get_fund_documents',
             'fa_screen_funds',
             'fa_get_fund_performance_stats',
@@ -902,7 +947,7 @@ class AIChatToolAgent
                 '多轮研究或存在工具失败时，最终回答前可调用 fa_research_state_summary 汇总已查字段、失败项和下一步建议；最终回答必须说明候选池召回来源、评分依据和数据缺口。',
                 '涉及基金排行、今日基金涨幅、基金最新信息或未指定代码的基金研究时，必须优先调用 fa_get_fund_rank；今日/涨幅问题使用 period=day，再按候选调用基金资料和估值工具。',
                 '涉及基金风格、是否红利型/指数型、跟踪指数、业绩基准或投资策略依据时，必须优先调用 fa_get_index_profile。',
-                '涉及基金分红、派息、收益分配、未来日期、本月事件、会不会分红或公告核实时，必须优先调用 fa_get_fund_dividend_profile；它会联查查询基金、目标 ETF 与最新公告。只有裸历史列表问题才优先用 fa_get_fund_dividend_history。回答时必须区分查询基金对持有人的直接分红与目标 ETF 进入基金资产的分红；未完成公告检查不得声称“没有公告”。',
+                '涉及基金分红、派息、收益分配、未来日期、本月事件、会不会分红或公告核实时：全市场、本周、本月或未来日期的基金分红问题优先调用 fa_get_upcoming_fund_dividends 做全市场召回、排序与风险摘要，不在同一请求中自动深挖多只基金；已明确单只基金时继续优先调用 fa_get_fund_dividend_profile 联查查询基金、目标 ETF 与最新公告；只有裸历史列表问题才优先用 fa_get_fund_dividend_history。回答时必须区分查询基金对持有人的直接分红与目标 ETF 进入基金资产的分红；未完成公告检查不得声称“没有公告”；不得把分配比例称为年化收益，不得套用股票 20%/10%/0% 持有期红利税档。',
                 '涉及基金合同、招募说明书、产品资料概要、季报/年报、公告或需要文档证据时，必须调用 fa_get_fund_documents；如果正文/PDF 解析不可用，最终回答要说明数据缺口。',
                 '基金研究中的候选深挖应控制在少量代表性基金，优先选择不超过 3 只；避免为了穷举而重复搜索同义词、重复查多期排行或重复查相同类型资料。聚合工具（fa_screen_funds/fa_get_fund_performance_stats/fa_score_funds）应优先于模型多次调用裸工具。',
                 '当已经拿到候选池、基金资料、历史表现、风格或分红依据并完成评分后，应停止继续搜索并直接给出结论；不要为了“更完整”而无止境追加工具调用。',
@@ -1187,6 +1232,7 @@ class AIChatToolAgent
             'fa_get_index_profile' => '基金指数画像',
             'fa_get_fund_dividend_history' => '基金分红历史',
             'fa_get_fund_dividend_profile' => '基金分红档案与关联事件',
+            'fa_get_upcoming_fund_dividends' => '全市场基金分红扫描',
             'fa_get_fund_documents' => '基金文档',
             'fa_screen_funds' => '基金候选召回',
             'fa_get_fund_performance_stats' => '基金长历史统计',

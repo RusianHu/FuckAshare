@@ -558,6 +558,11 @@ class AIToolRuntime
                         if (is_array($c)) $markCandidate((string)($c['code'] ?? ''), (string)($c['name'] ?? ''), 'dividend_event');
                     }
                     break;
+                case 'fa_get_upcoming_fund_dividends':
+                    foreach (($data['items'] ?? []) as $c) {
+                        if (is_array($c)) $markCandidate((string)($c['code'] ?? ''), (string)($c['name'] ?? ''), 'dividend_event');
+                    }
+                    break;
                 case 'fa_get_stock_dividend_profile':
                     $stock = is_array($data['stock'] ?? null) ? $data['stock'] : [];
                     $markCandidate((string)($stock['code'] ?? $args['code'] ?? ''), (string)($stock['name'] ?? ''), 'dividend_profile');
@@ -629,6 +634,7 @@ class AIToolRuntime
             'fa_get_fund_dividend_profile' => '基金分红、公告或目标 ETF 关系证据缺失，不能确认当前事件归属',
             'fa_get_fund_holdings_or_index_exposure' => '风格暴露降级为基金详情推导',
             'fa_get_upcoming_dividends' => '临近分红候选池缺失，不能给出实时事件排序',
+            'fa_get_upcoming_fund_dividends' => '基金分红事件池缺失，不能给出全市场基金分红排序',
             'fa_get_stock_dividend_profile' => '个股分红历史缺失，不能判断分红连续性',
         ];
         return $impacts[$name] ?? '工具失败，结果可能不完整';

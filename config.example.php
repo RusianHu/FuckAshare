@@ -81,6 +81,7 @@ return [
         'ashare'    => ['failure_threshold' => 3, 'cooldown' => 60],  // ✅ Ashare(Python 腾讯/新浪)；默认 3 次 / 60s
         'fund'      => ['failure_threshold' => 5, 'cooldown' => 30],  // ✅ 东方财富基金；默认 5 次 / 30s
         'eastmoney_dividend' => ['failure_threshold' => 3, 'cooldown' => 60], // ✅ 东方财富分红公司行动
+        'eastmoney_fund_dividend' => ['failure_threshold' => 3, 'cooldown' => 60], // ✅ 东方财富基金分红事件源；默认 3 次 / 60s
     ],
 
     // ════════════════════════════════════════════════════════════
@@ -110,6 +111,8 @@ return [
         'search'         => 600,    // ✅ 基金搜索；默认 600s
         'rank'           => 300,    // ✅ 基金排行；默认 300s
         'history'        => 300,    // ✅ 历史净值；默认 300s
+        'history_window' => 300,    // ✅ 历史净值定点窗口（基金分红事件前后净值图）；默认 300s
+        'nav_batch'      => 300,    // ✅ 批量最新净值（基金分红日历 FundMNFInfo 批量）；默认 300s
         'index_profile'    => 3600, // ✅ 基金跟踪指数画像（跟踪指数代码/名称等）；默认 3600s
         'dividend_history' => 300,  // ✅ 基金分红历史；默认 300s
         'dividend_profile' => 300,  // ✅ 基金分红档案（直接事件+公告+目标 ETF）；默认 300s
@@ -139,6 +142,22 @@ return [
         'stampede_wait_ms'    => 500,
     ],
 
+    // ── 基金分红日历 ──
+    // 读取位置：lib/FundDividendService.php 构造函数。未配置时回退类内默认值。
+    'fund_dividend' => [
+        'enabled'             => true,    // ✅ 基金分红日历总开关
+        'default_window_days' => 14,      // ✅ 默认 14 日窗口
+        'max_window_days'     => 60,      // ✅ 最大 60 日窗口
+        'nav_batch_size'      => 50,      // ✅ FundMNFInfo 批量净值每请求上限；默认 50
+        'auto_refresh_seconds' => 900,    // ✅ 基金模式前端静默刷新；不受 A 股交易时段限制；默认 900s
+        'calendar_ttl'        => 900,     // ✅ 事件列表缓存；默认 900s
+        'detail_ttl'          => 1800,    // ✅ 基金分红详情缓存；默认 1800s
+        'type_map_ttl'        => 86400,   // ✅ fundcode_search.js 类型映射缓存；默认 86400s
+        'nav_ttl'             => 300,     // ✅ 批量净值缓存（覆盖 FundService::CACHE_TTL.nav_batch）；默认 300s
+        'negative_cache_ttl'  => 20,      // ✅ 负缓存 TTL；默认 20s
+        'stampede_lock_ttl'   => 5,       // ✅ 防击穿锁超时；默认 5s
+        'stampede_wait_ms'    => 500,     // ✅ 防击穿等待；默认 500ms
+    ],
     // ════════════════════════════════════════════════════════════
     // ── 基金研究聚合工具配置 ──
     // ════════════════════════════════════════════════════════════

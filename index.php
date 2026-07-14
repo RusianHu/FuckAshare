@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/lib/AppConfig.php';
 $dividendAutoRefreshSeconds = max(300, min(1800, (int)AppConfig::get('dividend.auto_refresh_seconds', 600)));
+$fundDividendAutoRefreshSeconds = max(300, min(1800, (int)AppConfig::get('fund_dividend.auto_refresh_seconds', 900)));
 ?>
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -432,9 +433,14 @@ $dividendAutoRefreshSeconds = max(300, min(1800, (int)AppConfig::get('dividend.a
                     <div class="card-header dividend-title-row">
                         <div>
                             <h3><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-calendar"></use></svg></span> 临近分红日历</h3>
-                            <p class="dividend-subtitle">仅展示普通 A 股；本次现金率不是年化收益，除息、税费和价格波动会影响总回报。</p>
+                            <p class="dividend-subtitle" data-mode-text="stock">仅展示普通 A 股；本次现金率不是年化收益，除息、税费和价格波动会影响总回报。</p>
+                            <p class="dividend-subtitle" data-mode-text="fund" hidden>全市场公募基金分红事件；分红来自基金财产、净值会相应下降，不是额外或无风险收益，税务处理不沿用股票持有期模型。</p>
                         </div>
                         <div class="dividend-title-actions">
+                            <div class="dividend-mode-toggle" role="group" aria-label="资产类型">
+                                <button type="button" class="dividend-mode-btn active" data-dividend-mode="stock" aria-pressed="true">股票</button>
+                                <button type="button" class="dividend-mode-btn" data-dividend-mode="fund" aria-pressed="false">基金</button>
+                            </div>
                             <span id="dividend-updated-at" class="data-timestamp">尚未更新</span>
                             <button id="dividend-filter-toggle" class="btn-sm dividend-filter-toggle" type="button" aria-controls="dividend-filter-form" aria-expanded="false">筛选</button>
                             <button id="dividend-refresh-btn" class="btn-sm" type="button"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-refresh"></use></svg></span> 刷新</button>
@@ -448,20 +454,30 @@ $dividendAutoRefreshSeconds = max(300, min(1800, (int)AppConfig::get('dividend.a
                         </div>
                         <label><span>开始日期</span><input id="dividend-start-date" type="date" required></label>
                         <label><span>结束日期</span><input id="dividend-end-date" type="date" required></label>
-                        <label><span>市场</span><select id="dividend-market"><option value="all">全部A股</option><option value="sh">沪市</option><option value="sz">深市</option><option value="bj">北交所</option></select></label>
-                        <label><span>方案状态</span><select id="dividend-status"><option value="confirmed">仅实施确认</option><option value="all">含未确认方案</option></select></label>
-                        <label><span>持有期税档</span><select id="dividend-holding"><option value="within_1m">≤1个月 · 20%</option><option value="1m_to_1y">1个月–1年 · 10%</option><option value="over_1y">超过1年 · 0%</option></select></label>
-                        <label><span>最低毛率</span><input id="dividend-min-yield" type="number" min="0" max="100" step="0.1" value="0" inputmode="decimal"></label>
-                        <label><span>排序</span><select id="dividend-sort"><option value="gross_yield">本次毛率</option><option value="net_yield">税后现金率</option><option value="record_date">登记日</option><option value="cash_per_share">每股现金</option></select></label>
+                        <label data-stock-only><span>市场</span><select id="dividend-market"><option value="all">全部A股</option><option value="sh">沪市</option><option value="sz">深市</option><option value="bj">北交所</option></select></label>
+                        <label data-stock-only><span>方案状态</span><select id="dividend-status"><option value="confirmed">仅实施确认</option><option value="all">含未确认方案</option></select></label>
+                        <label data-stock-only><span>持有期税档</span><select id="dividend-holding"><option value="within_1m">≤1个月 · 20%</option><option value="1m_to_1y">1个月–1年 · 10%</option><option value="over_1y">超过1年 · 0%</option></select></label>
+                        <label data-stock-only><span>最低毛率</span><input id="dividend-min-yield" type="number" min="0" max="100" step="0.1" value="0" inputmode="decimal"></label>
+                        <label data-fund-only hidden><span>基金类型</span><select id="dividend-fund-category"><option value="all">全部基金</option><option value="stock">股票型</option><option value="index">指数型</option><option value="mixed">混合型</option><option value="bond">债券型</option><option value="money">货币型</option><option value="fof">FOF</option><option value="qdii">QDII</option><option value="reit">REITs</option><option value="other">其他</option></select></label>
+                        <label data-fund-only hidden><span>最低分配比例</span><input id="dividend-min-ratio" type="number" min="0" max="100" step="0.001" value="0" inputmode="decimal"></label>
+                        <label data-stock-only><span>排序</span><select id="dividend-sort"><option value="gross_yield">本次毛率</option><option value="net_yield">税后现金率</option><option value="record_date">登记日</option><option value="cash_per_share">每股现金</option></select></label>
+                        <label data-fund-only hidden><span>排序</span><select id="dividend-fund-sort"><option value="record_date">登记日</option><option value="distribution_ratio">分配比例</option><option value="cash_per_unit">每份分红</option><option value="pay_date">发放日</option></select></label>
                         <button class="btn-sm btn-accent dividend-query-btn" type="submit">查询</button>
                     </form>
                 </div>
 
-                <div id="dividend-summary" class="dividend-summary-grid" aria-live="polite">
+                <div id="dividend-summary" class="dividend-summary-grid" aria-live="polite" data-stock-only>
                     <div class="dividend-summary-card"><span>实施事件</span><b id="dividend-summary-confirmed">—</b><small>当前筛选范围</small></div>
                     <div class="dividend-summary-card"><span>3日内登记</span><b id="dividend-summary-soon">—</b><small>含登记日当天</small></div>
                     <div class="dividend-summary-card"><span>最高本次毛率</span><b id="dividend-summary-max">—</b><small>按当前价格快照</small></div>
                     <div class="dividend-summary-card"><span>税后率中位数</span><b id="dividend-summary-median">—</b><small id="dividend-tax-caption">个人短持估算</small></div>
+                </div>
+
+                <div id="dividend-fund-summary" class="dividend-summary-grid" aria-live="polite" data-fund-only hidden>
+                    <div class="dividend-summary-card"><span>分红事件</span><b id="dividend-fund-summary-count">-</b><small>当前筛选范围</small></div>
+                    <div class="dividend-summary-card"><span>3日内登记</span><b id="dividend-fund-summary-soon">-</b><small>含登记日当天</small></div>
+                    <div class="dividend-summary-card"><span>最高分配比例</span><b id="dividend-fund-summary-max">-</b><small>安全比例口径</small></div>
+                    <div class="dividend-summary-card"><span>比例中位数</span><b id="dividend-fund-summary-median">-</b><small id="dividend-fund-summary-coverage">覆盖 - 条</small></div>
                 </div>
 
                 <div class="card dividend-results-card">
@@ -478,7 +494,7 @@ $dividendAutoRefreshSeconds = max(300, min(1800, (int)AppConfig::get('dividend.a
                     </div>
                     <div class="dividend-table-wrapper">
                         <table id="dividend-table" style="display:none;">
-                            <thead><tr><th>股票</th><th>登记 / 除息</th><th>每股现金</th><th>参考价</th><th>本次毛率</th><th>税后现金率</th><th>状态</th><th>操作</th></tr></thead>
+                            <thead id="dividend-table-head"><tr><th>股票</th><th>登记 / 除息</th><th>每股现金</th><th>参考价</th><th>本次毛率</th><th>税后现金率</th><th>状态</th><th>操作</th></tr></thead>
                             <tbody id="dividend-table-body"></tbody>
                         </table>
                     </div>
@@ -491,10 +507,16 @@ $dividendAutoRefreshSeconds = max(300, min(1800, (int)AppConfig::get('dividend.a
                     </div>
                 </div>
 
-                <div class="dividend-note-grid">
+                <div class="dividend-note-grid" data-stock-only>
                     <div class="card dividend-note-card"><h4>税务口径</h4><p>个人持有不超过1个月、1个月至1年、超过1年的税率估算分别为20%、10%、0%。税款通常在卖出时按实际持有批次补扣，本页不读取账户持仓。</p></div>
                     <div class="card dividend-note-card"><h4>风险口径</h4><p>除息参考价通常会相应调整。现金分红不是额外的无风险收益；页面不推测缺失的派息日，也不把单次现金率年化。</p></div>
                     <div class="card dividend-note-card"><h4>数据与授权</h4><p>首版事件与行情来自东方财富公开页面接口，并保留可替换 Provider。公开商业化使用前需确认数据展示授权。</p></div>
+                </div>
+                <div class="dividend-note-grid" data-fund-only hidden>
+                    <div class="card dividend-note-card"><h4>分红口径</h4><p>基金分红来自基金财产，除息后单位净值会相应下降，不是额外的或无风险收益。本页统一使用“每份分红”，金额口径为元/份。</p></div>
+                    <div class="card dividend-note-card"><h4>分配比例</h4><p>“本次分配比例”= 每份分红 ÷ 除息前单位净值，仅在每份分红与净值均为正、净值日期早于除息日且币种确认时计算；未知币种、缺失净值或历史事件不计算，不补零、不年化。</p></div>
+                    <div class="card dividend-note-card"><h4>税务口径</h4><p>基金分红税务处理不沿用股票 20%/10%/0% 持有期模型；具体税负请以最新公告与税务规定为准，本页不做税后估算。</p></div>
+                    <div class="card dividend-note-card"><h4>数据与授权</h4><p>基金分红事件来自东方财富公开页面接口（funddataIndex dt=8），类型映射来自 fundcode_search.js，净值为 FundMNFInfo 批量接口；公开商业化使用前需确认数据展示与再分发授权。</p></div>
                 </div>
             </div>
         </div>
@@ -856,7 +878,8 @@ $dividendAutoRefreshSeconds = max(300, min(1800, (int)AppConfig::get('dividend.a
 
     <script>
         window.FA_RUNTIME_CONFIG = Object.freeze({
-            dividendAutoRefreshSeconds: <?= json_encode($dividendAutoRefreshSeconds) ?>
+            dividendAutoRefreshSeconds: <?= json_encode($dividendAutoRefreshSeconds) ?>,
+            fundDividendAutoRefreshSeconds: <?= json_encode($fundDividendAutoRefreshSeconds) ?>
         });
     </script>
     <script src="strategy_pool.js"></script>

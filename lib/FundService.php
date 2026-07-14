@@ -48,6 +48,8 @@ class FundService
         'search'      => 600,   // 基金搜索：10 分钟
         'rank'        => 300,    // 基金排行：5 分钟
         'history'     => 300,    // 历史净值：5 分钟
+        'history_window' => 300, // 历史净值定点窗口（分红事件前后）：5 分钟
+        'nav_batch'   => 300,    // 批量最新净值（基金分红日历）：5 分钟
         'index_profile' => 3600, // 基金跟踪指数画像：1 小时
         'dividend_history' => 300,
         'dividend_profile' => 300,
@@ -95,6 +97,11 @@ class FundService
         $this->breaker = new CircuitBreaker('fund');
         $configuredTtl = AppConfig::get('cache_ttl', []);
         $this->cacheTtl = array_merge(self::CACHE_TTL, is_array($configuredTtl) ? $configuredTtl : []);
+        // 基金分红模块允许单独覆盖批量净值 TTL；避免配置项存在但不生效。
+        $fundDividendNavTtl = AppConfig::get('fund_dividend.nav_ttl', null);
+        if ($fundDividendNavTtl !== null) {
+            $this->cacheTtl['nav_batch'] = max(1, (int)$fundDividendNavTtl);
+        }
         $this->negativeCacheTtl = (int)AppConfig::get('cache_degradation.negative_cache_ttl', self::NEGATIVE_CACHE_TTL);
         $this->stampedeWaitMs = (int)AppConfig::get('cache_degradation.stampede_wait_ms', 500);
         $this->stampedeLockTtl = (int)AppConfig::get('cache_degradation.stampede_lock_ttl', 5);
@@ -381,6 +388,141 @@ class FundService
                     'page_size' => $pageSize,
                     'records' => $parsed['records'],
                     'pages' => $parsed['pages'],
+                ]);
+            });
+        });
+    }
+
+    /**
+     * 批量基金最新净值（基金分红日历专用）。
+     *
+     * 仅调用 FundMNFInfo 批量接口取 NAV/净值日期/累计净值/日增长率，
+     * 不触发 fetchFundDetail 逐基金回退，避免列表场景的 N+1 调用。
+     * 单次最多 50 只/请求，超出自动分批。
+     *
+     * @param string[] $codes 基金代码数组
+     * @return DataSourceResult data 为 [{code,name,nav,nav_date,acc_nav,nav_chg_rate}, ...]
+     */
+    public function batchNetValues(array $codes): DataSourceResult
+    {
+        $validCodes = array_values(array_unique(array_filter($codes, function ($c) {
+            return is_string($c) && preg_match('/^\d{6}$/', $c);
+        })));
+        if (empty($validCodes)) {
+            return DataSourceResult::error(self::SOURCE_NAME, 'nav_batch', 'invalid_code', '没有有效的基金代码');
+        }
+
+        $batchSize = max(1, min(50, (int)AppConfig::get('fund_dividend.nav_batch_size', 50)));
+        $key = $this->cacheKey('nav_batch', md5(implode(',', $validCodes)));
+
+        return $this->useCache('nav_batch', $key, function () use ($validCodes, $batchSize) {
+            return $this->withBreaker('nav_batch', function () use ($validCodes, $batchSize) {
+                $items = [];
+                $failures = [];
+                foreach (array_chunk($validCodes, $batchSize) as $batch) {
+                    $url = "https://fundmobapi.eastmoney.com/FundMNewApi/FundMNFInfo?" . http_build_query(array_merge([
+                        'Fcodes'   => implode(',', $batch),
+                        'pageSize' => $batchSize,
+                    ], self::EASTMONEY_APP_PARAMS));
+
+                    $resp = $this->http->get($url, $this->eastmoneyFundMobileHeaders());
+                    if ($resp['error'] || $resp['http_code'] !== 200) {
+                        $failures[] = ['stage' => 'nav_batch', 'codes' => $batch, 'code' => 'network_error', 'message' => $resp['error'] ?: "HTTP {$resp['http_code']}"];
+                        continue;
+                    }
+                    $parsed = HttpClient::parseJson($resp['body']);
+                    if (!$parsed['ok'] || !isset($parsed['data']['Datas']) || ($parsed['data']['Success'] ?? true) === false) {
+                        $failures[] = ['stage' => 'nav_batch', 'codes' => $batch, 'code' => 'parse_error', 'message' => $parsed['data']['ErrMsg'] ?? $parsed['error'] ?? '解析批量净值失败'];
+                        continue;
+                    }
+                    foreach ($parsed['data']['Datas'] as $item) {
+                        if (!is_array($item)) continue;
+                        $code = (string)($item['FCODE'] ?? '');
+                        if ($code === '') continue;
+                        $items[] = [
+                            'code' => $code,
+                            'name' => (string)($item['SHORTNAME'] ?? ''),
+                            'nav' => is_numeric($item['NAV'] ?? null) ? (float)$item['NAV'] : (is_numeric($item['DWJZ'] ?? null) ? (float)$item['DWJZ'] : null),
+                            'nav_date' => (string)($item['PDATE'] ?? $item['FSRQ'] ?? $item['SYRQ'] ?? ''),
+                            'acc_nav' => is_numeric($item['ACCNAV'] ?? null) ? (float)$item['ACCNAV'] : (is_numeric($item['LJJZ'] ?? null) ? (float)$item['LJJZ'] : null),
+                            'nav_chg_rate' => is_numeric($item['NAVCHGRT'] ?? null) ? (float)$item['NAVCHGRT'] : (is_numeric($item['RZDF'] ?? null) ? (float)$item['RZDF'] : null),
+                        ];
+                    }
+                }
+
+                if (empty($items)) {
+                    return DataSourceResult::error(self::SOURCE_NAME, 'nav_batch', 'empty_data', '批量净值未返回任何数据', [
+                        'failures' => $failures,
+                    ]);
+                }
+
+                return DataSourceResult::success(self::SOURCE_NAME, 'nav_batch', $items, [
+                    'requested' => count($validCodes),
+                    'returned' => count($items),
+                    'failures' => $failures,
+                ]);
+            });
+        });
+    }
+
+    /**
+     * 基金历史净值定点窗口（基金分红事件前后净值图专用）。
+     *
+     * 复用 F10DataApi.aspx?type=lsjz，通过 sdate/edate 定点取窗，
+     * 返回单位净值、累计净值和日增长率。用于分红事件前后净值窗口展示。
+     */
+    public function historyWindow(string $code, string $sdate, string $edate): DataSourceResult
+    {
+        if (!preg_match('/^\d{6}$/', $code)) {
+            return DataSourceResult::error(self::SOURCE_NAME, 'history_window', 'invalid_code', '基金代码格式不正确');
+        }
+        if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $sdate) || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $edate)) {
+            return DataSourceResult::error(self::SOURCE_NAME, 'history_window', 'invalid_date', '日期必须为 YYYY-MM-DD');
+        }
+        if ($sdate > $edate) {
+            return DataSourceResult::error(self::SOURCE_NAME, 'history_window', 'invalid_date', '开始日期不能晚于结束日期');
+        }
+        $key = $this->cacheKey('history_window', "{$code}:{$sdate}:{$edate}");
+
+        return $this->useCache('history_window', $key, function () use ($code, $sdate, $edate) {
+            return $this->withBreaker('history_window', function () use ($code, $sdate, $edate) {
+                $url = 'https://fundf10.eastmoney.com/F10DataApi.aspx?' . http_build_query([
+                    'type' => 'lsjz',
+                    'code' => $code,
+                    'page' => 1,
+                    'per'  => 100,
+                    'sdate' => $sdate,
+                    'edate' => $edate,
+                    'rt' => sprintf('%.6f', microtime(true)),
+                ]);
+
+                $resp = $this->http->get($url, [
+                    'Referer' => "https://fundf10.eastmoney.com/jjjz_{$code}.html",
+                    'Accept'  => '*/*',
+                ]);
+
+                if ($resp['error'] || $resp['http_code'] !== 200) {
+                    return DataSourceResult::error(self::SOURCE_NAME, 'history_window', 'network_error', '请求失败: ' . ($resp['error'] ?: "HTTP {$resp['http_code']}"));
+                }
+
+                $parsed = $this->parseHistoryResponse($resp['body']);
+                if ($parsed === null) {
+                    return DataSourceResult::error(self::SOURCE_NAME, 'history_window', 'parse_error', '解析历史净值窗口失败');
+                }
+
+                $items = array_values(array_filter($parsed['items'], function ($item) use ($sdate, $edate) {
+                    $d = (string)($item['date'] ?? '');
+                    return $d !== '' && $d >= $sdate && $d <= $edate;
+                }));
+                usort($items, function ($a, $b) { return strcmp((string)$a['date'], (string)$b['date']); });
+
+                return DataSourceResult::success(self::SOURCE_NAME, 'history_window', $items, [
+                    'code' => $code,
+                    'sdate' => $sdate,
+                    'edate' => $edate,
+                    'records' => count($items),
+                    'source_url' => $url,
+                    'source_note' => '定点窗口来自历史净值接口 sdate/edate 参数；返回单位净值、累计净值和日增长率。',
                 ]);
             });
         });

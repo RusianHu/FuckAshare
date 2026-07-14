@@ -143,6 +143,19 @@ class AIFinanceToolCatalog
         $fundCode = self::fundCodeSchema();
 
         return [
+            'fa_get_upcoming_fund_dividends' => AIToolSchema::tool(
+                'fa_get_upcoming_fund_dividends',
+                'Scan upcoming market-wide public fund dividend events (record/ex-dividend/payment dates, cash per unit) and safely compute the one-off distribution ratio against the latest pre-ex NAV. Use this first for fund dividend calendar, this week/month fund dividends, or market-wide fund dividend questions. Only funds with a safe ratio (positive cash, positive pre-ex NAV, currency verified) carry distribution_ratio_pct; do not annualize it. Distinguish direct fund cash distributions from link-fund target-ETF asset-level dividends.',
+                [
+                    'start_date' => AIToolSchema::nullableString('Start date in YYYY-MM-DD. Default today in Asia/Shanghai.'),
+                    'days' => AIToolSchema::nullableInteger('Inclusive calendar window length. Default 14, max 60.', 1, 60),
+                    'fund_category' => AIToolSchema::nullableEnum(['all', 'stock', 'index', 'mixed', 'bond', 'money', 'fof', 'qdii', 'reit', 'other'], 'Fund category filter. Default all.'),
+                    'min_distribution_ratio' => AIToolSchema::nullableNumber('Minimum one-off distribution ratio percent; excludes events without a safe ratio. Default 0.', 0, 100),
+                    'sort_by' => AIToolSchema::nullableEnum(['record_date', 'distribution_ratio', 'cash_per_unit', 'pay_date'], 'Deterministic sort field. Default record_date.'),
+                    'order' => AIToolSchema::nullableEnum(['asc', 'desc'], 'Sort direction. Default asc.'),
+                    'limit' => AIToolSchema::nullableInteger('Maximum events returned. Default 20, max 50.', 1, 50),
+                ]
+            ),
             'fa_search_funds' => AIToolSchema::tool(
                 'fa_search_funds',
                 'Search funds by code, name, or pinyin keyword.',

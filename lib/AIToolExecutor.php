@@ -8,6 +8,7 @@ require_once __DIR__ . '/AIToolRegistry.php';
 require_once __DIR__ . '/MarketDataService.php';
 require_once __DIR__ . '/FundService.php';
 require_once __DIR__ . '/DividendService.php';
+require_once __DIR__ . '/FundDividendService.php';
 require_once __DIR__ . '/StockCode.php';
 require_once __DIR__ . '/DataSourceResult.php';
 
@@ -21,6 +22,9 @@ class AIToolExecutor
 
     /** @var DividendService */
     private $dividend;
+
+    /** @var FundDividendService */
+    private $fundDividend;
 
     /** @var int */
     private $outputCharLimit;
@@ -47,6 +51,7 @@ class AIToolExecutor
         'fa_get_index_profile' => 'executeIndexProfile',
         'fa_get_fund_dividend_history' => 'executeFundDividendHistory',
         'fa_get_fund_dividend_profile' => 'executeFundDividendProfile',
+        'fa_get_upcoming_fund_dividends' => 'executeUpcomingFundDividends',
         'fa_get_fund_documents' => 'executeFundDocuments',
         'fa_screen_funds' => 'executeScreenFunds',
         'fa_get_fund_performance_stats' => 'executeFundPerformanceStats',
@@ -67,11 +72,12 @@ class AIToolExecutor
         $this->researchState = $state;
     }
 
-    public function __construct(?MarketDataService $market = null, ?FundService $fund = null, int $outputCharLimit = 30000, ?DividendService $dividend = null)
+    public function __construct(?MarketDataService $market = null, ?FundService $fund = null, int $outputCharLimit = 30000, ?DividendService $dividend = null, ?FundDividendService $fundDividend = null)
     {
         $this->market = $market ?: new MarketDataService();
         $this->fund = $fund ?: new FundService();
         $this->dividend = $dividend ?: new DividendService(null, $this->market);
+        $this->fundDividend = $fundDividend ?: new FundDividendService(null, $this->fund);
         $this->outputCharLimit = max(100, $outputCharLimit);
     }
 
@@ -301,6 +307,26 @@ class AIToolExecutor
         ), $started);
     }
 
+    private function executeUpcomingFundDividends(array $args, float $started): array
+    {
+        $start = $this->date($args['start_date'] ?? null, true);
+        if ($start === '') {
+            $start = (new DateTimeImmutable('today', new DateTimeZone('Asia/Shanghai')))->format('Y-m-d');
+        }
+        $days = $this->int($args['days'] ?? null, 1, 60, 14);
+        $end = (new DateTimeImmutable($start, new DateTimeZone('Asia/Shanghai')))->modify('+' . ($days - 1) . ' days')->format('Y-m-d');
+        return $this->fromResult($this->fundDividend->calendar([
+            'start_date' => $start,
+            'end_date' => $end,
+            'fund_category' => $this->enum($args['fund_category'] ?? null, SecurityAudit::ALLOWED_FUND_DIVIDEND_CATEGORIES, 'all'),
+            'min_distribution_ratio' => $this->number($args['min_distribution_ratio'] ?? null, 0, 100, 0),
+            'sort_by' => $this->enum($args['sort_by'] ?? null, SecurityAudit::ALLOWED_FUND_DIVIDEND_SORT_FIELDS, 'record_date'),
+            'order' => $this->enum($args['order'] ?? null, ['asc', 'desc'], 'asc'),
+            'page' => 1,
+            'page_size' => $this->int($args['limit'] ?? null, 1, 50, 20),
+        ]), $started);
+    }
+
     private function executeFundDocuments(array $args, float $started): array
     {
         return $this->fromResult($this->fund->fundDocuments(
@@ -464,6 +490,7 @@ class AIToolExecutor
                 'fund_info' => in_array('fa_get_fund_info', $toolNames, true),
                 'performance_stats' => in_array('fa_get_fund_performance_stats', $toolNames, true) || in_array('fa_get_fund_history', $toolNames, true),
                 'style_exposure' => in_array('fa_get_fund_holdings_or_index_exposure', $toolNames, true) || in_array('fa_get_index_profile', $toolNames, true),
+                'dividend_events' => in_array('fa_get_upcoming_fund_dividends', $toolNames, true),
                 'dividend_evidence' => in_array('fa_get_fund_dividend_profile', $toolNames, true) || in_array('fa_get_fund_dividend_history', $toolNames, true),
                 'trade_rules' => in_array('fa_get_fund_trade_rules', $toolNames, true),
                 'scoring' => in_array('fa_score_funds', $toolNames, true),
@@ -490,7 +517,8 @@ class AIToolExecutor
                 if (!$coverage['candidate_pool']) $nextSteps[] = '调用 fa_screen_funds 或 fa_get_fund_rank 召回候选池';
                 if (!$coverage['performance_stats']) $nextSteps[] = '调用 fa_get_fund_performance_stats 获取长历史收益与回撤';
                 if (!$coverage['style_exposure']) $nextSteps[] = '调用 fa_get_fund_holdings_or_index_exposure 补充风格画像';
-                if (preg_match('/分红|派息|收益分配/u', $focus) && !$coverage['dividend_evidence']) $nextSteps[] = '调用 fa_get_fund_dividend_profile 核验直接分红、最新公告和目标 ETF 事件';
+                if (!$coverage['dividend_evidence']) $nextSteps[] = '调用 fa_get_fund_dividend_profile 核验直接分红、最新公告和目标 ETF 事件';
+                if (preg_match('/分红|派息|收益分配/u', $focus) && !$coverage['dividend_events']) $nextSteps[] = '调用 fa_get_upcoming_fund_dividends 扫描全市场基金分红事件';
                 if (!$coverage['trade_rules']) $nextSteps[] = '调用 fa_get_fund_trade_rules 确认可投性与限购';
                 if (!$coverage['scoring'] && ($coverage['candidate_pool'] || !empty($candidates))) $nextSteps[] = '调用 fa_score_funds 做确定性评分排序后再给结论';
             }

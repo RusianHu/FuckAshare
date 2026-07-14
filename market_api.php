@@ -4,6 +4,7 @@
  * 给前端工作台使用的统一入口
  *
  * action: quote / kline / hot_stock / screener / fundx / stock_flow / sector_flow / hot_stocks / market_breadth / dividend_calendar / dividend_detail / dividend_event_market
+ *   dividend_* 支持 asset_type=stock|fund（默认 stock，股票参数和响应不变；fund 走 FundDividendService）
  * source: auto / eastmoney / ashare / xueqiu
  * fallback: 1 / 0
  * raw: 1 / 0
@@ -13,6 +14,7 @@ header('Content-Type: application/json; charset=utf-8');
 require_once __DIR__ . '/SecurityAudit.php';
 require_once __DIR__ . '/lib/MarketDataService.php';
 require_once __DIR__ . '/lib/DividendService.php';
+require_once __DIR__ . '/lib/FundDividendService.php';
 
 SecurityAudit::init(['endpoint' => 'market_api', 'rate_limit' => 40]);
 
@@ -117,6 +119,30 @@ switch ($action) {
         break;
 
     case 'dividend_calendar':
+        $assetType = SecurityAudit::getParam('asset_type', 'stock', ['whitelist' => SecurityAudit::ALLOWED_DIVIDEND_ASSET_TYPES]);
+        if ($assetType === 'fund') {
+            $fundDividend = new FundDividendService();
+            $fundDefaults = $fundDividend->defaults();
+            $fundStart = SecurityAudit::getParam('start_date', $fundDefaults['start_date'], ['pattern' => SecurityAudit::DATE_PATTERN]);
+            $fundEnd = SecurityAudit::getParam('end_date', $fundDefaults['end_date'], ['pattern' => SecurityAudit::DATE_PATTERN]);
+            $fundCategory = SecurityAudit::getParam('fund_category', 'all', ['whitelist' => SecurityAudit::ALLOWED_FUND_DIVIDEND_CATEGORIES]);
+            $minRatio = SecurityAudit::getParam('min_distribution_ratio', '0', ['pattern' => SecurityAudit::PERCENT_PATTERN, 'maxLength' => 8]);
+            $fundSortBy = SecurityAudit::getParam('sort_by', 'record_date', ['whitelist' => SecurityAudit::ALLOWED_FUND_DIVIDEND_SORT_FIELDS]);
+            $fundOrder = SecurityAudit::getParam('order', 'asc', ['whitelist' => ['asc', 'desc']]);
+            $fundPage = SecurityAudit::getParam('page', 1, ['int' => true, 'min' => 1, 'max' => 1000]);
+            $fundPageSize = SecurityAudit::getParam('page_size', 50, ['int' => true, 'min' => 1, 'max' => 100]);
+            $result = $fundDividend->calendar([
+                'start_date' => $fundStart,
+                'end_date' => $fundEnd,
+                'fund_category' => $fundCategory,
+                'min_distribution_ratio' => (float)$minRatio,
+                'sort_by' => $fundSortBy,
+                'order' => $fundOrder,
+                'page' => $fundPage,
+                'page_size' => $fundPageSize,
+            ]);
+            break;
+        }
         $dividend = new DividendService();
         $defaults = $dividend->defaults();
         $startDate = SecurityAudit::getParam('start_date', $defaults['start_date'], ['pattern' => SecurityAudit::DATE_PATTERN]);
@@ -144,6 +170,16 @@ switch ($action) {
         break;
 
     case 'dividend_detail':
+        $assetType = SecurityAudit::getParam('asset_type', 'stock', ['whitelist' => SecurityAudit::ALLOWED_DIVIDEND_ASSET_TYPES]);
+        if ($assetType === 'fund') {
+            $fundCode = SecurityAudit::getParam('code', '', [
+                'required' => true,
+                'pattern' => SecurityAudit::FUND_CODE_PATTERN,
+            ]);
+            $fundEventDate = SecurityAudit::getParam('event_date', '', ['pattern' => SecurityAudit::DATE_PATTERN]);
+            $result = (new FundDividendService())->detail($fundCode, $fundEventDate !== '' ? $fundEventDate : null);
+            break;
+        }
         $code = SecurityAudit::getParam('code', '', [
             'required' => true,
             'pattern' => SecurityAudit::STOCK_CODE_PATTERN,
@@ -156,6 +192,18 @@ switch ($action) {
         break;
 
     case 'dividend_event_market':
+        $assetType = SecurityAudit::getParam('asset_type', 'stock', ['whitelist' => SecurityAudit::ALLOWED_DIVIDEND_ASSET_TYPES]);
+        if ($assetType === 'fund') {
+            $fundCode = SecurityAudit::getParam('code', '', [
+                'required' => true,
+                'pattern' => SecurityAudit::FUND_CODE_PATTERN,
+            ]);
+            $fundEventDate = SecurityAudit::getParam('event_date', '', ['required' => true, 'pattern' => SecurityAudit::DATE_PATTERN]);
+            $fundBefore = SecurityAudit::getParam('before', 10, ['int' => true, 'min' => 5, 'max' => 30]);
+            $fundAfter = SecurityAudit::getParam('after', 15, ['int' => true, 'min' => 5, 'max' => 30]);
+            $result = (new FundDividendService())->eventMarketWindow($fundCode, $fundEventDate, $fundBefore, $fundAfter);
+            break;
+        }
         $code = SecurityAudit::getParam('code', '', [
             'required' => true,
             'pattern' => SecurityAudit::STOCK_CODE_PATTERN,

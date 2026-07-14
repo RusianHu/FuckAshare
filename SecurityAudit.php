@@ -84,6 +84,15 @@ class SecurityAudit
 
     const ALLOWED_DIVIDEND_SORT_FIELDS = ['gross_yield', 'net_yield', 'record_date', 'cash_per_share'];
 
+    /** 基金分红日历资产类型白名单 */
+    const ALLOWED_DIVIDEND_ASSET_TYPES = ['stock', 'fund'];
+
+    /** 基金分红日历基金类型白名单 */
+    const ALLOWED_FUND_DIVIDEND_CATEGORIES = ['all', 'stock', 'index', 'mixed', 'bond', 'money', 'fof', 'qdii', 'reit', 'other'];
+
+    /** 基金分红日历排序字段白名单 */
+    const ALLOWED_FUND_DIVIDEND_SORT_FIELDS = ['record_date', 'distribution_ratio', 'cash_per_unit', 'pay_date'];
+
     /** 搜索关键词最大长度 */
     const MAX_KEYWORD_LENGTH = 100;
 
