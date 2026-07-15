@@ -473,6 +473,8 @@ check(strpos($streamOutput, '扫描全市场基金分红事件') !== false && st
 // ── 前端：状态隔离 / 请求中止 / 移动渲染 / 分页 / 转义 ──
 $jsSource = file_get_contents(__DIR__ . '/main.js');
 check(strpos($jsSource, 'switchMode') !== false && strpos($jsSource, 'this.mode = mode;') !== false, '前端实现股票/基金模式切换');
+check(strpos($jsSource, "event?.assetType === 'fund'") !== false && strpos($jsSource, 'result.assetType = eventType;') !== false, '基金分红事件在 AI 顾问中保持 fund 资产上下文');
+check(strpos($jsSource, "getDividendQuickActions(assetLabel = '', assetType = 'stock')") !== false && strpos($jsSource, 'fa_get_fund_dividend_profile') !== false && strpos($jsSource, 'fa_get_upcoming_fund_dividends') !== false, '基金分红 AI 快捷任务使用基金专用工具');
 check(strpos($jsSource, 'savedStates:') !== false, '前端模式状态隔离（savedStates）');
 check(strpos($jsSource, 'this.controller.abort()') !== false && strpos($jsSource, 'loadRequestId') !== false, '前端请求中止与 request ID 防覆盖');
 check(strpos($jsSource, 'renderFundItems') !== false && strpos($jsSource, 'renderFundDetail') !== false, '前端基金专属渲染方法');

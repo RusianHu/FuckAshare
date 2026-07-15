@@ -344,7 +344,7 @@ class SecurityAudit
             self::reject('消息数量超过限制，最多 ' . $maxMessageCount . ' 条');
         }
 
-        $allowedRoles = ['system', 'user', 'assistant'];
+        $allowedRoles = ['system', 'user', 'assistant', 'tool'];
 
         foreach ($messages as $i => $msg) {
             if (!is_array($msg)) {
@@ -355,12 +355,56 @@ class SecurityAudit
                 self::reject("第 {$i} 条消息角色无效");
             }
 
-            if (!isset($msg['content']) || !is_string($msg['content'])) {
+            $role = $msg['role'];
+            $hasToolCalls = $role === 'assistant' && isset($msg['tool_calls']) && is_array($msg['tool_calls']);
+            $content = array_key_exists('content', $msg) ? $msg['content'] : null;
+            if (!is_string($content) && !($hasToolCalls && $content === null)) {
                 self::reject("第 {$i} 条消息内容无效");
             }
 
-            if (mb_strlen($msg['content']) > $maxMessageLength) {
+            if (is_string($content) && mb_strlen($content) > $maxMessageLength) {
                 self::reject("第 {$i} 条消息内容过长，最大 " . $maxMessageLength . " 字符");
+            }
+
+            if (array_key_exists('reasoning_content', $msg)) {
+                if ($role !== 'assistant' || !is_string($msg['reasoning_content'])) {
+                    self::reject("第 {$i} 条消息 reasoning_content 无效");
+                }
+                if (mb_strlen($msg['reasoning_content']) > $maxMessageLength) {
+                    self::reject("第 {$i} 条消息 reasoning_content 过长，最大 " . $maxMessageLength . " 字符");
+                }
+            }
+
+            if ($hasToolCalls) {
+                if (count($msg['tool_calls']) > 64) {
+                    self::reject("第 {$i} 条消息工具调用数量过多");
+                }
+                foreach ($msg['tool_calls'] as $callIndex => $call) {
+                    $function = is_array($call) ? ($call['function'] ?? null) : null;
+                    $arguments = is_array($function) ? ($function['arguments'] ?? null) : null;
+                    if (!is_array($call)
+                        || !is_string($call['id'] ?? null)
+                        || (($call['type'] ?? 'function') !== 'function')
+                        || !is_array($function)
+                        || !is_string($function['name'] ?? null)
+                        || !is_string($arguments)) {
+                        self::reject("第 {$i} 条消息的第 {$callIndex} 个工具调用格式无效");
+                    }
+                    if (mb_strlen($arguments) > $maxMessageLength) {
+                        self::reject("第 {$i} 条消息工具调用参数过长");
+                    }
+                }
+            } elseif (isset($msg['tool_calls'])) {
+                self::reject("第 {$i} 条消息 tool_calls 无效");
+            }
+
+            if ($role === 'tool') {
+                if (!is_string($msg['tool_call_id'] ?? null) || trim($msg['tool_call_id']) === '') {
+                    self::reject("第 {$i} 条工具消息缺少 tool_call_id");
+                }
+                if (isset($msg['name']) && !is_string($msg['name'])) {
+                    self::reject("第 {$i} 条工具消息名称无效");
+                }
             }
         }
 

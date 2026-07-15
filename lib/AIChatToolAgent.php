@@ -103,6 +103,7 @@ class AIChatToolAgent
                 ]);
             } catch (Throwable $e) {
                 $reason = trim($e->getMessage());
+                $httpCode = (int)$e->getCode();
                 $this->stream->agentEvent($emit, 'model_request_failed', [
                     'run_id' => $state->runId,
                     'round' => $round,
@@ -110,6 +111,15 @@ class AIChatToolAgent
                     'duration_ms' => (int)round((microtime(true) - $modelStarted) * 1000),
                     'message' => mb_substr($reason, 0, 220),
                 ]);
+                if (!$this->shouldFallbackToPlainStream($e)) {
+                    $message = $this->upstreamFailureMessage($reason, $httpCode);
+                    $this->stream->error($emit, $message, 'upstream_unavailable', $httpCode, [
+                        'phase' => 'tool_decision',
+                        'http_code' => $httpCode,
+                    ]);
+                    $this->stream->failRun($emit, $state, 'upstream_unavailable', $message);
+                    return;
+                }
                 $message = '当前上游未能完成工具调用握手，已回退普通流式对话。';
                 if ($reason !== '') {
                     $message .= '原因：' . mb_substr($reason, 0, 160);
@@ -160,6 +170,9 @@ class AIChatToolAgent
                     'content_summary' => mb_substr($this->stripPseudoToolMarkup((string)($assistant['content'] ?? '')), 0, 160),
                 ]);
                 $content = $this->stripPseudoToolMarkup((string)($assistant['content'] ?? ''));
+                $finalContextMessage = $this->compactAssistantMessage($assistant);
+                $finalContextMessage['content'] = $content;
+                $this->stream->conversationContext($emit, [$finalContextMessage], $state);
                 $this->stream->agentEvent($emit, 'final_answer_started', ['run_id' => $state->runId]);
                 $this->stream->syntheticContent($emit, $content, $state, 'final_answer');
                 return;
@@ -177,12 +190,14 @@ class AIChatToolAgent
                 ]);
             }
             $toolCalls = $this->repairMalformedToolArguments($toolCalls, $originalMessages, $state, $emit, $round);
-            $messages[] = $this->compactAssistantMessage($assistant, $toolCalls);
+            $assistantToolMessage = $this->compactAssistantMessage($assistant, $toolCalls);
+            $messages[] = $assistantToolMessage;
             $toolMessages = [];
             foreach ($this->toolRuntime->executeToolCalls($toolCalls, $state, $emit, $round, 'model_tool_call') as $message) {
                 $messages[] = $message;
                 $toolMessages[] = $message;
             }
+            $this->stream->conversationContext($emit, array_merge([$assistantToolMessage], $toolMessages), $state);
             $checkpointManager->create('tool_batch_complete', $messages, [
                 'round' => $round,
                 'origin' => 'model_tool_call',
@@ -312,8 +327,25 @@ class AIChatToolAgent
         $finalText = '';
         $wrappedEmit = $this->stream->wrapFinalStream($emit, $state, $stopReason, $finished, $finalText);
 
-        $this->model->stream($this->model->payload($messages, true), $wrappedEmit);
+        try {
+            $this->model->stream($this->model->payload($messages, true), $wrappedEmit);
+        } catch (Throwable $e) {
+            $httpCode = (int)$e->getCode();
+            $message = $this->upstreamFailureMessage(trim($e->getMessage()), $httpCode);
+            $this->stream->error($emit, $message, 'upstream_stream_error', $httpCode, [
+                'phase' => 'plain_stream',
+                'http_code' => $httpCode,
+            ]);
+            $this->stream->failRun($emit, $state, 'upstream_stream_error', $message);
+            return;
+        }
         if (!$finished) {
+            if (trim($finalText) === '') {
+                $message = '上游 AI 流式接口未返回任何有效内容。';
+                $this->stream->error($emit, $message, 'empty_response');
+                $this->stream->failRun($emit, $state, 'empty_response', $message);
+                return;
+            }
             $this->stream->riskDisclaimerIfMissing($emit, $finalText, $state);
             $this->stream->agentEvent($emit, 'final_answer_finished', [
                 'run_id' => $state->runId,
@@ -322,6 +354,29 @@ class AIChatToolAgent
             $this->stream->finishRun($emit, $state, $stopReason);
             $emit("data: [DONE]\n\n");
         }
+    }
+
+    private function shouldFallbackToPlainStream(Throwable $error): bool
+    {
+        $code = (int)$error->getCode();
+        if (in_array($code, [400, 404, 405, 415, 422], true)) {
+            return true;
+        }
+        return $code === 0 && (bool)preg_match('/(tools?|tool_choice|parallel_tool_calls).{0,48}(unsupported|not supported|invalid|unknown)/iu', $error->getMessage());
+    }
+
+    private function upstreamFailureMessage(string $reason, int $httpCode): string
+    {
+        if ($httpCode === 401 || $httpCode === 403 || stripos($reason, 'auth_unavailable') !== false) {
+            return '上游 AI 渠道当前无可用鉴权凭据，请检查渠道账号/令牌状态或稍后重试。' . ($reason !== '' ? ' 详情：' . mb_substr($reason, 0, 260) : '');
+        }
+        if ($httpCode === 429) {
+            return '上游 AI 渠道当前请求过多或额度受限，请稍后重试。' . ($reason !== '' ? ' 详情：' . mb_substr($reason, 0, 260) : '');
+        }
+        if ($httpCode >= 500) {
+            return '上游 AI 服务暂时不可用，请稍后重试。' . ($reason !== '' ? ' 详情：' . mb_substr($reason, 0, 260) : '');
+        }
+        return $reason !== '' ? $reason : '上游 AI 请求失败，请稍后重试。';
     }
 
     private function prepareMessages(array $messages, ?AIAgentProfile $profile = null, bool $includeToolInstructions = true): array
@@ -998,6 +1053,10 @@ class AIChatToolAgent
 
     private function messagesForFinalStream(array $messages): array
     {
+        if ($this->model->isMiMoThinkingModel()) {
+            return $this->messagesForMiMoFinalStream($messages);
+        }
+
         $final = [];
         $toolResults = [];
         $guardrailPolicy = new AIAgentGuardrailPolicy();
@@ -1044,6 +1103,44 @@ class AIChatToolAgent
         ];
         $final[] = $guardrailPolicy->finalSystemMessage();
 
+        return $final;
+    }
+
+    private function messagesForMiMoFinalStream(array $messages): array
+    {
+        $final = [];
+        $guardrailPolicy = new AIAgentGuardrailPolicy();
+
+        foreach ($messages as $message) {
+            if (!is_array($message)) continue;
+            $role = (string)($message['role'] ?? '');
+            if (!in_array($role, ['system', 'user', 'assistant', 'tool'], true)) continue;
+
+            $clean = [
+                'role' => $role,
+                'content' => $message['content'] ?? ($role === 'assistant' ? null : ''),
+            ];
+            if ($role === 'assistant') {
+                if (array_key_exists('reasoning_content', $message)) {
+                    $clean['reasoning_content'] = (string)$message['reasoning_content'];
+                }
+                if (isset($message['tool_calls']) && is_array($message['tool_calls'])) {
+                    $clean['tool_calls'] = $message['tool_calls'];
+                }
+            } elseif ($role === 'tool') {
+                $clean['tool_call_id'] = (string)($message['tool_call_id'] ?? '');
+                if (isset($message['name'])) {
+                    $clean['name'] = (string)$message['name'];
+                }
+            }
+            $final[] = $clean;
+        }
+
+        $final[] = [
+            'role' => 'system',
+            'content' => '最终输出必须是面向用户的自然语言研究结论；禁止继续调用工具，也禁止输出伪工具调用标签，例如 <function=...>、</function>、<parameter=...>。',
+        ];
+        $final[] = $guardrailPolicy->finalSystemMessage();
         return $final;
     }
 
@@ -1179,6 +1276,12 @@ class AIChatToolAgent
             $message['tool_calls'] = $toolCalls;
         } elseif (isset($assistant['tool_calls'])) {
             $message['tool_calls'] = $assistant['tool_calls'];
+        }
+        if (array_key_exists('reasoning_content', $assistant)) {
+            // MiMo 要求逐轮原样回传；即使为空字符串也不能擅自删除该字段。
+            $message['reasoning_content'] = is_string($assistant['reasoning_content'])
+                ? $assistant['reasoning_content']
+                : '';
         }
         return $message;
     }

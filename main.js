@@ -467,6 +467,7 @@ const AnimationManager = {
 // ============================================================
 const AI_SYSTEM_PROMPT = '你是一位专业的金融研究助理，擅长解读A股、板块资金、基金净值、估值和排行数据。回答时区分事实、推断和不确定性，避免把基金当作股票分析，结尾提示内容仅供研究参考，不构成投资建议。';
 const AI_CONTEXT_LIMIT = 255000;
+const AI_CONTEXT_MESSAGE_LIMIT = 100;
 
 const APP = {
     // AI聊天
@@ -3461,8 +3462,9 @@ const AdvisorModule = {
 
         if (tab === 'dividend') {
             const event = APP.advisorContext.dividendEvent;
+            const eventType = event?.assetType === 'fund' || (!event && DividendModule?.mode === 'fund') ? 'fund' : 'stock';
+            result.assetType = eventType;
             if (event?.code) {
-                result.assetType = 'stock';
                 result.assetCode = event.code;
                 result.assetName = event.name || '';
                 result.assetLabel = event.name ? `${event.name} (${event.code})` : event.code;
@@ -3501,6 +3503,7 @@ const AdvisorModule = {
         const sub = this._els.welcome?.querySelector('.welcome-sub');
         const isFund = pageContext?.tab === 'fund';
         const isDividend = pageContext?.tab === 'dividend';
+        const isFundDividend = isDividend && pageContext?.assetType === 'fund';
         const asset = pageContext?.assetLabel || '';
 
         if (title) {
@@ -3511,10 +3514,10 @@ const AdvisorModule = {
         if (sub) {
             sub.textContent = isFund
                 ? (asset ? `当前基金：${asset}。可以直接问我收益波动、回撤风险、同类对照或持有适配。` : '从搜索结果、自选或排行中打开基金详情后，我会自动接入当前基金上下文。')
-                : (isDividend ? (asset ? `当前分红事件：${asset}。我会先刷新事件事实，再判断历史连续性和短期风险。` : '可以让我扫描未来7/14/30日事件，或在列表中选择一只股票继续研判。') : '我已接入当前页面数据，可以直接问我股票趋势、主力意图或板块机会。');
+                : (isDividend ? (asset ? `当前${isFundDividend ? '基金' : '股票'}分红事件：${asset}。我会先刷新事件事实，再判断历史连续性和短期风险。` : `可以让我扫描未来7/14/30日${isFundDividend ? '基金' : '股票'}分红事件，或从列表选择一个事件继续研判。`) : '我已接入当前页面数据，可以直接问我股票趋势、主力意图或板块机会。');
         }
 
-        this.renderQuickActions(isFund ? this.getFundQuickActions(asset) : (isDividend ? this.getDividendQuickActions(asset) : this.getStockQuickActions()));
+        this.renderQuickActions(isFund ? this.getFundQuickActions(asset) : (isDividend ? this.getDividendQuickActions(asset, pageContext?.assetType) : this.getStockQuickActions()));
     },
 
     getStockQuickActions() {
@@ -3536,7 +3539,23 @@ const AdvisorModule = {
         ];
     },
 
-    getDividendQuickActions(assetLabel = '') {
+    getDividendQuickActions(assetLabel = '', assetType = 'stock') {
+        if (assetType === 'fund') {
+            if (assetLabel) {
+                return [
+                    { icon: Icons.calendar, text: '核查当前基金分红', prompt: `请针对当前基金分红事件 ${assetLabel} 调用 fa_get_fund_dividend_profile，核查直接分红、最新公告与目标 ETF 事件。` },
+                    { icon: Icons.chart, text: '检查除息净值影响', prompt: `请分析当前基金分红事件 ${assetLabel} 的除息净值影响；调用基金分红档案，并按需结合净值历史交叉验证。` },
+                    { icon: Icons.warning, text: '审查短持风险', prompt: `请对当前基金分红事件 ${assetLabel} 做短持风险审查，说明净值除息、波动、费用和数据缺口；不要套用股票红利税档。` },
+                    { icon: Icons.table, text: '比较同日基金候选', prompt: '请调用 fa_get_upcoming_fund_dividends，比较与当前事件登记日接近的基金候选，并明确排序及分配比例口径。' }
+                ];
+            }
+            return [
+                { icon: Icons.calendar, text: '扫描未来14天', prompt: '请调用 fa_get_upcoming_fund_dividends 扫描未来14天基金分红事件，并说明数据时间与比例口径。' },
+                { icon: Icons.table, text: '按分配比例比较', prompt: '请调用 fa_get_upcoming_fund_dividends，按安全可计算的本次分配比例比较临近基金事件；不要将其称为年化收益。' },
+                { icon: Icons.warning, text: '说明基金分红风险', prompt: '请解释基金分红的净值除息、费用、波动和数据核验风险，不要套用股票红利税档。' },
+                { icon: Icons.chart, text: '筛选代表候选', prompt: '请扫描临近基金分红候选并给出代表事件；本轮先做全市场召回，不要自动深挖多只基金。' }
+            ];
+        }
         if (assetLabel) {
             return [
                 { icon: Icons.calendar, text: '核查当前分红历史', prompt: `请针对当前分红事件 ${assetLabel} 调用 fa_get_stock_dividend_profile，核查历史分红连续性和本次方案状态。` },
@@ -3847,7 +3866,7 @@ const AIModule = {
     },
 
     countMessageChars(message) {
-        return countTextChars(message?.content || '');
+        return countTextChars(this._messageContextText(message));
     },
 
     estimateContextSize(text) {
@@ -3860,7 +3879,18 @@ const AIModule = {
     },
 
     estimateMessageSize(message) {
-        return this.estimateContextSize(message?.content || '') + 4;
+        return this.estimateContextSize(this._messageContextText(message)) + 4;
+    },
+
+    _messageContextText(message) {
+        if (!message || typeof message !== 'object') return '';
+        const parts = [typeof message.content === 'string' ? message.content : ''];
+        if (typeof message.reasoning_content === 'string') parts.push(message.reasoning_content);
+        if (Array.isArray(message.tool_calls)) {
+            try { parts.push(JSON.stringify(message.tool_calls)); } catch (e) { /* ignore */ }
+        }
+        if (typeof message.tool_call_id === 'string') parts.push(message.tool_call_id);
+        return parts.join('\n');
     },
 
     formatContextSize(size) {
@@ -3880,25 +3910,41 @@ const AIModule = {
         }
         const limit = APP.aiContextLimit || AI_CONTEXT_LIMIT;
         const totalSize = messages.reduce((sum, msg) => sum + this.estimateMessageSize(msg), 0);
-        if (totalSize <= limit) return messages.slice();
+        if (totalSize <= limit && messages.length <= AI_CONTEXT_MESSAGE_LIMIT) return messages.slice();
 
         const systemMessages = messages.filter(msg => msg.role === 'system');
         const dialogueMessages = messages.filter(msg => msg.role !== 'system');
-        const selected = [];
-        let used = systemMessages.reduce((sum, msg) => sum + this.estimateMessageSize(msg), 0);
+        const groups = [];
+        let currentGroup = [];
+        dialogueMessages.forEach(msg => {
+            if (msg?.role === 'user' && currentGroup.length > 0) {
+                groups.push(currentGroup);
+                currentGroup = [];
+            }
+            currentGroup.push(msg);
+        });
+        if (currentGroup.length > 0) groups.push(currentGroup);
 
-        for (let i = dialogueMessages.length - 1; i >= 0; i--) {
-            const msg = dialogueMessages[i];
-            const size = this.estimateMessageSize(msg);
-            if (used + size <= limit || selected.length === 0) {
-                selected.unshift(msg);
+        const selectedGroups = [];
+        let used = systemMessages.reduce((sum, msg) => sum + this.estimateMessageSize(msg), 0);
+        let usedMessages = systemMessages.length;
+
+        // assistant(tool_calls) 与其后的 tool 结果必须作为一个用户轮次整体保留，不能被截断拆散。
+        for (let i = groups.length - 1; i >= 0; i--) {
+            const group = groups[i];
+            const size = group.reduce((sum, msg) => sum + this.estimateMessageSize(msg), 0);
+            const fitsSize = used + size <= limit;
+            const fitsCount = usedMessages + group.length <= AI_CONTEXT_MESSAGE_LIMIT;
+            if ((fitsSize && fitsCount) || selectedGroups.length === 0) {
+                selectedGroups.unshift(group);
                 used += size;
+                usedMessages += group.length;
             } else {
                 break;
             }
         }
 
-        return systemMessages.concat(selected);
+        return systemMessages.concat(selectedGroups.flat());
     },
 
     getContextStats() {
@@ -4075,6 +4121,32 @@ const AIModule = {
             if (typeof value === 'string' && value) return value;
         }
         return '';
+    },
+
+    _normalizeConversationContextMessage(message) {
+        if (!message || typeof message !== 'object') return null;
+        const role = String(message.role || '');
+        if (!['assistant', 'tool'].includes(role)) return null;
+
+        const normalized = {
+            role,
+            content: typeof message.content === 'string'
+                ? message.content
+                : (role === 'assistant' && Array.isArray(message.tool_calls) ? null : '')
+        };
+        if (role === 'assistant') {
+            if (typeof message.reasoning_content === 'string') {
+                normalized.reasoning_content = message.reasoning_content;
+            }
+            if (Array.isArray(message.tool_calls)) {
+                normalized.tool_calls = message.tool_calls;
+            }
+        } else {
+            if (typeof message.tool_call_id !== 'string' || !message.tool_call_id) return null;
+            normalized.tool_call_id = message.tool_call_id;
+            if (typeof message.name === 'string') normalized.name = message.name;
+        }
+        return normalized;
     },
 
     /**
@@ -4351,6 +4423,11 @@ const AIModule = {
             };
             let fullResponse = '';
             let fullReasoning = '';
+            let finalReasoning = '';
+            let finalAnswerStarted = false;
+            let hasToolContextMessage = false;
+            let hasFinalContextMessage = false;
+            let finalContextMessageIndex = null;
             let streamDone = false;
             let lastProcessText = '';
             const diagnostics = {
@@ -4400,6 +4477,28 @@ const AIModule = {
                                 if (json.message) diagnostics.lastAgentMessage = json.message;
                             }
 
+                            if (json.type === 'final_answer_started') {
+                                finalAnswerStarted = true;
+                            }
+
+                            if (json.type === 'conversation_context') {
+                                if (requestVersion === APP.advisorRequestVersion && Array.isArray(json.messages)) {
+                                    json.messages.forEach(message => {
+                                        const normalized = this._normalizeConversationContextMessage(message);
+                                        if (!normalized) return;
+                                        APP.messageHistory.push(normalized);
+                                        if (normalized.role === 'assistant' && Array.isArray(normalized.tool_calls) && normalized.tool_calls.length > 0) {
+                                            hasToolContextMessage = true;
+                                        }
+                                        if (normalized.role === 'assistant' && (!Array.isArray(normalized.tool_calls) || normalized.tool_calls.length === 0)) {
+                                            hasFinalContextMessage = true;
+                                            finalContextMessageIndex = APP.messageHistory.length - 1;
+                                        }
+                                    });
+                                }
+                                continue;
+                            }
+
                             if (json.type === 'tool_status') {
                                 const label = json.message || '调用研究工具';
                                 this._appendToolStatusBubble(json, targetContainer);
@@ -4444,6 +4543,7 @@ const AIModule = {
                                 const reasoningDelta = this._extractReasoningDelta(delta);
                                 if (reasoningDelta) {
                                     fullReasoning += reasoningDelta;
+                                    if (finalAnswerStarted) finalReasoning += reasoningDelta;
                                     const targetReasoningDiv = ensureReasoningDiv();
                                     currentReasoning += reasoningDelta;
                                     this._updateReasoning(targetReasoningDiv, currentReasoning);
@@ -4480,7 +4580,25 @@ const AIModule = {
                                 if (json.tool) diagnostics.lastTool = json.tool;
                                 if (json.message) diagnostics.lastAgentMessage = json.message;
                             }
-                            if (json.type === 'tool_status') {
+                            if (json.type === 'final_answer_started') {
+                                finalAnswerStarted = true;
+                            }
+                            if (json.type === 'conversation_context') {
+                                if (requestVersion === APP.advisorRequestVersion && Array.isArray(json.messages)) {
+                                    json.messages.forEach(message => {
+                                        const normalized = this._normalizeConversationContextMessage(message);
+                                        if (!normalized) return;
+                                        APP.messageHistory.push(normalized);
+                                        if (normalized.role === 'assistant' && Array.isArray(normalized.tool_calls) && normalized.tool_calls.length > 0) {
+                                            hasToolContextMessage = true;
+                                        }
+                                        if (normalized.role === 'assistant' && (!Array.isArray(normalized.tool_calls) || normalized.tool_calls.length === 0)) {
+                                            hasFinalContextMessage = true;
+                                            finalContextMessageIndex = APP.messageHistory.length - 1;
+                                        }
+                                    });
+                                }
+                            } else if (json.type === 'tool_status') {
                                 const label = json.message || '调用研究工具';
                                 this._appendToolStatusBubble(json, targetContainer);
                                 if (typeof AdvisorModule !== 'undefined' && AdvisorModule._els?.status) {
@@ -4511,6 +4629,7 @@ const AIModule = {
                                         const reasoningDelta = this._extractReasoningDelta(delta);
                                         if (reasoningDelta) {
                                             fullReasoning += reasoningDelta;
+                                            if (finalAnswerStarted) finalReasoning += reasoningDelta;
                                             const targetReasoningDiv = ensureReasoningDiv();
                                             currentReasoning += reasoningDelta;
                                             this._updateReasoning(targetReasoningDiv, currentReasoning);
@@ -4547,15 +4666,20 @@ const AIModule = {
                 this._renderReasoningMarkdown(reasoningDiv, currentReasoning);
             }
 
-            // 将最终回复记入消息历史（仅记录正式内容，不含推理过程）
+            // conversation_context 已保存非流式最终消息；流式最终消息在此补齐 reasoning_content。
             // 如果用户已清空对话，丢弃旧流式请求的回写，避免清空后历史被旧响应恢复。
             if (requestVersion !== APP.advisorRequestVersion) return;
-            if (fullResponse) {
-                APP.messageHistory.push({ role: 'assistant', content: fullResponse });
+            const reasoningForHistory = finalReasoning || (!hasToolContextMessage ? fullReasoning : '');
+            if (hasFinalContextMessage && finalContextMessageIndex !== null && APP.messageHistory[finalContextMessageIndex]) {
+                // syntheticContent 可能补充风险提示，以浏览器最终收到的正式内容为准。
+                if (fullResponse) APP.messageHistory[finalContextMessageIndex].content = fullResponse;
+            } else if (fullResponse) {
+                const finalMessage = { role: 'assistant', content: fullResponse };
+                if (reasoningForHistory) finalMessage.reasoning_content = reasoningForHistory;
+                APP.messageHistory.push(finalMessage);
             } else if (fullReasoning) {
                 // 推理模型可能因超时只输出了推理过程而没有正式回复
-                // 将推理内容也记入历史，避免下次重发时丢失上下文
-                APP.messageHistory.push({ role: 'assistant', content: fullReasoning });
+                APP.messageHistory.push({ role: 'assistant', content: '', reasoning_content: reasoningForHistory || fullReasoning });
                 this._updateContent(ensureBotDiv(), '> 模型思考超时，仅返回了推理过程，请重新发送以获取完整回复。');
             } else {
                 this._updateContent(ensureBotDiv(), '**提示:** 服务器返回空响应，请检查网络或稍后重试。');

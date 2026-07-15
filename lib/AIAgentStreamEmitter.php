@@ -120,6 +120,25 @@ class AIAgentStreamEmitter
         $emit('data: ' . json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n\n");
     }
 
+    /**
+     * 将模型原生的 assistant/tool 协议消息交给前端保存为隐藏会话上下文。
+     * 这些消息不参与界面展示，但 MiMo thinking 多轮工具调用必须在后续请求中完整回传。
+     */
+    public function conversationContext(callable $emit, array $messages, ?AIAgentState $state = null): void
+    {
+        if (empty($messages)) return;
+        $payload = [
+            'type' => 'conversation_context',
+            'messages' => array_values($messages),
+        ];
+        if ($state !== null) {
+            $payload['run_id'] = $state->runId;
+            $payload['round'] = $state->round;
+        }
+        $emit("event: conversation_context\n");
+        $emit('data: ' . json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n\n");
+    }
+
     public function finishRun(callable $emit, AIAgentState $state, string $stopReason): void
     {
         $state->stopReason = $stopReason;

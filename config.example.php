@@ -244,8 +244,8 @@ return [
             'agent_profile' => '',              // 留空自动识别；可强制 advisor/market_scanner/fund_researcher/risk_reviewer
             'trace_enabled' => false,           // 是否将每次 run 的 trace 落盘为 JSONL；默认关闭
             'trace_log_path' => '',             // trace 落盘路径；留空时使用系统临时目录
-            'max_tokens' => 8192,               // 最终流式回答最大 token 数
-            'tool_decision_max_tokens' => 4096, // 非流式工具决策轮最大 token 数；防止模型在决策轮生成长回答而超时
+            'max_tokens' => 8192,               // 最终回答额度；MiMo-V2.5 自动映射为 max_completion_tokens（思考+回答共用）
+            'tool_decision_max_tokens' => 4096, // 工具决策轮额度；MiMo-V2.5 自动映射为 max_completion_tokens，避免推理/参数被截断
         ],
 
         // ── 渠道定义 ──

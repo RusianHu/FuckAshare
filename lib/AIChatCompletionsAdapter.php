@@ -42,9 +42,24 @@ class AIChatCompletionsAdapter
             ? (int)($this->options['max_tokens'] ?? 8192)
             : (int)($this->options['tool_decision_max_tokens'] ?? 4096);
         if ($maxTokens > 0) {
-            $payload['max_tokens'] = $maxTokens;
+            if ($this->isMiMoThinkingModel()) {
+                // MiMo-V2.5 的深度思考与正式回答共用此额度。
+                $payload['max_completion_tokens'] = $maxTokens;
+            } else {
+                $payload['max_tokens'] = $maxTokens;
+            }
+        }
+        if ($this->isMiMoThinkingModel()) {
+            // Agent 工具链保持 thinking 开启；后续轮次必须完整回传 reasoning_content。
+            $payload['thinking'] = ['type' => 'enabled'];
         }
         return $payload;
+    }
+
+    public function isMiMoThinkingModel(): bool
+    {
+        $model = strtolower(trim((string)($this->channel['model'] ?? '')));
+        return in_array($model, ['mimo-v2.5', 'mimo-v2.5-pro'], true);
     }
 
     public function complete(array $payload): array
@@ -116,6 +131,14 @@ class AIChatCompletionsAdapter
         curl_setopt($ch, CURLOPT_SSL_VERIFYHOST, 2);
         curl_setopt($ch, CURLOPT_TIMEOUT, (int)$this->options['timeout']);
         curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, (int)$this->options['connect_timeout']);
+        $httpCode = 0;
+        $errorBody = '';
+        curl_setopt($ch, CURLOPT_HEADERFUNCTION, function ($ch, $header) use (&$httpCode) {
+            if (preg_match('/^HTTP\/\S+\s+(\d{3})\b/i', trim($header), $matches)) {
+                $httpCode = (int)$matches[1];
+            }
+            return strlen($header);
+        });
         $heartbeatInterval = (int)($this->options['heartbeat_interval'] ?? 0);
         $lastActivityAt = microtime(true);
         if ($heartbeatInterval > 0) {
@@ -128,29 +151,54 @@ class AIChatCompletionsAdapter
                 return connection_aborted() ? 1 : 0;
             });
         }
-        curl_setopt($ch, CURLOPT_WRITEFUNCTION, function ($ch, $data) use ($emit, &$lastActivityAt) {
+        curl_setopt($ch, CURLOPT_WRITEFUNCTION, function ($ch, $data) use ($emit, &$lastActivityAt, &$httpCode, &$errorBody) {
             if (connection_aborted()) {
                 return 0;
             }
             $lastActivityAt = microtime(true);
+            if ($httpCode < 200 || $httpCode >= 300) {
+                if (strlen($errorBody) < 65536) {
+                    $errorBody .= substr($data, 0, 65536 - strlen($errorBody));
+                }
+                return strlen($data);
+            }
             $emit($data);
             return strlen($data);
         });
 
         $result = curl_exec($ch);
-        if ($result === false && curl_errno($ch)) {
-            $message = curl_error($ch);
-            $errno = curl_errno($ch);
-            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            $code = $httpCode ?: $errno;
-            $this->stream->error($emit, "API请求失败: {$message}", 'proxy_error', $code, [
-                'phase' => 'stream',
-                'curl_errno' => $errno,
-                'http_code' => $httpCode,
-                'duration_ms' => (int)round((microtime(true) - $started) * 1000),
-            ]);
-            $emit("data: [DONE]\n\n");
+        $errno = curl_errno($ch);
+        $error = curl_error($ch);
+        $finalHttpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        if ($finalHttpCode > 0) {
+            $httpCode = $finalHttpCode;
         }
         curl_close($ch);
+        $durationMs = (int)round((microtime(true) - $started) * 1000);
+
+        if ($result === false && $errno) {
+            throw new RuntimeException("API请求失败(errno={$errno}, duration_ms={$durationMs}): {$error}", $httpCode ?: $errno);
+        }
+        if ($httpCode < 200 || $httpCode >= 300) {
+            $message = $this->extractUpstreamErrorMessage($errorBody);
+            throw new RuntimeException("上游 AI 错误(HTTP {$httpCode}, duration_ms={$durationMs}): {$message}", $httpCode);
+        }
+    }
+
+    private function extractUpstreamErrorMessage(string $body): string
+    {
+        $body = trim($body);
+        if ($body === '') {
+            return '空错误响应';
+        }
+        $json = json_decode($body, true);
+        if (is_array($json) && array_key_exists('error', $json)) {
+            $error = $json['error'];
+            if (is_array($error)) {
+                return trim((string)($error['message'] ?? json_encode($error, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)));
+            }
+            return trim((string)$error);
+        }
+        return mb_substr(preg_replace('/\s+/u', ' ', $body), 0, 500);
     }
 }

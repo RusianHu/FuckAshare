@@ -8,6 +8,7 @@
 require_once __DIR__ . '/lib/AIToolRuntime.php';
 require_once __DIR__ . '/lib/AIAgentOptions.php';
 require_once __DIR__ . '/lib/CacheStoreFactory.php';
+require_once __DIR__ . '/lib/AIChatToolAgent.php';
 
 function assertTrue($condition, string $message): void
 {
@@ -147,6 +148,219 @@ $tests['multi_transport_error_and_canonical_dedupe'] = function (): void {
     assertTrue(($second['code'] ?? '') === 'duplicate_tool_call', '参数键顺序不同仍应命中去重');
     assertTrue($state->toolCalls === 1, '重复调用不得消耗真实工具预算');
     assertTrue($state->stopReason === 'tool_transport_failure', '整批传输失败必须停止后续工具轮');
+};
+
+$tests['channel_wide_503_does_not_retry_plain_stream'] = function (): void {
+    $streamAttempts = 0;
+    $agent = new AIChatToolAgent(
+        ['api_url' => 'https://example.invalid/v1/chat/completions', 'api_key' => 'test', 'model' => 'test'],
+        ['emit_agent_events' => true, 'expose_tool_trace' => true, 'heartbeat_interval' => 0],
+        null,
+        function (): array {
+            throw new RuntimeException('上游 AI 错误(HTTP 503): auth_unavailable: no auth available', 503);
+        },
+        function () use (&$streamAttempts): void {
+            $streamAttempts++;
+        }
+    );
+    $output = '';
+    $agent->run([['role' => 'user', 'content' => '请分析基金 563830 分红']], function (string $chunk) use (&$output): void {
+        $output .= $chunk;
+    });
+
+    assertTrue($streamAttempts === 0, '渠道级 503 不应向同一失效渠道重复发起普通流请求');
+    assertTrue(strpos($output, 'upstream_unavailable') !== false, '渠道级错误必须输出结构化 upstream_unavailable');
+    assertTrue(strpos($output, 'run_failed') !== false, '渠道级错误必须将代理任务标记为失败');
+    assertTrue(strpos($output, 'data: [DONE]') !== false, '失败的 SSE 仍必须正常发送结束标记');
+};
+
+$tests['plain_stream_fallback_failure_is_not_marked_complete'] = function (): void {
+    $agent = new AIChatToolAgent(
+        ['api_url' => 'https://example.invalid/v1/chat/completions', 'api_key' => 'test', 'model' => 'test'],
+        ['emit_agent_events' => true, 'expose_tool_trace' => true, 'heartbeat_interval' => 0],
+        null,
+        function (): array {
+            throw new RuntimeException('tools are not supported', 400);
+        },
+        function (): void {
+            throw new RuntimeException('上游 AI 错误(HTTP 503): auth_unavailable', 503);
+        }
+    );
+    $output = '';
+    $agent->run([['role' => 'user', 'content' => '请分析基金 563830 分红']], function (string $chunk) use (&$output): void {
+        $output .= $chunk;
+    });
+
+    assertTrue(strpos($output, 'fallback_plain_stream') !== false, '工具能力类 400 应保留普通流回退');
+    assertTrue(strpos($output, 'upstream_stream_error') !== false, '回退流失败必须输出真实上游错误');
+    assertTrue(strpos($output, 'run_failed') !== false, '回退流失败必须标记任务失败');
+    assertTrue(strpos($output, 'run_finished') === false, '回退流失败不得误报任务完成');
+    assertTrue(strpos($output, 'data: [DONE]') !== false, '回退流失败仍必须结束 SSE');
+};
+
+$tests['mimo_thinking_preserves_reasoning_across_tool_rounds'] = function (): void {
+    $payloads = [];
+    $responses = [
+        [
+            'choices' => [[
+                'finish_reason' => 'tool_calls',
+                'message' => [
+                    'role' => 'assistant',
+                    'content' => '',
+                    'reasoning_content' => 'round-one-reasoning',
+                    'tool_calls' => [[
+                        'id' => 'call_round_one',
+                        'type' => 'function',
+                        'function' => ['name' => 'fa_normalize_stock_code', 'arguments' => '{"code":"600000"}'],
+                    ]],
+                ],
+            ]],
+        ],
+        [
+            'choices' => [[
+                'finish_reason' => 'tool_calls',
+                'message' => [
+                    'role' => 'assistant',
+                    'content' => '',
+                    'reasoning_content' => 'round-two-reasoning',
+                    'tool_calls' => [[
+                        'id' => 'call_round_two',
+                        'type' => 'function',
+                        'function' => ['name' => 'fa_normalize_stock_code', 'arguments' => '{"code":"000001"}'],
+                    ]],
+                ],
+            ]],
+        ],
+        [
+            'choices' => [[
+                'finish_reason' => 'stop',
+                'message' => [
+                    'role' => 'assistant',
+                    'content' => '多轮工具调用完成。内容仅供研究参考，不构成投资建议。',
+                    'reasoning_content' => 'final-round-reasoning',
+                    'tool_calls' => null,
+                ],
+            ]],
+        ],
+    ];
+    $transport = function (array $payload) use (&$payloads, &$responses): array {
+        $payloads[] = $payload;
+        if (empty($responses)) throw new RuntimeException('测试响应已耗尽');
+        return array_shift($responses);
+    };
+
+    $agent = new AIChatToolAgent(
+        ['api_url' => 'https://example.invalid/v1/chat/completions', 'api_key' => 'test', 'model' => 'mimo-v2.5-pro'],
+        [
+            'emit_agent_events' => true,
+            'expose_tool_trace' => false,
+            'parallel_tool_calls' => false,
+            'heartbeat_interval' => 0,
+            'max_tool_rounds' => 4,
+            'tool_decision_max_tokens' => 2048,
+        ],
+        new AIToolExecutor(),
+        $transport
+    );
+    $output = '';
+    $agent->run([['role' => 'user', 'content' => '测试 MiMo thinking 多轮工具调用']], function (string $chunk) use (&$output): void {
+        $output .= $chunk;
+    });
+
+    assertTrue(count($payloads) === 3, '应完成两轮工具调用和一轮最终回答');
+    foreach ($payloads as $payload) {
+        assertTrue(($payload['thinking']['type'] ?? '') === 'enabled', 'MiMo 工具请求必须保持 thinking=enabled');
+        assertTrue(($payload['max_completion_tokens'] ?? 0) === 2048, 'MiMo 应使用 max_completion_tokens');
+        assertTrue(!isset($payload['max_tokens']), 'MiMo 请求不应同时发送 max_tokens');
+    }
+
+    $secondAssistants = array_values(array_filter($payloads[1]['messages'] ?? [], function ($message): bool {
+        return ($message['role'] ?? '') === 'assistant' && !empty($message['tool_calls']);
+    }));
+    assertTrue(($secondAssistants[0]['reasoning_content'] ?? null) === 'round-one-reasoning', '第二轮必须回传第一轮 reasoning_content');
+
+    $thirdAssistants = array_values(array_filter($payloads[2]['messages'] ?? [], function ($message): bool {
+        return ($message['role'] ?? '') === 'assistant' && !empty($message['tool_calls']);
+    }));
+    assertTrue(count($thirdAssistants) === 2, '第三轮必须保留全部历史 assistant 工具消息');
+    assertTrue(($thirdAssistants[0]['reasoning_content'] ?? null) === 'round-one-reasoning', '第三轮必须保留第一轮推理');
+    assertTrue(($thirdAssistants[1]['reasoning_content'] ?? null) === 'round-two-reasoning', '第三轮必须保留第二轮推理');
+    assertTrue(strpos($output, '"type":"conversation_context"') !== false, 'SSE 必须下发隐藏会话上下文');
+    assertTrue(strpos($output, 'final-round-reasoning') !== false, '最终非流式 assistant 的推理也必须进入会话上下文');
+};
+
+$tests['message_validation_accepts_mimo_tool_history'] = function (): void {
+    $messages = SecurityAudit::validateMessages([
+        ['role' => 'user', 'content' => '查询行情'],
+        [
+            'role' => 'assistant',
+            'content' => null,
+            'reasoning_content' => '需要调用行情工具。',
+            'tool_calls' => [[
+                'id' => 'call_validation',
+                'type' => 'function',
+                'function' => ['name' => 'fa_get_stock_quote', 'arguments' => '{"codes":["600000"]}'],
+            ]],
+        ],
+        ['role' => 'tool', 'tool_call_id' => 'call_validation', 'name' => 'fa_get_stock_quote', 'content' => '{"success":true}'],
+        ['role' => 'assistant', 'content' => '查询完成。', 'reasoning_content' => '已经获得结果。'],
+    ]);
+    assertTrue(count($messages) === 4, '入口校验必须接受完整 MiMo assistant/tool 历史');
+};
+
+$tests['mimo_final_stream_keeps_native_tool_protocol'] = function (): void {
+    $streamPayload = null;
+    $agent = new AIChatToolAgent(
+        ['api_url' => 'https://example.invalid/v1/chat/completions', 'api_key' => 'test', 'model' => 'mimo-v2.5-pro'],
+        [
+            'emit_agent_events' => true,
+            'expose_tool_trace' => false,
+            'parallel_tool_calls' => false,
+            'heartbeat_interval' => 0,
+            'max_tool_calls_total' => 1,
+        ],
+        new AIToolExecutor(),
+        function (): array {
+            return [
+                'choices' => [[
+                    'finish_reason' => 'tool_calls',
+                    'message' => [
+                        'role' => 'assistant',
+                        'content' => '',
+                        'reasoning_content' => 'reasoning-before-final-stream',
+                        'tool_calls' => [[
+                            'id' => 'call_before_final_stream',
+                            'type' => 'function',
+                            'function' => ['name' => 'fa_normalize_stock_code', 'arguments' => '{"code":"600000"}'],
+                        ]],
+                    ],
+                ]],
+            ];
+        },
+        function (array $payload, callable $emit) use (&$streamPayload): void {
+            $streamPayload = $payload;
+            $emit("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"final-stream-reasoning\"},\"finish_reason\":null}]}\n\n");
+            $emit("data: {\"choices\":[{\"delta\":{\"content\":\"最终结论。内容仅供研究参考，不构成投资建议。\"},\"finish_reason\":null}]}\n\n");
+            $emit("data: [DONE]\n\n");
+        }
+    );
+    $output = '';
+    $agent->run([['role' => 'user', 'content' => '测试最终流协议']], function (string $chunk) use (&$output): void {
+        $output .= $chunk;
+    });
+
+    assertTrue(is_array($streamPayload), '达到工具预算后必须进入最终流');
+    $assistantToolMessages = array_values(array_filter($streamPayload['messages'] ?? [], function ($message): bool {
+        return ($message['role'] ?? '') === 'assistant' && !empty($message['tool_calls']);
+    }));
+    $toolMessages = array_values(array_filter($streamPayload['messages'] ?? [], function ($message): bool {
+        return ($message['role'] ?? '') === 'tool';
+    }));
+    assertTrue(count($assistantToolMessages) === 1, 'MiMo 最终流必须保留原生 assistant tool_calls 消息');
+    assertTrue(($assistantToolMessages[0]['reasoning_content'] ?? null) === 'reasoning-before-final-stream', 'MiMo 最终流必须保留工具轮推理');
+    assertTrue(count($toolMessages) === 1 && ($toolMessages[0]['tool_call_id'] ?? '') === 'call_before_final_stream', 'MiMo 最终流必须保留匹配的 tool 结果');
+    assertTrue(($streamPayload['thinking']['type'] ?? '') === 'enabled', 'MiMo 最终流也必须保持 thinking=enabled');
+    assertTrue(strpos($output, 'final-stream-reasoning') !== false, '最终流推理必须继续透传');
 };
 
 $tests['numeric_code_produces_kline_indicators'] = function (): void {

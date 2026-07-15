@@ -241,6 +241,7 @@ try {
             'code'    => $e->getCode(),
         ]
     ], JSON_UNESCAPED_UNICODE) . "\n\n";
+    echo "data: [DONE]\n\n";
     if (ob_get_level()) ob_flush();
     flush();
 }
