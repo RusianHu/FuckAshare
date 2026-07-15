@@ -515,7 +515,8 @@ const APP = {
     advisorUserInput: null,
     advisorLastFocusedElement: null,
     advisorScrollLocked: false,
-    advisorRequestVersion: 0
+    advisorRequestVersion: 0,
+    advisorReturnTab: 'stock'
 };
 
 // ============================================================
@@ -3078,6 +3079,7 @@ const AdvisorModule = {
             sendBtn: document.getElementById('advisor-send-btn'),
             closeBtn: document.getElementById('advisor-close-btn'),
             expandBtn: document.getElementById('advisor-expand-btn'),
+            collapseBtn: document.getElementById('advisor-collapse-btn'),
             clearBtn: document.getElementById('advisor-clear-btn'),
             welcome: document.getElementById('ai-advisor-welcome'),
             context: document.getElementById('ai-advisor-context'),
@@ -3085,6 +3087,7 @@ const AdvisorModule = {
             contextTab: document.getElementById('advisor-context-tab'),
             badge: document.getElementById('fab-badge'),
             status: document.getElementById('advisor-status'),
+            pageStatus: document.getElementById('ai-page-status'),
             quickActions: document.getElementById('ai-advisor-quick-actions'),
             contextMeter: document.getElementById('advisor-context-meter'),
             contextRing: document.getElementById('advisor-context-ring'),
@@ -3104,16 +3107,22 @@ const AdvisorModule = {
         const el = this._els;
 
         // FAB 点击
-        el.fab?.addEventListener('click', () => this.toggle());
+        el.fab?.addEventListener('click', () => {
+            if (APP.advisorExpanded) {
+                this.collapseToPanel();
+            } else {
+                this.toggle();
+            }
+        });
 
         // 关闭按钮
         el.closeBtn?.addEventListener('click', () => this.close());
 
         // 展开到完整页
-        el.expandBtn?.addEventListener('click', () => {
-            this.close();
-            switchTab('ai');
-        });
+        el.expandBtn?.addEventListener('click', () => this.expandToPage());
+
+        // 从完整页收回浮窗
+        el.collapseBtn?.addEventListener('click', () => this.collapseToPanel());
 
         // 清理历史对话 / 上下文
         el.clearBtn?.addEventListener('click', () => this.clearConversation());
@@ -3191,6 +3200,11 @@ const AdvisorModule = {
 
     /** 打开面板 */
     open() {
+        if (APP.advisorExpanded) {
+            this._els.userInput?.blur();
+            APP.userInput?.focus();
+            return;
+        }
         if (APP.advisorOpen) return;
         APP.advisorOpen = true;
         APP.advisorLastFocusedElement = document.activeElement;
@@ -3226,15 +3240,9 @@ const AdvisorModule = {
     },
 
     /** 关闭面板 */
-    close() {
+    close({ restoreFocus = true } = {}) {
         if (!APP.advisorOpen) return;
         APP.advisorOpen = false;
-
-        if (APP._aiAbortController) {
-            APP._aiAbortController.abort();
-            APP._aiAbortController = null;
-        }
-        this.setThinking(false);
 
         const el = this._els;
         // 终止 GSAP 可能正在运行的动画，清除残留内联样式
@@ -3254,10 +3262,57 @@ const AdvisorModule = {
         this._unlockScroll();
 
         // 焦点回退到 FAB
-        if (APP.advisorLastFocusedElement) {
-            APP.advisorLastFocusedElement.focus();
+        if (restoreFocus) {
+            if (APP.advisorLastFocusedElement) {
+                APP.advisorLastFocusedElement.focus();
+            } else {
+                el.fab?.focus();
+            }
+        }
+    },
+
+    /** 浮窗与完整页只是同一任务的两种视图，切换不得中止流式请求。 */
+    expandToPage() {
+        if (APP.advisorExpanded) return;
+        const activeTab = document.querySelector('.nav-tab.active')?.dataset.tab;
+        if (activeTab && activeTab !== 'ai') APP.advisorReturnTab = activeTab;
+
+        this._transferDraft(this._els.userInput, APP.userInput);
+        APP.advisorExpanded = true;
+        document.body.classList.add('advisor-expanded');
+        this.close({ restoreFocus: false });
+        switchTab('ai');
+        AIModule.ensureDisplayView(APP.chatContainer);
+        requestAnimationFrame(() => APP.userInput?.focus());
+    },
+
+    /** 返回展开前的业务页并打开浮窗，继续显示同一个流式任务。 */
+    collapseToPanel() {
+        this._transferDraft(APP.userInput, this._els.userInput);
+        APP.advisorExpanded = false;
+        document.body.classList.remove('advisor-expanded');
+        const returnTab = APP.advisorReturnTab && APP.advisorReturnTab !== 'ai'
+            ? APP.advisorReturnTab
+            : 'stock';
+        switchTab(returnTab);
+        this.open();
+        AIModule.ensureDisplayView(this._els.chatContainer);
+    },
+
+    leaveExpandedPage() {
+        APP.advisorExpanded = false;
+        document.body.classList.remove('advisor-expanded');
+    },
+
+    _transferDraft(from, to) {
+        if (!from || !to) return;
+        if (from.value && !to.value) to.value = from.value;
+        from.value = '';
+        if (to === this._els.userInput) {
+            this._autoResize();
+            this._updateSendState();
         } else {
-            el.fab?.focus();
+            autoResizeTextarea();
         }
     },
 
@@ -3648,14 +3703,22 @@ const AdvisorModule = {
     setThinking(isThinking) {
         APP.advisorThinking = isThinking;
         const fab = this._els.fab;
-        const status = this._els.status;
 
         if (isThinking) {
             fab?.classList.add('thinking');
-            if (status) status.textContent = '分析中...';
+            this.setStatus('分析中...');
         } else {
             fab?.classList.remove('thinking');
-            if (status) status.textContent = '在线 · Beta';
+            this.setStatus('在线 · Beta');
+        }
+    },
+
+    setStatus(text) {
+        const label = String(text || '').trim() || (APP.advisorThinking ? '分析中...' : '在线 · Beta');
+        if (this._els.status) this._els.status.textContent = label;
+        if (this._els.pageStatus) {
+            this._els.pageStatus.textContent = label;
+            this._els.pageStatus.classList.toggle('thinking', APP.advisorThinking);
         }
     },
 
@@ -3828,39 +3891,117 @@ const AdvisorModule = {
 // AI聊天模块
 // ============================================================
 const AIModule = {
+    _displayContainers() {
+        return [APP.chatContainer, APP.advisorChatContainer]
+            .filter((container, index, items) => container && items.indexOf(container) === index);
+    },
+
+    _renderDisplayRecord(record, container, index) {
+        if (!record || !record.className || !container) return null;
+        let element = null;
+        const options = { skipDisplayRecord: true };
+        if (record.className === 'process-message') {
+            element = this._appendProcessStatus(record.message || '', container, options);
+        } else if (record.className === 'thought-message') {
+            element = this._appendThoughtBubble(record.message || '', container, options);
+        } else if (record.className === 'tool-message') {
+            element = this._appendToolStatusBubble(record.status || {}, container, options);
+        } else if (record.className === 'reasoning-message') {
+            element = this._appendReasoningBubble(container, options);
+            const body = element?.querySelector('.reasoning-body');
+            if (body) body.innerHTML = DOMPurify.sanitize(marked.parse(record.content || ''));
+        } else {
+            element = this.appendMessage(record.content || '', record.reasoningContent || null, record.className, container, options);
+        }
+        if (element) element.dataset.displayIndex = String(index);
+        return element;
+    },
+
+    _applyDisplayRecord(element, record, options = {}) {
+        if (!element || !record) return;
+        if (record.className === 'reasoning-message') {
+            let body = element.querySelector('.reasoning-body');
+            if (!body) {
+                body = document.createElement('div');
+                body.className = 'reasoning-body';
+                element.appendChild(body);
+            }
+            if (options.reasoningMarkdown) {
+                body.innerHTML = DOMPurify.sanitize(marked.parse(record.content || ''));
+            } else {
+                body.textContent = record.content || '';
+            }
+        } else if (record.className === 'bot-message') {
+            let content = element.querySelector('.content');
+            if (!content) {
+                content = document.createElement('div');
+                content.className = 'content';
+                element.appendChild(content);
+            }
+            content.innerHTML = DOMPurify.sanitize(marked.parse(record.content || ''));
+        }
+        const container = element.closest('.chat-messages, .advisor-messages');
+        if (container) container.scrollTop = container.scrollHeight;
+    },
+
+    _syncNewDisplayRecord(index, sourceElement) {
+        const record = APP.chatDisplayHistory[index];
+        const sourceContainer = sourceElement?.parentElement;
+        this._displayContainers().forEach(container => {
+            if (container === sourceContainer || container.querySelector(`[data-display-index="${index}"]`)) return;
+            const messageCount = container.querySelectorAll('.message[data-display-index]').length;
+            if (messageCount !== index) {
+                this.renderDisplayHistory(container);
+                return;
+            }
+            this._renderDisplayRecord(record, container, index);
+        });
+    },
+
     _recordDisplayMessage(element, record, options = {}) {
         if (!element || options.skipDisplayRecord || record?.className === 'loading-message') return;
         const history = Array.isArray(APP.chatDisplayHistory) ? APP.chatDisplayHistory : (APP.chatDisplayHistory = []);
         const index = history.length;
         element.dataset.displayIndex = String(index);
         history.push({ ...record });
+        this._syncNewDisplayRecord(index, element);
     },
 
-    _updateDisplayMessage(element, patch = {}) {
+    _updateDisplayMessage(element, patch = {}, options = {}) {
         if (!element || !Array.isArray(APP.chatDisplayHistory)) return;
         const index = Number(element.dataset.displayIndex);
         if (!Number.isInteger(index) || index < 0 || index >= APP.chatDisplayHistory.length) return;
         APP.chatDisplayHistory[index] = { ...APP.chatDisplayHistory[index], ...patch };
+        const record = APP.chatDisplayHistory[index];
+        this._displayContainers().forEach(container => {
+            let mirror = container.querySelector(`[data-display-index="${index}"]`);
+            if (!mirror) {
+                this.ensureDisplayView(container);
+                mirror = container.querySelector(`[data-display-index="${index}"]`);
+            }
+            if (mirror && mirror !== element) this._applyDisplayRecord(mirror, record, options);
+        });
     },
 
     renderDisplayHistory(container) {
         if (!container) return;
         const records = Array.isArray(APP.chatDisplayHistory) ? APP.chatDisplayHistory : [];
         container.innerHTML = '';
-        records.forEach(record => {
-            if (!record || !record.className) return;
-            if (record.className === 'process-message') {
-                this._appendProcessStatus(record.message || '', container, { skipDisplayRecord: true });
-            } else if (record.className === 'thought-message') {
-                this._appendThoughtBubble(record.message || '', container, { skipDisplayRecord: true });
-            } else if (record.className === 'tool-message') {
-                this._appendToolStatusBubble(record.status || {}, container, { skipDisplayRecord: true });
-            } else if (record.className === 'reasoning-message') {
-                const div = this._appendReasoningBubble(container, { skipDisplayRecord: true });
-                this._renderReasoningMarkdown(div, record.content || '');
-            } else {
-                this.appendMessage(record.content || '', record.reasoningContent || null, record.className, container, { skipDisplayRecord: true });
-            }
+        records.forEach((record, index) => this._renderDisplayRecord(record, container, index));
+        container.scrollTop = container.scrollHeight;
+    },
+
+    ensureDisplayView(container) {
+        if (!container) return;
+        const records = Array.isArray(APP.chatDisplayHistory) ? APP.chatDisplayHistory : [];
+        const elements = container.querySelectorAll('.message[data-display-index]');
+        if (elements.length !== records.length) {
+            this.renderDisplayHistory(container);
+            return;
+        }
+        records.forEach((record, index) => {
+            const element = container.querySelector(`[data-display-index="${index}"]`);
+            if (element) this._applyDisplayRecord(element, record, { reasoningMarkdown: true });
         });
         container.scrollTop = container.scrollHeight;
     },
@@ -4111,7 +4252,7 @@ const AIModule = {
             reasoningDiv.appendChild(body);
         }
         body.innerHTML = DOMPurify.sanitize(marked.parse(fullReasoning));
-        this._updateDisplayMessage(reasoningDiv, { content: fullReasoning });
+        this._updateDisplayMessage(reasoningDiv, { content: fullReasoning }, { reasoningMarkdown: true });
     },
 
     _extractReasoningDelta(delta) {
@@ -4378,13 +4519,21 @@ const AIModule = {
 
     async sendToAI(loadingMessage, timer, targetContainer) {
         const requestVersion = APP.advisorRequestVersion;
+        let requestController = null;
+        const finishRequestState = () => {
+            if (APP._aiAbortController !== requestController) return;
+            APP._aiAbortController = null;
+            if (typeof AdvisorModule !== 'undefined') AdvisorModule.setThinking(false);
+        };
         try {
             // Phase 1.4: AbortController — 新请求发出时取消旧请求
             if (APP._aiAbortController) {
                 APP._aiAbortController.abort();
             }
-            APP._aiAbortController = new AbortController();
-            const signal = APP._aiAbortController.signal;
+            requestController = new AbortController();
+            APP._aiAbortController = requestController;
+            const signal = requestController.signal;
+            if (typeof AdvisorModule !== 'undefined') AdvisorModule.setThinking(true);
 
             const requestMessages = this.getContextMessages();
             // 渠道和模型由后端 ai_api.php 的 $defaultChannel 统一控制
@@ -4502,17 +4651,13 @@ const AIModule = {
                             if (json.type === 'tool_status') {
                                 const label = json.message || '调用研究工具';
                                 this._appendToolStatusBubble(json, targetContainer);
-                                if (typeof AdvisorModule !== 'undefined' && AdvisorModule._els?.status) {
-                                    AdvisorModule._els.status.textContent = label + '...';
-                                }
+                                if (typeof AdvisorModule !== 'undefined') AdvisorModule.setStatus(label + '...');
                                 continue;
                             }
 
                             if (json.type === 'assistant_thought') {
                                 this._appendThoughtBubble(json.message || '', targetContainer);
-                                if (typeof AdvisorModule !== 'undefined' && AdvisorModule._els?.status) {
-                                    AdvisorModule._els.status.textContent = '规划工具调用...';
-                                }
+                                if (typeof AdvisorModule !== 'undefined') AdvisorModule.setStatus('规划工具调用...');
                                 continue;
                             }
 
@@ -4522,9 +4667,7 @@ const AIModule = {
                                     this._appendProcessStatus(agentStatus, targetContainer);
                                     lastProcessText = agentStatus;
                                 }
-                                if (typeof AdvisorModule !== 'undefined' && AdvisorModule._els?.status) {
-                                    AdvisorModule._els.status.textContent = agentStatus + '...';
-                                }
+                                if (typeof AdvisorModule !== 'undefined') AdvisorModule.setStatus(agentStatus + '...');
                                 continue;
                             }
 
@@ -4601,14 +4744,10 @@ const AIModule = {
                             } else if (json.type === 'tool_status') {
                                 const label = json.message || '调用研究工具';
                                 this._appendToolStatusBubble(json, targetContainer);
-                                if (typeof AdvisorModule !== 'undefined' && AdvisorModule._els?.status) {
-                                    AdvisorModule._els.status.textContent = label + '...';
-                                }
+                                if (typeof AdvisorModule !== 'undefined') AdvisorModule.setStatus(label + '...');
                             } else if (json.type === 'assistant_thought') {
                                 this._appendThoughtBubble(json.message || '', targetContainer);
-                                if (typeof AdvisorModule !== 'undefined' && AdvisorModule._els?.status) {
-                                    AdvisorModule._els.status.textContent = '规划工具调用...';
-                                }
+                                if (typeof AdvisorModule !== 'undefined') AdvisorModule.setStatus('规划工具调用...');
                             } else {
                                 const agentStatus = this._agentStatusText(json);
                                 if (agentStatus) {
@@ -4616,9 +4755,7 @@ const AIModule = {
                                         this._appendProcessStatus(agentStatus, targetContainer);
                                         lastProcessText = agentStatus;
                                     }
-                                    if (typeof AdvisorModule !== 'undefined' && AdvisorModule._els?.status) {
-                                        AdvisorModule._els.status.textContent = agentStatus + '...';
-                                    }
+                                    if (typeof AdvisorModule !== 'undefined') AdvisorModule.setStatus(agentStatus + '...');
                                 } else if (json.error) {
                                     diagnostics.lastError = json.error;
                                     fullResponse = this._formatAIErrorPayload(json.error, diagnostics);
@@ -4658,8 +4795,7 @@ const AIModule = {
             // 流结束：清理 loading 状态
             clearInterval(timer);
             if (loadingMessage.parentNode) loadingMessage.parentNode.removeChild(loadingMessage);
-            // 通知顾问面板分析结束
-            if (typeof AdvisorModule !== 'undefined') AdvisorModule.setThinking(false);
+            finishRequestState();
 
             // 如果有推理内容，渲染为 Markdown
             if (reasoningDiv && currentReasoning) {
@@ -4691,13 +4827,13 @@ const AIModule = {
             if (loadingMessage.parentNode) loadingMessage.parentNode.removeChild(loadingMessage);
             // Phase 1.4: AbortError 是用户主动取消，静默处理
             if (error.name === 'AbortError') {
-                if (typeof AdvisorModule !== 'undefined') AdvisorModule.setThinking(false);
+                finishRequestState();
                 return;
             }
             if (requestVersion === APP.advisorRequestVersion) {
                 this.appendMessage(this._formatFrontendFetchError(error), null, 'bot-message', targetContainer);
             }
-            if (typeof AdvisorModule !== 'undefined') AdvisorModule.setThinking(false);
+            finishRequestState();
             if (typeof AdvisorModule !== 'undefined') AdvisorModule.updateContextMeter();
         }
     }
@@ -4971,11 +5107,7 @@ function switchTab(tabName) {
 
     // 切换到 AI Tab 时，同步消息历史到 #chat-container
     if (tabName === 'ai' && APP.chatContainer) {
-        const messages = Array.isArray(APP.chatDisplayHistory) ? APP.chatDisplayHistory : [];
-        const existingMsgs = APP.chatContainer.querySelectorAll('.message');
-        if (existingMsgs.length !== messages.length) {
-            AIModule.renderDisplayHistory(APP.chatContainer);
-        }
+        AIModule.ensureDisplayView(APP.chatContainer);
     }
 
     if (activeTab && typeof activeTab.scrollIntoView === 'function') {
@@ -5058,9 +5190,10 @@ document.addEventListener('DOMContentLoaded', function() {
             const tabName = tab.dataset.tab;
             // AI顾问 Tab 点击时，改为打开顾问面板
             if (tabName === 'ai') {
-                AdvisorModule.toggle();
+                if (!APP.advisorExpanded) AdvisorModule.open();
                 return;
             }
+            if (APP.advisorExpanded) AdvisorModule.leaveExpandedPage();
             if (APP.advisorOpen) {
                 AdvisorModule.close();
             }

@@ -78,6 +78,7 @@ $fundDividendAutoRefreshSeconds = max(300, min(1800, (int)AppConfig::get('fund_d
             <symbol id="icon-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></symbol>
             <symbol id="icon-warning" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" x2="12" y1="9" y2="13"/><circle cx="12" cy="17" r=".5"/></symbol>
             <symbol id="icon-expand" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 3 6 6M9 21 3 15M21 3l-7 7M3 21l7-7"/></symbol>
+            <symbol id="icon-collapse" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m4 14 6 6M20 10l-6-6M4 20l7-7M20 4l-7 7"/></symbol>
             <symbol id="icon-layers" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 2 9 5-9 5-9-5 9-5z"/><path d="m3 12 9 5 9-5"/><path d="m3 17 9 5 9-5"/></symbol>
             <symbol id="icon-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.51a2 2 0 0 1 1-1.72l.15-.1a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></symbol>
         </defs>
@@ -736,8 +737,14 @@ $fundDividendAutoRefreshSeconds = max(300, min(1800, (int)AppConfig::get('fund_d
             <div class="ai-layout">
                 <div class="card ai-card">
                     <div class="card-header">
-                        <h3><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-ai"></use></svg></span> AI 智能顾问</h3>
-                        <button id="clear-chat-btn" class="btn-sm"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-trash"></use></svg></span> 清空对话</button>
+                        <div class="ai-page-heading">
+                            <h3><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-ai"></use></svg></span> AI 智能顾问</h3>
+                            <span class="ai-page-status" id="ai-page-status" role="status" aria-live="polite">在线 · Beta</span>
+                        </div>
+                        <div class="ai-page-actions">
+                            <button id="advisor-collapse-btn" class="btn-sm" type="button" title="切换到浮窗" aria-label="将 AI 顾问切换到浮窗"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-collapse"></use></svg></span> 浮窗模式</button>
+                            <button id="clear-chat-btn" class="btn-sm"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-trash"></use></svg></span> 清空对话</button>
+                        </div>
                     </div>
                     <div id="chat-container" class="chat-messages"></div>
                     <div class="chat-input-area">

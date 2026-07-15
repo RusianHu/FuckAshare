@@ -399,6 +399,24 @@ $tests['message_validation_accepts_mimo_tool_history'] = function (): void {
     assertTrue(count($messages) === 4, '入口校验必须接受完整 MiMo assistant/tool 历史');
 };
 
+$tests['advisor_view_switch_keeps_active_stream_alive'] = function (): void {
+    $js = file_get_contents(__DIR__ . '/main.js');
+    $html = file_get_contents(__DIR__ . '/index.php');
+    assertTrue(is_string($js) && is_string($html), '必须能读取 AI 顾问前端资源');
+
+    $closeStart = strpos($js, '    close({ restoreFocus = true } = {}) {');
+    $closeEnd = strpos($js, '    /** 浮窗与完整页只是同一任务的两种视图', $closeStart ?: 0);
+    assertTrue($closeStart !== false && $closeEnd !== false, '顾问浮窗必须提供只关闭视图的 close 方法');
+    $closeBody = substr($js, $closeStart, $closeEnd - $closeStart);
+    assertTrue(strpos($closeBody, '_aiAbortController') === false && strpos($closeBody, '.abort()') === false, '关闭或展开浮窗不得中止进行中的 AI 请求');
+
+    assertTrue(strpos($js, 'expandToPage()') !== false && strpos($js, 'collapseToPanel()') !== false, '必须支持浮窗与完整页双向切换');
+    assertTrue(strpos($js, '_syncNewDisplayRecord(index, element)') !== false, '新增流式展示记录必须同步到两个视图');
+    assertTrue(strpos($js, '_applyDisplayRecord(mirror, record, options)') !== false, '流式增量必须更新另一个视图的镜像消息');
+    assertTrue(strpos($js, 'if (APP._aiAbortController !== requestController) return;') !== false, '旧请求结束不得覆盖新请求的运行状态');
+    assertTrue(strpos($html, 'id="advisor-collapse-btn"') !== false && strpos($html, 'id="ai-page-status"') !== false, '完整页必须提供返回浮窗入口和任务状态');
+};
+
 $tests['mimo_final_stream_keeps_native_tool_protocol'] = function (): void {
     $streamPayload = null;
     $agent = new AIChatToolAgent(

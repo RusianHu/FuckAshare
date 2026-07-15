@@ -2157,6 +2157,31 @@ tr.details-trigger td:first-child { position: relative; }
     height: calc(100dvh - 140px);
     min-height: 420px;
 }
+.ai-page-heading, .ai-page-actions { display: flex; align-items: center; gap: 10px; }
+.ai-page-heading { min-width: 0; }
+.ai-page-heading h3 { margin: 0; }
+.ai-page-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-muted);
+    font-size: var(--fs-xs);
+    white-space: nowrap;
+}
+.ai-page-status::before {
+    content: '';
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--accent-green);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-green) 14%, transparent);
+}
+.ai-page-status.thinking { color: var(--accent-blue); }
+.ai-page-status.thinking::before {
+    background: var(--accent-blue);
+    animation: advisorStatusPulse 1.4s ease-in-out infinite;
+}
+.ai-page-actions { flex-shrink: 0; }
 .chat-messages {
     flex: 1;
     overflow-y: auto;
@@ -2542,6 +2567,10 @@ tr.details-trigger td:first-child { position: relative; }
 @keyframes advisorPulse {
     0%, 100% { box-shadow: 0 0 0 0 var(--advisor-fab-glow); opacity: 1; }
     50% { box-shadow: 0 0 0 10px transparent; opacity: 0.6; }
+}
+@keyframes advisorStatusPulse {
+    0%, 100% { opacity: 0.45; transform: scale(0.82); }
+    50% { opacity: 1; transform: scale(1.12); }
 }
 .ai-advisor-fab:not(.thinking):not(:hover) .fab-glow {
     animation: advisorBreathe 4s ease-in-out infinite;
@@ -3429,6 +3458,11 @@ body.watchlist-open .ai-advisor-panel { right: 364px; }
     .advisor-welcome { padding: 14px 14px 8px; }
     .advisor-input-box { gap: 6px; padding-left: 10px; }
     .advisor-context-size { display: none; }
+    .ai-card > .card-header { align-items: flex-start; gap: 8px; }
+    .ai-page-heading { align-items: flex-start; flex-direction: column; gap: 3px; }
+    .ai-page-actions { gap: 6px; }
+    #advisor-collapse-btn { font-size: 0; padding-left: 10px; padding-right: 10px; }
+    #advisor-collapse-btn .ui-icon { margin: 0; }
 }
 
 /* ---- 减少动效降级（组件级补充） ---- */
@@ -3439,7 +3473,7 @@ body.dividend-drawer-open { overflow: hidden; }
     .watchlist-sidebar, .watchlist-overlay {
         transition-duration: 0.01ms !important;
     }
-    .ai-advisor-fab .fab-glow { animation: none !important; }
+    .ai-advisor-fab .fab-glow, .ai-page-status.thinking::before { animation: none !important; }
     .ai-advisor-fab.thinking .fab-glow {
         animation: none !important;
         border-color: var(--accent-blue);
