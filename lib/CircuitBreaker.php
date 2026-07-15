@@ -46,6 +46,7 @@ class CircuitBreaker
         'eastmoney'  => ['failureThreshold' => 5,  'cooldown' => 30],
         'ashare'     => ['failureThreshold' => 3,  'cooldown' => 60],
         'fund'       => ['failureThreshold' => 5,  'cooldown' => 30],
+        'csindex'    => ['failureThreshold' => 3,  'cooldown' => 60],
         'eastmoney_dividend' => ['failureThreshold' => 3, 'cooldown' => 60],
         'eastmoney_fund_dividend' => ['failureThreshold' => 3, 'cooldown' => 60],
     ];

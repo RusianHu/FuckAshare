@@ -33,13 +33,13 @@ class AIAgentGuardrailPolicy
 
         $violations = [];
         foreach ($this->forbiddenReturnPatterns() as $pattern) {
-            if (preg_match($pattern, $text)) {
+            if ($this->hasAffirmativeMatch($pattern, $text)) {
                 $violations[] = 'promised_return';
                 break;
             }
         }
         foreach ($this->forbiddenTradeCommandPatterns() as $pattern) {
-            if (preg_match($pattern, $text)) {
+            if ($this->hasAffirmativeMatch($pattern, $text)) {
                 $violations[] = 'deterministic_trade_command';
                 break;
             }
@@ -100,6 +100,24 @@ class AIAgentGuardrailPolicy
             '/(?:明天|下周|短期)必(?:涨|跌|涨停|跌停)/u',
             '/确定性(?:买点|卖点|机会)/u',
         ];
+    }
+
+    /**
+     * 只拦截肯定性承诺/指令；“不是无风险收益”“无法保证收益”“不要直接买入”等否定语境放行。
+     */
+    private function hasAffirmativeMatch(string $pattern, string $text): bool
+    {
+        $matched = preg_match_all($pattern, $text, $items, PREG_OFFSET_CAPTURE);
+        if (!$matched || empty($items[0])) return false;
+        foreach ($items[0] as $item) {
+            $offset = (int)$item[1];
+            $prefix = substr($text, max(0, $offset - 96), min(96, $offset));
+            if (preg_match('/(?:不是|并非|不属于|不能视为|不可视为|不能认为|不可认为|不代表|不等于|不保证|无法|不能|不可|没有|不存在|不要|不应|不宜|无需|无须|避免|禁止|切勿)[^。；！？\n]{0,12}$/u', $prefix)) {
+                continue;
+            }
+            return true;
+        }
+        return false;
     }
 
     private function mentionsFactInferenceUncertainty(string $text): bool

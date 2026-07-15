@@ -312,6 +312,7 @@ FuckAshare/
 | `fa_get_index_profile` | 基金跟踪指数画像、业绩基准、投资策略依据 |
 | `fa_get_fund_dividend_history` | 基金份额类别的历史分红事件表（登记/除息/发放日、每份金额） |
 | `fa_get_fund_dividend_profile` | 基金分红证据档案（直接事件、最新公告、联接基金目标 ETF 与官方核验） |
+| `fa_get_fund_dividend_event_market` | 聚合基金分红事件净值、ETF 场内日 K、当前流动性、官方中证全收益基准及恢复指标 |
 | `fa_get_fund_documents` | 基金公告/报告/合同/招募说明书及可选正文 |
 | `fa_screen_funds` | 多关键词+多排行召回主题基金候选池（红利等主题） |
 | `fa_get_fund_performance_stats` | 分页拉取长历史净值并计算收益/回撤/波动/胜率 |
@@ -376,7 +377,7 @@ FuckAshare/
 .\php\php.exe fund_dividend_feature_tests.php --loopback
 ```
 
-`ai_tool_runtime_tests.php` 覆盖 curl_multi 真实错误码、整批传输失败停止、参数规范化去重、空数据判定和纯数字股票代码 K 线指标。`dividend_feature_tests.php` 默认覆盖换算、三档税率、状态、沪深北识别、排序分页、缺行情、stale 缓存及 AI Tool schema/参数；`--live` 连接真实东方财富事件与行情；`--loopback` 验证内部 token、两个新工具和并行 HTTP 执行。`fund_dividend_feature_tests.php` 覆盖基金分红事件源解析（jjfh_data/fundcode_search.js/空年度/畸形）、服务层（日期过滤/跨年/提前停止/类型映射/份额去重/排序/分页/摘要/事件阶段）、安全分配比例（人民币/未知币种/净值缺失/净值日期口径/历史事件/最低比例/空值排序）、降级（fresh/stale/类型映射失败/NAV 部分失败/熔断/负缓存）、详情（当前事件选择/公告精确匹配/未匹配/失败/联接基金/净值窗口/未来后置缺失）、API 兼容与前端双模式；`--live` 连接真实基金分红链路，`--loopback` 验证 `fa_get_upcoming_fund_dividends` 与 `fa_get_fund_dividend_profile` 的内部并行执行。
+`ai_tool_runtime_tests.php` 覆盖 curl_multi 真实错误码、整批传输失败停止、参数规范化去重、分红工具自动参数、否定语境护栏及中证全收益基准选择。`dividend_feature_tests.php` 默认覆盖换算、三档税率、状态、沪深北识别、排序分页、缺行情、stale 缓存及 AI Tool schema/参数；`--live` 连接真实东方财富事件与行情；`--loopback` 验证内部 token、两个新工具和并行 HTTP 执行。`fund_dividend_feature_tests.php` 额外覆盖基金分红事件聚合工具的 ETF 解析、NAV/日 K/基准对齐、折溢价白名单、确定性收益与恢复指标、公告证据等级、部分/全部失败语义；`--live` 连接真实基金分红与中证指数链路，`--loopback` 验证基金分红档案和事件聚合工具的内部执行。
 
 本地启用 AI 并行工具时，主站和内部执行端点必须使用两个独立 PHP 进程。在项目目录分别启动：
 

@@ -414,6 +414,7 @@ class AIAgentStreamEmitter
             'fa_get_index_profile' => '获取基金指数画像',
             'fa_get_fund_dividend_history' => '获取基金分红历史',
             'fa_get_fund_dividend_profile' => '核验基金分红及关联事件',
+            'fa_get_fund_dividend_event_market' => '聚合分红事件净值与市场表现',
             'fa_get_upcoming_fund_dividends' => '扫描全市场基金分红事件',
             'fa_get_fund_documents' => '获取基金文档',
             'fa_screen_funds' => '召回基金候选池',

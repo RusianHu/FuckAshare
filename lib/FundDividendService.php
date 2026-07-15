@@ -13,6 +13,9 @@
 require_once __DIR__ . '/FundDividendDataProvider.php';
 require_once __DIR__ . '/EastmoneyFundDividendClient.php';
 require_once __DIR__ . '/FundService.php';
+require_once __DIR__ . '/MarketDataService.php';
+require_once __DIR__ . '/CsindexClient.php';
+require_once __DIR__ . '/EventMarketWindowService.php';
 require_once __DIR__ . '/CacheStoreFactory.php';
 require_once __DIR__ . '/AppConfig.php';
 
@@ -26,14 +29,20 @@ class FundDividendService
     private $fund;
     /** @var CacheStore */
     private $cache;
+    /** @var MarketDataService */
+    private $market;
+    /** @var EventMarketWindowService */
+    private $eventMarket;
     /** @var array */
     private $config;
 
-    public function __construct(?FundDividendDataProvider $provider = null, ?FundService $fund = null, ?CacheStore $cache = null)
+    public function __construct(?FundDividendDataProvider $provider = null, ?FundService $fund = null, ?CacheStore $cache = null, ?MarketDataService $market = null, ?CsindexClient $csindex = null, ?EventMarketWindowService $eventMarket = null)
     {
         $this->provider = $provider ?: new EastmoneyFundDividendClient();
-        $this->fund = $fund ?: new FundService();
+        $this->fund = $fund ?: new FundService($csindex);
         $this->cache = $cache ?: CacheStoreFactory::getInstance();
+        $this->market = $market ?: new MarketDataService();
+        $this->eventMarket = $eventMarket ?: new EventMarketWindowService($this->market);
         $configured = AppConfig::get('fund_dividend', []);
         $this->config = array_merge([
             'enabled' => true,
@@ -263,6 +272,226 @@ class FundDividendService
         return $cached;
     }
 
+    /**
+     * AI 分红证据档案：保持 FundService 原结构并补充事件级公告精确匹配。
+     */
+    public function evidenceProfile(string $code, ?string $eventDate = null, int $limit = 10, bool $includeRelated = true, bool $includeAnnouncements = true, int $announcementLimit = 5): DataSourceResult
+    {
+        $profile = $this->fund->dividendProfile($code, $limit, $includeRelated, $includeAnnouncements, $announcementLimit);
+        if (!$profile->hasData()) return $profile;
+        $detail = $this->detail($code, $eventDate);
+        $data = (array)$profile->data;
+        $status = 'check_failed';
+        $matched = null;
+        $selected = null;
+        $detailFailure = null;
+        if ($detail->hasData()) {
+            $selected = $detail->data['selected_event'] ?? null;
+            $status = (string)($detail->data['announcement_match_status'] ?? 'not_checked');
+            $matched = $detail->data['matched_announcement'] ?? null;
+        } else {
+            $detailFailure = ['source' => $detail->source, 'code' => $detail->errorCode, 'message' => $detail->errorMessage];
+        }
+
+        $firstParty = (array)($data['direct_fund']['first_party_verification'] ?? []);
+        $selectedSources = is_array($selected) ? (array)($selected['sources'] ?? []) : [];
+        $firstPartyHit = ($firstParty['status'] ?? '') === 'available'
+            && !empty($firstParty['events_checked'])
+            && count(array_filter($selectedSources, function ($source) { return strpos((string)$source, 'official') !== false; })) > 0;
+        if ($firstPartyHit) {
+            $evidenceLevel = 'first_party_verified';
+            $sourceKind = 'manager_first_party';
+        } elseif ($status === 'verified') {
+            $evidenceLevel = 'aggregator_document_verified';
+            $sourceKind = 'eastmoney_f10_document';
+        } elseif ($status === 'check_failed') {
+            $evidenceLevel = 'check_failed';
+            $sourceKind = 'unavailable';
+        } elseif (is_array($selected)) {
+            $evidenceLevel = 'event_only';
+            $sourceKind = 'dividend_event_table';
+        } else {
+            $evidenceLevel = 'unverified';
+            $sourceKind = 'none';
+        }
+
+        $publicStatus = $status === 'checked_unmatched' ? 'unmatched' : $status;
+        $data['selected_event'] = $selected;
+        $data['announcement_match_status'] = $publicStatus;
+        $data['matched_announcement'] = $matched;
+        $data['verification'] = [
+            'evidence_level' => $evidenceLevel,
+            'source_kind' => $sourceKind,
+            'first_party_status' => (string)($firstParty['status'] ?? 'not_configured_for_manager'),
+        ];
+        if ($detailFailure !== null) $data['verification']['failure'] = $detailFailure;
+        return DataSourceResult::success('fund_dividend_profile', 'dividend_profile', $data, array_merge($profile->meta, [
+            'event_date' => $eventDate,
+            'announcement_match_status' => $publicStatus,
+            'partial' => !empty($profile->meta['partial']) || $detailFailure !== null || $status === 'check_failed',
+        ]));
+    }
+
+    /**
+     * 聚合基金分红事件的净值、ETF 场内日 K、流动性快照与中证全收益基准。
+     */
+    public function eventResearch(string $code, ?string $eventDate = null, int $before = 10, int $after = 15, int $previousEvents = 1, bool $includeBenchmark = true): DataSourceResult
+    {
+        if (!preg_match('/^\d{6}$/', $code)) {
+            return DataSourceResult::error(self::SOURCE_NAME, 'fund_dividend_event_market', 'invalid_code', '基金代码必须为 6 位数字');
+        }
+        if ($eventDate !== null) {
+            $parsed = DateTimeImmutable::createFromFormat('!Y-m-d', $eventDate, new DateTimeZone('Asia/Shanghai'));
+            if (!$parsed || $parsed->format('Y-m-d') !== $eventDate) {
+                return DataSourceResult::error(self::SOURCE_NAME, 'fund_dividend_event_market', 'invalid_date', '事件日期格式无效');
+            }
+        }
+        if ($before < 5 || $before > 30 || $after < 5 || $after > 30) {
+            return DataSourceResult::error(self::SOURCE_NAME, 'fund_dividend_event_market', 'invalid_window', '事件窗口必须在 5 至 30 个交易日之间');
+        }
+        if ($previousEvents < 0 || $previousEvents > 3) {
+            return DataSourceResult::error(self::SOURCE_NAME, 'fund_dividend_event_market', 'invalid_previous_events', '历史事件数量必须在 0 至 3 之间');
+        }
+
+        $detail = $this->detail($code, $eventDate);
+        if (!$detail->hasData()) {
+            return DataSourceResult::error($detail->source ?: self::SOURCE_NAME, 'fund_dividend_event_market', $detail->errorCode ?: 'detail_unavailable', $detail->errorMessage ?: '基金分红事件不可用', $detail->meta);
+        }
+        $fund = (array)($detail->data['fund'] ?? []);
+        $selected = is_array($detail->data['selected_event'] ?? null) ? $detail->data['selected_event'] : null;
+        if ($selected === null) {
+            return DataSourceResult::error(self::SOURCE_NAME, 'fund_dividend_event_market', 'event_not_found', '未找到可研究的基金分红事件');
+        }
+
+        $exchangeCode = $this->exchangeProviderCode($code);
+        $isExchangeTraded = $exchangeCode !== null;
+        $fundOutput = [
+            'code' => $code,
+            'name' => (string)($fund['name'] ?? ''),
+            'fund_type' => (string)($fund['fund_type'] ?? ''),
+            'exchange_traded' => $isExchangeTraded,
+            'market_code' => $exchangeCode,
+        ];
+        $failures = [];
+        $snapshot = $this->currentSnapshot($fund, $exchangeCode, $failures);
+
+        $events = [$selected];
+        $selectedKey = $this->eventKey($selected);
+        $selectedAnchor = (string)($selected['ex_date'] ?? $selected['record_date'] ?? '');
+        foreach ((array)($detail->data['history'] ?? []) as $candidate) {
+            if ($previousEvents <= 0 || count($events) >= $previousEvents + 1 || !is_array($candidate)) break;
+            if ($this->eventKey($candidate) === $selectedKey) continue;
+            $anchor = (string)($candidate['ex_date'] ?? $candidate['record_date'] ?? '');
+            if (($candidate['event_stage'] ?? '') !== 'completed' || ($selectedAnchor !== '' && $anchor >= $selectedAnchor)) continue;
+            $events[] = $candidate;
+        }
+
+        $indexCode = '';
+        if ($includeBenchmark) {
+            $indexProfile = $this->fund->indexProfile($code);
+            $indexCode = $indexProfile->hasData() ? (string)($indexProfile->data['index_code'] ?? '') : '';
+            if ($indexCode === '') {
+                $failures[] = ['component' => 'benchmark_profile', 'code' => $indexProfile->errorCode ?: 'missing_index_code', 'message' => $indexProfile->errorMessage ?: '基金未提供跟踪指数代码'];
+            }
+        }
+
+        $windows = [];
+        $availableComponents = 0;
+        $hasPending = false;
+        foreach ($events as $event) {
+            $anchor = (string)($event['ex_date'] ?? $event['record_date'] ?? '');
+            if ($anchor === '') continue;
+            $componentFailures = [];
+            $navRequestBefore = min(30, max(5, (int)ceil($before * 1.8)));
+            $navRequestAfter = min(30, max(5, (int)ceil($after * 1.8)));
+            $navResult = $this->eventMarketWindow($code, $anchor, $navRequestBefore, $navRequestAfter);
+            $navData = $navResult->hasData() ? (array)$navResult->data : null;
+            if ($navData !== null) $availableComponents++;
+            else $componentFailures[] = ['component' => 'nav_window', 'code' => $navResult->errorCode, 'message' => $navResult->errorMessage];
+
+            $marketData = null;
+            $marketStatus = $isExchangeTraded ? 'unavailable' : 'not_applicable';
+            if ($isExchangeTraded) {
+                $marketResult = $this->eventMarket->window($exchangeCode, $code, $anchor, $before, $after);
+                if ($marketResult->hasData()) {
+                    $marketData = (array)$marketResult->data;
+                    $marketStatus = 'available';
+                    $availableComponents++;
+                } else {
+                    $componentFailures[] = ['component' => 'market_window', 'code' => $marketResult->errorCode, 'message' => $marketResult->errorMessage];
+                }
+            }
+
+            $benchmarkData = null;
+            $benchmarkStatus = $includeBenchmark ? 'unavailable' : 'skipped';
+            if ($includeBenchmark && $indexCode !== '') {
+                $eventDt = new DateTimeImmutable($anchor, new DateTimeZone('Asia/Shanghai'));
+                $start = $eventDt->modify('-' . max(20, $before * 3) . ' days')->format('Y-m-d');
+                $end = $eventDt->modify('+' . max(30, $after * 3) . ' days')->format('Y-m-d');
+                $benchmarkResult = $this->fund->indexHistoryWindow($indexCode, $start, $end, true);
+                if ($benchmarkResult->hasData()) {
+                    $rows = $this->sliceEventRows((array)$benchmarkResult->data, $anchor, $before, $after);
+                    if (!empty($rows)) {
+                        $benchmarkData = [
+                            'index_code' => $indexCode,
+                            'series_code' => $indexCode . 'CNY010',
+                            'series_kind' => 'total_return',
+                            'source' => $benchmarkResult->source,
+                            'source_url' => $benchmarkResult->meta['source_url'] ?? null,
+                            'factsheet_url' => $benchmarkResult->meta['factsheet_url'] ?? null,
+                            'sample_count' => count($rows),
+                            'rows' => $rows,
+                            'summary' => $this->seriesSummary($rows, $anchor),
+                        ];
+                        $benchmarkStatus = 'available';
+                        $availableComponents++;
+                    }
+                }
+                if ($benchmarkData === null) {
+                    $componentFailures[] = ['component' => 'benchmark_window', 'code' => $benchmarkResult->errorCode ?: 'benchmark_empty', 'message' => $benchmarkResult->errorMessage ?: '全收益指数窗口不可用'];
+                }
+            }
+
+            $metrics = $this->eventMetrics($event, $navData, $marketData, $benchmarkData);
+            $pending = !empty($metrics['post_event_data_pending']);
+            $hasPending = $hasPending || $pending;
+            foreach ($componentFailures as $failure) $failures[] = array_merge(['event_date' => $anchor], $failure);
+            $windows[] = [
+                'event' => $event,
+                'event_date' => $anchor,
+                'nav_window' => $navData,
+                'market_window' => $marketData,
+                'benchmark_window' => $benchmarkData,
+                'metrics' => $metrics,
+                'component_status' => [
+                    'nav' => $navData !== null ? 'available' : 'unavailable',
+                    'market' => $marketStatus,
+                    'benchmark' => $benchmarkStatus,
+                ],
+                'failures' => $componentFailures,
+            ];
+        }
+
+        if ($availableComponents === 0 || empty($windows)) {
+            return DataSourceResult::error(self::SOURCE_NAME, 'fund_dividend_event_market', 'event_components_unavailable', '事件已确认，但净值、场内日 K 与基准窗口均不可用', ['failures' => $failures]);
+        }
+        return DataSourceResult::success(self::SOURCE_NAME, 'fund_dividend_event_market', [
+            'fund' => $fundOutput,
+            'selected_event' => $selected,
+            'current_snapshot' => $snapshot,
+            'event_windows' => $windows,
+        ], [
+            'as_of' => $this->nowIso(),
+            'requested_before' => $before,
+            'requested_after' => $after,
+            'previous_events' => $previousEvents,
+            'include_benchmark' => $includeBenchmark,
+            'post_event_data_pending' => $hasPending,
+            'partial' => !empty($failures) || $hasPending,
+            'failures' => $failures,
+        ]);
+    }
+
     public function eventMarketWindow(string $code, string $eventDate, int $before = 10, int $after = 15): DataSourceResult
     {
         if (empty($this->config['enabled'])) {
@@ -395,12 +624,15 @@ class FundDividendService
 
         // 公告核验：正文同时匹配基金代码（隐含）、登记/除息日期及分红金额才标记 verified
         $announcementStatus = 'not_checked';
+        $matchedAnnouncement = null;
         $announcements = [];
         if ($selected !== null) {
             $docs = $this->fund->fundDocuments($code, 1, 3, 'dividend', true, 4000);
             if ($docs->hasData()) {
                 $announcements = array_slice((array)$docs->data, 0, 5);
-                $announcementStatus = $this->matchAnnouncement($selected, $announcements);
+                $match = $this->matchAnnouncementEvidence($selected, $announcements);
+                $announcementStatus = $match['status'];
+                $matchedAnnouncement = $match['announcement'];
             } elseif (!$docs->success) {
                 $announcementStatus = 'check_failed';
             } else {
@@ -458,6 +690,7 @@ class FundDividendService
             ],
             'announcements' => $announcements,
             'announcement_match_status' => $announcementStatus,
+            'matched_announcement' => $matchedAnnouncement,
             'related_funds' => $relatedFunds,
             'scope_note' => '目标 ETF 分红属于联接基金资产层面的收入，不等同于向联接基金份额持有人直接派发现金；两层事件必须分别表述。',
         ], [
@@ -474,11 +707,16 @@ class FundDividendService
      */
     private function matchAnnouncement(array $event, array $announcements): string
     {
+        return $this->matchAnnouncementEvidence($event, $announcements)['status'];
+    }
+
+    private function matchAnnouncementEvidence(array $event, array $announcements): array
+    {
         $cash = $event['cash_per_unit'] ?? null;
         $recordDate = (string)($event['record_date'] ?? '');
         $exDate = (string)($event['ex_date'] ?? '');
         if (empty($announcements)) {
-            return 'checked_unmatched';
+            return ['status' => 'checked_unmatched', 'announcement' => null];
         }
         foreach ($announcements as $ann) {
             $content = (string)($ann['content'] ?? $ann['title'] ?? '');
@@ -486,10 +724,20 @@ class FundDividendService
             $amountHit = $cash !== null && $this->contentContainsAmount($content, (float)$cash);
             $dateHit = $this->contentContainsDate($content, $recordDate) || $this->contentContainsDate($content, $exDate);
             if ($amountHit && $dateHit) {
-                return 'verified';
+                return [
+                    'status' => 'verified',
+                    'announcement' => [
+                        'title' => (string)($ann['title'] ?? ''),
+                        'date' => (string)($ann['date'] ?? ''),
+                        'url' => (string)($ann['url'] ?? ''),
+                        'pdf_url' => (string)($ann['pdf_url'] ?? ''),
+                        'content_status' => (string)($ann['content_status'] ?? ''),
+                        'matched_conditions' => ['cash_per_unit', 'record_or_ex_date'],
+                    ],
+                ];
             }
         }
-        return 'checked_unmatched';
+        return ['status' => 'checked_unmatched', 'announcement' => null];
     }
 
     private function contentContainsAmount(string $content, float $cash): bool
@@ -634,6 +882,177 @@ class FundDividendService
             'max_distribution_ratio_pct' => $this->round(empty($ratios) ? null : max($ratios), 4),
             'median_distribution_ratio_pct' => $this->round($median, 4),
             'ratio_coverage_count' => $n,
+        ];
+    }
+
+    /**
+     * 基金代码的交易所解析只服务于基金工具，避免改变股票 StockCode 的既有语义。
+     */
+    private function exchangeProviderCode(string $code): ?string
+    {
+        if (preg_match('/^5\d{5}$/', $code)) return 'sh' . $code;
+        if (preg_match('/^1\d{5}$/', $code)) return 'sz' . $code;
+        return null;
+    }
+
+    private function currentSnapshot(array $fund, ?string $exchangeCode, array &$failures): array
+    {
+        $nav = $this->numeric($fund['nav'] ?? null);
+        $navDate = (string)($fund['nav_date'] ?? '');
+        $base = [
+            'status' => $exchangeCode === null ? 'not_applicable' : 'unavailable',
+            'price' => null,
+            'change_pct' => null,
+            'open' => null,
+            'high' => null,
+            'low' => null,
+            'prev_close' => null,
+            'volume' => null,
+            'amount' => null,
+            'turnover_rate' => null,
+            'unit_nav' => $this->round($nav, 4),
+            'nav_date' => $navDate !== '' ? $navDate : null,
+            'premium_discount_pct' => null,
+            'premium_discount_status' => $exchangeCode === null ? 'not_applicable' : 'quote_unavailable',
+        ];
+        if ($exchangeCode === null) return $base;
+
+        $quoteResult = $this->market->quote($exchangeCode, MarketDataService::SOURCE_EASTMONEY, false, false);
+        $quote = $quoteResult->hasData() && is_array($quoteResult->data[0] ?? null) ? $quoteResult->data[0] : null;
+        if ($quote === null) {
+            $failures[] = [
+                'component' => 'current_snapshot',
+                'code' => $quoteResult->errorCode ?: 'quote_unavailable',
+                'message' => $quoteResult->errorMessage ?: 'ETF 当前行情不可用',
+            ];
+            return $base;
+        }
+
+        // 明确白名单：ETF 快照不回传 PE、ROE、股本等股票专属字段。
+        foreach (['price', 'change_pct', 'open', 'high', 'low', 'prev_close', 'volume', 'amount', 'turnover_rate'] as $field) {
+            $base[$field] = $this->round($this->numeric($quote[$field] ?? null), in_array($field, ['volume', 'amount'], true) ? 2 : 4);
+        }
+        $base['status'] = 'available';
+        $today = (new DateTimeImmutable('today', new DateTimeZone('Asia/Shanghai')))->format('Y-m-d');
+        if ($base['price'] === null || $base['price'] <= 0) {
+            $base['premium_discount_status'] = 'missing_price';
+        } elseif ($nav === null || $nav <= 0 || $navDate === '') {
+            $base['premium_discount_status'] = 'missing_nav';
+        } elseif ($navDate !== $today) {
+            $base['premium_discount_status'] = 'nav_date_mismatch';
+        } else {
+            $base['premium_discount_pct'] = $this->round(($base['price'] / $nav - 1) * 100, 4);
+            $base['premium_discount_status'] = 'available';
+        }
+        return $base;
+    }
+
+    private function eventKey(array $event): string
+    {
+        return implode('|', [
+            (string)($event['record_date'] ?? ''),
+            (string)($event['ex_date'] ?? ''),
+            (string)($event['pay_date'] ?? ''),
+            (string)($event['cash_per_unit'] ?? ''),
+        ]);
+    }
+
+    /** @return array<int,array<string,mixed>> */
+    private function sliceEventRows(array $rows, string $eventDate, int $before, int $after): array
+    {
+        $normalized = [];
+        foreach ($rows as $row) {
+            if (!is_array($row)) continue;
+            $date = substr((string)($row['date'] ?? $row['time'] ?? ''), 0, 10);
+            $close = $this->numeric($row['close'] ?? null);
+            if ($date === '' || $close === null) continue;
+            $row['date'] = $date;
+            $normalized[] = $row;
+        }
+        usort($normalized, function ($a, $b) { return strcmp($a['date'], $b['date']); });
+        if (empty($normalized)) return [];
+        $anchor = null;
+        foreach ($normalized as $i => $row) {
+            if ($row['date'] >= $eventDate) { $anchor = $i; break; }
+        }
+        if ($anchor === null) return array_values(array_slice($normalized, -$before));
+        return array_values(array_slice($normalized, max(0, $anchor - $before), $before + $after + 1));
+    }
+
+    private function seriesSummary(array $rows, string $eventDate): array
+    {
+        $eventIndex = null;
+        foreach ($rows as $i => $row) {
+            if ((string)($row['date'] ?? '') >= $eventDate) { $eventIndex = $i; break; }
+        }
+        $eventRow = $eventIndex !== null ? ($rows[$eventIndex] ?? null) : null;
+        $preClose = $eventIndex !== null && $eventIndex > 0
+            ? $this->numeric($rows[$eventIndex - 1]['close'] ?? null)
+            : ($eventIndex === null ? $this->numeric($rows[count($rows) - 1]['close'] ?? null) : null);
+        $eventClose = is_array($eventRow) ? $this->numeric($eventRow['close'] ?? null) : null;
+        $first = $this->numeric($rows[0]['close'] ?? null);
+        $last = $this->numeric($rows[count($rows) - 1]['close'] ?? null);
+        return [
+            'event_index' => $eventIndex,
+            'event_trading_date' => is_array($eventRow) ? ($eventRow['date'] ?? null) : null,
+            'pre_close' => $this->round($preClose, 4),
+            'event_close' => $this->round($eventClose, 4),
+            'event_change_pct' => $preClose && $eventClose !== null ? $this->round(($eventClose / $preClose - 1) * 100, 4) : null,
+            'window_change_pct' => $first && $last !== null ? $this->round(($last / $first - 1) * 100, 4) : null,
+            'window_high' => $this->round($this->maxNumeric(array_column($rows, 'high')), 4),
+            'window_low' => $this->round($this->minNumeric(array_column($rows, 'low')), 4),
+        ];
+    }
+
+    private function eventMetrics(array $event, ?array $navWindow, ?array $marketWindow, ?array $benchmarkWindow): array
+    {
+        $cash = $this->numeric($event['cash_per_unit'] ?? null);
+        $eventDate = (string)($event['ex_date'] ?? $event['record_date'] ?? '');
+        $today = (new DateTimeImmutable('today', new DateTimeZone('Asia/Shanghai')))->format('Y-m-d');
+        $navSummary = (array)($navWindow['summary'] ?? []);
+        $marketSummary = (array)($marketWindow['summary'] ?? []);
+        $benchmarkSummary = (array)($benchmarkWindow['summary'] ?? []);
+
+        $preNav = $this->numeric($navSummary['pre_event_nav'] ?? null);
+        $eventNav = $this->numeric($navSummary['event_nav'] ?? null);
+        $preClose = $this->numeric($marketSummary['pre_close'] ?? null);
+        $eventClose = $this->numeric($marketSummary['event_close'] ?? null);
+        $eventIndex = isset($marketWindow['event_index']) && is_numeric($marketWindow['event_index']) ? (int)$marketWindow['event_index'] : null;
+        $marketRows = (array)($marketWindow['rows'] ?? []);
+        $hasMarketPost = $eventIndex !== null && isset($marketRows[$eventIndex + 1]);
+        $hasNavPost = empty($navSummary['post_event_data_pending']);
+        $pending = $eventDate >= $today || (!$hasMarketPost && !$hasNavPost);
+
+        $theoreticalNav = $preNav !== null && $cash !== null ? $preNav - $cash : null;
+        $firstClose = $this->numeric($marketRows[0]['close'] ?? null);
+        $lastClose = $this->numeric($marketRows[count($marketRows) - 1]['close'] ?? null);
+        $preRunup = $preClose && $firstClose ? ($preClose / $firstClose - 1) * 100 : null;
+        $priceCashReturn = $preClose && $eventClose !== null && $cash !== null ? (($eventClose + $cash) / $preClose - 1) * 100 : null;
+        $navCashReturn = $preNav && $eventNav !== null && $cash !== null ? (($eventNav + $cash) / $preNav - 1) * 100 : null;
+        $benchmarkEventReturn = $this->numeric($benchmarkSummary['event_change_pct'] ?? null);
+        $cashRecovery = null;
+        if ($preClose !== null && $cash !== null && $eventIndex !== null) {
+            for ($i = $eventIndex; $i < count($marketRows); $i++) {
+                $close = $this->numeric($marketRows[$i]['close'] ?? null);
+                if ($close !== null && $close + $cash >= $preClose) { $cashRecovery = $i - $eventIndex; break; }
+            }
+        }
+
+        return [
+            'static_theoretical_ex_nav' => $this->round($theoreticalNav, 4),
+            'actual_ex_date_nav' => $this->round($eventNav, 4),
+            'pre_event_runup_pct' => $this->round($preRunup, 4),
+            'ex_date_price_change_pct' => $this->round($this->numeric($marketSummary['event_change_pct'] ?? null), 4),
+            'ex_date_cash_adjusted_return_pct' => $pending ? null : $this->round($priceCashReturn, 4),
+            'nav_cash_adjusted_return_pct' => $pending ? null : $this->round($navCashReturn, 4),
+            'window_cash_adjusted_return_pct' => $pending || !$preClose || $lastClose === null || $cash === null ? null : $this->round((($lastClose + $cash) / $preClose - 1) * 100, 4),
+            'benchmark_event_return_pct' => $pending ? null : $this->round($benchmarkEventReturn, 4),
+            'benchmark_excess_pct' => $pending || $priceCashReturn === null || $benchmarkEventReturn === null ? null : $this->round($priceCashReturn - $benchmarkEventReturn, 4),
+            'price_recovery_trading_days' => $pending ? null : ($marketSummary['recovery_trading_days'] ?? null),
+            'cash_adjusted_recovery_trading_days' => $pending ? null : $cashRecovery,
+            'window_high' => $this->round($this->numeric($marketSummary['window_high'] ?? $navSummary['window_high'] ?? null), 4),
+            'window_low' => $this->round($this->numeric($marketSummary['window_low'] ?? $navSummary['window_low'] ?? null), 4),
+            'post_event_data_pending' => $pending,
         ];
     }
 

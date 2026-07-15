@@ -240,6 +240,15 @@ class AIToolRuntime
             ]);
         }
 
+        // 研究状态汇总依赖当前进程内的 AIAgentState，不能派发到无状态的内部 HTTP worker。
+        foreach ($plan as $idx => $p) {
+            if ($p['kind'] !== 'dispatch' || $p['name'] !== 'fa_research_state_summary') continue;
+            $this->executor->setResearchState($state->researchState);
+            $plan[$idx]['result'] = $this->executor->executeForModel($p['name'], $p['args']);
+            $plan[$idx]['kind'] = 'local';
+            if ($p['signature'] !== '') $state->seenCalls[$p['signature']] = 'completed';
+        }
+
         // 3. curl_multi 并发派发 dispatch 项
         $dispatchIndices = [];
         foreach ($plan as $idx => $p) {
@@ -398,7 +407,7 @@ class AIToolRuntime
         $messages = [];
         $batchEnd = microtime(true);
         foreach ($plan as $p) {
-            if ($p['kind'] === 'dispatch') {
+            if (in_array($p['kind'], ['dispatch', 'local'], true)) {
                 $state->toolCalls++;
             }
             $result = (string)$p['result'];
@@ -540,7 +549,7 @@ class AIToolRuntime
         $markCandidate = function (string $code, string $name, string $status) use (&$candidates) {
             if ($code === '' || !preg_match('/^\d{6}$/', $code)) return;
             $existing = $candidates[$code] ?? ['name' => '', 'status' => 'seen'];
-            $rank = ['seen' => 0, 'enriched' => 1, 'dividend_event' => 2, 'screened' => 2, 'stats' => 3, 'rules' => 3, 'dividend_profile' => 4, 'exposure' => 4, 'scored' => 5];
+            $rank = ['seen' => 0, 'enriched' => 1, 'dividend_event' => 2, 'screened' => 2, 'stats' => 3, 'rules' => 3, 'dividend_profile' => 4, 'dividend_market' => 4, 'exposure' => 4, 'scored' => 5];
             $newRank = $rank[$status] ?? 0;
             $oldRank = $rank[$existing['status']] ?? 0;
             $status = $newRank >= $oldRank ? $status : $existing['status'];
@@ -575,6 +584,10 @@ class AIToolRuntime
                             $markCandidate((string)($relatedFund['code'] ?? ''), (string)($relatedFund['name'] ?? ''), 'dividend_profile');
                         }
                     }
+                    break;
+                case 'fa_get_fund_dividend_event_market':
+                    $fund = is_array($data['fund'] ?? null) ? $data['fund'] : [];
+                    $markCandidate((string)($fund['code'] ?? $args['code'] ?? ''), (string)($fund['name'] ?? ''), 'dividend_market');
                     break;
                 case 'fa_screen_funds':
                     foreach ($listItems as $c) {
@@ -632,6 +645,7 @@ class AIToolRuntime
             'fa_get_fund_history' => '历史净值分页部分缺失，已用已取得样本',
             'fa_get_fund_documents' => '文档证据缺失，最终回答需说明数据缺口',
             'fa_get_fund_dividend_profile' => '基金分红、公告或目标 ETF 关系证据缺失，不能确认当前事件归属',
+            'fa_get_fund_dividend_event_market' => '事件净值、ETF 日 K 或官方基准均不可用，不能评价除息表现与恢复情况',
             'fa_get_fund_holdings_or_index_exposure' => '风格暴露降级为基金详情推导',
             'fa_get_upcoming_dividends' => '临近分红候选池缺失，不能给出实时事件排序',
             'fa_get_upcoming_fund_dividends' => '基金分红事件池缺失，不能给出全市场基金分红排序',

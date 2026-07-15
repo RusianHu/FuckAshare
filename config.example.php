@@ -82,6 +82,7 @@ return [
         'fund'      => ['failure_threshold' => 5, 'cooldown' => 30],  // ✅ 东方财富基金；默认 5 次 / 30s
         'eastmoney_dividend' => ['failure_threshold' => 3, 'cooldown' => 60], // ✅ 东方财富分红公司行动
         'eastmoney_fund_dividend' => ['failure_threshold' => 3, 'cooldown' => 60], // ✅ 东方财富基金分红事件源；默认 3 次 / 60s
+        'csindex' => ['failure_threshold' => 3, 'cooldown' => 60], // ✅ 中证指数官网历史表现；独立熔断，默认 3 次 / 60s
     ],
 
     // ════════════════════════════════════════════════════════════

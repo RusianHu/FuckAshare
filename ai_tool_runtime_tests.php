@@ -61,6 +61,97 @@ $tests['fund_dividend_profile_tool_schema_is_registered'] = function (): void {
     assertTrue(($schema['additionalProperties'] ?? null) === false, '基金分红档案工具必须使用严格参数结构');
     assertTrue(isset($schema['properties']['include_related']), '工具参数必须允许查询目标 ETF');
     assertTrue(isset($schema['properties']['include_announcements']), '工具参数必须允许核验公告');
+    assertTrue(isset($schema['properties']['event_date']), '分红档案工具必须允许精确选择事件日期');
+    $event = $definitions['fa_get_fund_dividend_event_market'] ?? null;
+    assertTrue(is_array($event), '基金分红事件市场聚合工具必须注册');
+    assertTrue(($event['parameters']['additionalProperties'] ?? null) === false, '聚合工具必须使用严格参数结构');
+    assertTrue(array_keys($event['parameters']['properties'] ?? []) === ['code', 'event_date', 'before', 'after', 'previous_events', 'include_benchmark'], '聚合工具 schema 参数必须完整且固定');
+};
+
+$tests['fund_dividend_auto_arguments_and_prompt_policy'] = function (): void {
+    $agent = new AIChatToolAgent(['api_url' => 'https://example.invalid', 'api_key' => 'test', 'model' => 'test']);
+    $text = "请研判基金 563830 的分红\n除息日：2026-07-16";
+    $eventArgs = invokePrivate($agent, 'inferArgumentsForRequestedTool', ['fa_get_fund_dividend_event_market', $text]);
+    assertTrue(($eventArgs['code'] ?? '') === '563830', '聚合工具应自动提取基金代码');
+    assertTrue(($eventArgs['event_date'] ?? '') === '2026-07-16', '聚合工具应优先自动提取除息日');
+    assertTrue(($eventArgs['before'] ?? null) === 10 && ($eventArgs['after'] ?? null) === 15, '聚合工具应补齐默认事件窗口');
+    $profileArgs = invokePrivate($agent, 'inferArgumentsForRequestedTool', ['fa_get_fund_dividend_profile', $text]);
+    assertTrue(($profileArgs['event_date'] ?? '') === '2026-07-16', '分红档案应使用相同事件日期');
+    $prompt = invokePrivate($agent, 'systemPrompt', [null, true]);
+    assertTrue(strpos($prompt, '必须同时调用 fa_get_fund_dividend_profile 与 fa_get_fund_dividend_event_market') !== false, '单基金分红提示应强制双工具证据链');
+    assertTrue(strpos($prompt, '同日官方净值') !== false && strpos($prompt, '不再调用盘中估值') !== false, '提示应避免同日净值存在时重复查估值');
+};
+
+$tests['guardrail_understands_negation_context'] = function (): void {
+    $policy = new AIAgentGuardrailPolicy();
+    $base = '数据事实来自基金净值，推断仍有不确定性和风险。内容仅供研究参考，不构成投资建议。';
+    foreach (['这不是无风险收益。', '现有数据无法保证收益。', '不要直接买入该基金。'] as $sentence) {
+        $review = $policy->reviewFinalText($sentence . $base);
+        assertTrue(!in_array('promised_return', $review['violations'] ?? [], true), '否定收益语境不得触发收益承诺护栏');
+        assertTrue(!in_array('deterministic_trade_command', $review['violations'] ?? [], true), '否定交易语境不得触发交易指令护栏');
+    }
+    $guarantee = $policy->reviewFinalText('该基金保证收益。' . $base);
+    assertTrue(in_array('promised_return', $guarantee['violations'] ?? [], true), '真实保证收益仍必须触发护栏');
+    $trade = $policy->reviewFinalText('请马上买入该基金。' . $base);
+    assertTrue(in_array('deterministic_trade_command', $trade['violations'] ?? [], true), '真实直接交易指令仍必须触发护栏');
+};
+
+$tests['performance_uses_official_total_return_benchmark'] = function (): void {
+    $client = new class extends CsindexClient {
+        public $requested = [];
+        public $fail = false;
+        public function __construct() {}
+        public function history(string $indexCode, string $startDate, string $endDate): DataSourceResult
+        {
+            $this->requested[] = $indexCode;
+            if ($this->fail) return DataSourceResult::error('csindex', 'index_history', 'network_error', 'fake unavailable');
+            $rows = [];
+            $date = new DateTimeImmutable('2026-01-01');
+            for ($i = 0; $i < 45; $i++) {
+                $rows[] = ['date' => $date->modify('+' . $i . ' days')->format('Y-m-d'), 'close' => 200 + $i * 2];
+            }
+            return DataSourceResult::success('csindex', 'index_history', $rows);
+        }
+    };
+    $fund = new FundService($client);
+    $series = [];
+    $date = new DateTimeImmutable('2026-01-01');
+    for ($i = 0; $i < 45; $i++) {
+        $series[] = ['date' => $date->modify('+' . $i . ' days')->format('Y-m-d'), 'price' => 100 + $i];
+    }
+    $totalReturn = invokePrivate($fund, 'computeRiskAdjusted', [$series, '932365', true]);
+    assertTrue(($client->requested[0] ?? '') === '932365CNY010', '累计净值必须请求官方 CNY010 全收益序列');
+    assertTrue(($totalReturn['benchmark_index'] ?? '') === '932365CNY010' && ($totalReturn['benchmark_variant'] ?? '') === 'total_return', '必须输出实际全收益基准代码与序列类型');
+    assertTrue(($totalReturn['benchmark_source'] ?? '') === 'csindex' && ($totalReturn['sample_pairs'] ?? 0) >= 30, '跟踪误差必须输出官方来源与有效样本对');
+    $client->fail = true;
+    $unavailable = invokePrivate($fund, 'computeRiskAdjusted', [$series, '932365', true]);
+    assertTrue(($unavailable['benchmark_status'] ?? '') === 'benchmark_variant_unavailable' && ($unavailable['tracking_error_pct'] ?? null) === null, '全收益序列失败时不得回退价格指数计算累计净值跟踪误差');
+    $short = invokePrivate($fund, 'computeRiskAdjusted', [array_slice($series, 0, 20), '932365', true]);
+    assertTrue(($short['benchmark_status'] ?? '') === 'insufficient_fund_samples' && ($short['tracking_error_pct'] ?? null) === null, '不足 30 对时跟踪误差保持 null');
+};
+
+$tests['parallel_research_summary_uses_in_process_state'] = function (): void {
+    $options = AIAgentOptions::normalize([
+        'parallel_tool_calls' => true,
+        'internal_exec_endpoint' => 'http://127.0.0.1:9/FuckAshare/ai_tool_exec.php',
+        'internal_exec_token' => 'test-token-not-secret',
+        'heartbeat_interval' => 0,
+    ]);
+    $runtime = new AIToolRuntime(new AIToolExecutor(), new AIAgentStreamEmitter($options), $options);
+    $state = new AIAgentState('research_summary_local');
+    $state->researchState['tools'] = [
+        ['name' => 'fa_get_fund_dividend_profile', 'success' => true],
+        ['name' => 'fa_get_fund_dividend_event_market', 'success' => true],
+    ];
+    $messages = $runtime->executeToolCalls([[
+        'id' => 'call_summary_local',
+        'function' => ['name' => 'fa_research_state_summary', 'arguments' => json_encode([
+            'asset_type' => 'fund', 'focus' => '基金分红', 'include_failures' => true, 'include_next_steps' => false,
+        ], JSON_UNESCAPED_UNICODE)],
+    ]], $state, function (): void {}, 2, 'test');
+    $decoded = decodeToolMessage($messages[0]);
+    assertTrue(($decoded['success'] ?? false) === true, '并行模式下研究状态汇总应在当前进程成功执行');
+    assertTrue(($decoded['data']['coverage']['dividend_evidence'] ?? false) === true && ($decoded['data']['coverage']['dividend_market'] ?? false) === true, '研究状态汇总必须保留档案与事件市场覆盖');
 };
 
 $tests['fund_dividend_event_and_document_parsers'] = function (): void {

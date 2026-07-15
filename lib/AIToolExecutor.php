@@ -51,6 +51,7 @@ class AIToolExecutor
         'fa_get_index_profile' => 'executeIndexProfile',
         'fa_get_fund_dividend_history' => 'executeFundDividendHistory',
         'fa_get_fund_dividend_profile' => 'executeFundDividendProfile',
+        'fa_get_fund_dividend_event_market' => 'executeFundDividendEventMarket',
         'fa_get_upcoming_fund_dividends' => 'executeUpcomingFundDividends',
         'fa_get_fund_documents' => 'executeFundDocuments',
         'fa_screen_funds' => 'executeScreenFunds',
@@ -77,7 +78,7 @@ class AIToolExecutor
         $this->market = $market ?: new MarketDataService();
         $this->fund = $fund ?: new FundService();
         $this->dividend = $dividend ?: new DividendService(null, $this->market);
-        $this->fundDividend = $fundDividend ?: new FundDividendService(null, $this->fund);
+        $this->fundDividend = $fundDividend ?: new FundDividendService(null, $this->fund, null, $this->market);
         $this->outputCharLimit = max(100, $outputCharLimit);
     }
 
@@ -298,12 +299,27 @@ class AIToolExecutor
 
     private function executeFundDividendProfile(array $args, float $started): array
     {
-        return $this->fromResult($this->fund->dividendProfile(
+        $eventDate = $this->date($args['event_date'] ?? null, true);
+        return $this->fromResult($this->fundDividend->evidenceProfile(
             $this->fundCode($args['code'] ?? ''),
+            $eventDate !== '' ? $eventDate : null,
             $this->int($args['limit'] ?? null, 1, 50, 10),
             $this->bool($args['include_related'] ?? null, true),
             $this->bool($args['include_announcements'] ?? null, true),
             $this->int($args['announcement_limit'] ?? null, 1, 20, 5)
+        ), $started);
+    }
+
+    private function executeFundDividendEventMarket(array $args, float $started): array
+    {
+        $eventDate = $this->date($args['event_date'] ?? null, true);
+        return $this->fromResult($this->fundDividend->eventResearch(
+            $this->fundCode($args['code'] ?? ''),
+            $eventDate !== '' ? $eventDate : null,
+            $this->int($args['before'] ?? null, 5, 30, 10),
+            $this->int($args['after'] ?? null, 5, 30, 15),
+            $this->int($args['previous_events'] ?? null, 0, 3, 1),
+            $this->bool($args['include_benchmark'] ?? null, true)
         ), $started);
     }
 
@@ -492,6 +508,7 @@ class AIToolExecutor
                 'style_exposure' => in_array('fa_get_fund_holdings_or_index_exposure', $toolNames, true) || in_array('fa_get_index_profile', $toolNames, true),
                 'dividend_events' => in_array('fa_get_upcoming_fund_dividends', $toolNames, true),
                 'dividend_evidence' => in_array('fa_get_fund_dividend_profile', $toolNames, true) || in_array('fa_get_fund_dividend_history', $toolNames, true),
+                'dividend_market' => in_array('fa_get_fund_dividend_event_market', $toolNames, true),
                 'trade_rules' => in_array('fa_get_fund_trade_rules', $toolNames, true),
                 'scoring' => in_array('fa_score_funds', $toolNames, true),
             ];
@@ -518,6 +535,7 @@ class AIToolExecutor
                 if (!$coverage['performance_stats']) $nextSteps[] = '调用 fa_get_fund_performance_stats 获取长历史收益与回撤';
                 if (!$coverage['style_exposure']) $nextSteps[] = '调用 fa_get_fund_holdings_or_index_exposure 补充风格画像';
                 if (!$coverage['dividend_evidence']) $nextSteps[] = '调用 fa_get_fund_dividend_profile 核验直接分红、最新公告和目标 ETF 事件';
+                if (preg_match('/分红|派息|收益分配/u', $focus) && !$coverage['dividend_market']) $nextSteps[] = '调用 fa_get_fund_dividend_event_market 获取事件净值、ETF 日 K、流动性与官方全收益基准';
                 if (preg_match('/分红|派息|收益分配/u', $focus) && !$coverage['dividend_events']) $nextSteps[] = '调用 fa_get_upcoming_fund_dividends 扫描全市场基金分红事件';
                 if (!$coverage['trade_rules']) $nextSteps[] = '调用 fa_get_fund_trade_rules 确认可投性与限购';
                 if (!$coverage['scoring'] && ($coverage['candidate_pool'] || !empty($candidates))) $nextSteps[] = '调用 fa_score_funds 做确定性评分排序后再给结论';

@@ -11,6 +11,7 @@ require_once __DIR__ . '/DataSourceResult.php';
 require_once __DIR__ . '/CacheStoreFactory.php';
 require_once __DIR__ . '/CircuitBreaker.php';
 require_once __DIR__ . '/AppConfig.php';
+require_once __DIR__ . '/CsindexClient.php';
 
 class FundService
 {
@@ -39,6 +40,9 @@ class FundService
 
     /** @var array 基金研究聚合工具配置 */
     private $researchConfig;
+
+    /** @var CsindexClient */
+    private $csindex;
 
     /** @var array 缓存 TTL 配置 (秒) */
     const CACHE_TTL = [
@@ -84,7 +88,7 @@ class FundService
         'deviceid' => 'web',
     ];
 
-    public function __construct()
+    public function __construct(?CsindexClient $csindex = null)
     {
         $this->http = new HttpClient([
             'timeout' => 10,
@@ -95,6 +99,7 @@ class FundService
         ]);
         $this->cache = CacheStoreFactory::getInstance();
         $this->breaker = new CircuitBreaker('fund');
+        $this->csindex = $csindex ?: new CsindexClient();
         $configuredTtl = AppConfig::get('cache_ttl', []);
         $this->cacheTtl = array_merge(self::CACHE_TTL, is_array($configuredTtl) ? $configuredTtl : []);
         // 基金分红模块允许单独覆盖批量净值 TTL；避免配置项存在但不生效。
@@ -545,6 +550,18 @@ class FundService
                 ]);
             });
         });
+    }
+
+    /**
+     * 中证官方指数定点历史窗口。累计净值比较使用全收益指数 CNY010。
+     */
+    public function indexHistoryWindow(string $indexCode, string $startDate, string $endDate, bool $totalReturn = true): DataSourceResult
+    {
+        $indexCode = strtoupper(trim($indexCode));
+        if ($totalReturn && preg_match('/^\d{6}$/', $indexCode)) {
+            $indexCode .= 'CNY010';
+        }
+        return $this->csindex->history($indexCode, $startDate, $endDate);
     }
 
     /**
@@ -1272,7 +1289,7 @@ class FundService
 
         $risk = $this->computeRiskStats($series);
         $extremes = $this->computeExtremes($series);
-        $riskAdjusted = $this->computeRiskAdjusted($series, $indexCode);
+        $riskAdjusted = $this->computeRiskAdjusted($series, $indexCode, $useAccNav && $accUsed > 0);
 
         return [
             'code' => $code,
@@ -1425,17 +1442,27 @@ class FundService
      * 计算风险调整指标：Sharpe / Sortino / 跟踪误差。
      * Sharpe/Sortino 用年化无风险利率 RF_ANNUAL；跟踪误差仅对国内指数基金（有可拉基准）计算。
      */
-    private function computeRiskAdjusted(array $series, string $indexCode): array
+    private function computeRiskAdjusted(array $series, string $indexCode, bool $usesAccumulatedNav = true): array
     {
         $result = [
             'sharpe' => null,
             'sortino' => null,
             'tracking_error_pct' => null,
             'benchmark_index' => '',
+            'benchmark_variant' => '',
+            'benchmark_source' => '',
+            'benchmark_status' => $indexCode === '' ? 'not_configured' : 'pending',
             'sample_pairs' => 0,
         ];
+        $benchCode = $this->normalizeDomesticIndexCode($indexCode);
+        if ($benchCode !== null) {
+            $result['benchmark_index'] = $usesAccumulatedNav ? $benchCode . 'CNY010' : $benchCode;
+            $result['benchmark_variant'] = $usesAccumulatedNav ? 'total_return' : 'price';
+            $result['benchmark_source'] = CsindexClient::SOURCE_NAME;
+        }
         $n = count($series);
         if ($n < 30) {
+            if ($benchCode !== null) $result['benchmark_status'] = 'insufficient_fund_samples';
             return $result;
         }
         $dailyReturns = [];
@@ -1446,6 +1473,7 @@ class FundService
         }
         $m = count($dailyReturns);
         if ($m < 30) {
+            if ($benchCode !== null) $result['benchmark_status'] = 'insufficient_fund_samples';
             return $result;
         }
         $mean = array_sum($dailyReturns) / $m;
@@ -1459,28 +1487,33 @@ class FundService
         if ($dvol > 0) {
             $result['sortino'] = round($annExcess / ($dvol * sqrt(self::TRADING_DAYS)), 3);
         }
-        $benchCode = $this->normalizeDomesticIndexCode($indexCode);
         if ($benchCode !== null) {
-            $benchSeries = $this->fetchIndexSeries($benchCode, $n);
+            $benchSeries = $this->fetchIndexSeries($benchCode, $series, $usesAccumulatedNav);
             if (!empty($benchSeries)) {
                 $te = $this->computeTrackingError($series, $benchSeries);
                 if ($te !== null) {
                     $result['tracking_error_pct'] = round($te['te'] * 100, 2);
-                    $result['benchmark_index'] = $benchCode;
+                    $result['benchmark_status'] = 'available';
                     $result['sample_pairs'] = $te['pairs'];
+                } else {
+                    $result['benchmark_status'] = 'insufficient_pairs';
                 }
+            } else {
+                $result['benchmark_status'] = $usesAccumulatedNav ? 'benchmark_variant_unavailable' : 'benchmark_unavailable';
             }
+        } elseif ($indexCode !== '') {
+            $result['benchmark_status'] = 'unsupported_index_code';
         }
         return $result;
     }
 
     /**
-     * 国内指数代码归一化：仅接受 000xxx（沪）或 399xxx（深）6 位代码；标普等字母代码返回 null
+     * 国内中证指数代码归一化：接受 6 位数字；字母型海外指数返回 null。
      */
     private function normalizeDomesticIndexCode(string $indexCode): ?string
     {
         $indexCode = trim($indexCode);
-        if (preg_match('/^(000|399)\d{3}$/', $indexCode)) {
+        if (preg_match('/^\d{6}$/', $indexCode)) {
             return $indexCode;
         }
         return null;
@@ -1489,53 +1522,23 @@ class FundService
     /**
      * 拉取国内指数日 K 序列（前复权收盘价），带缓存。失败返回 null。
      */
-    private function fetchIndexSeries(string $indexCode, int $days = 500): ?array
+    private function fetchIndexSeries(string $indexCode, array $fundSeries, bool $totalReturn): ?array
     {
-        $days = max(30, min($days, 1500));
-        $key = $this->cacheKey('index_kline', $indexCode . ':' . $days);
-        $cached = $this->cache->get($key);
-        if ($cached !== null && isset($cached['series'])) {
-            return $cached['series'];
-        }
-        $secid = (strpos($indexCode, '000') === 0) ? '1.' . $indexCode : '0.' . $indexCode;
-        $count = min($days + 20, 1500);
-        $url = 'https://push2his.eastmoney.com/api/qt/stock/kline/get?' . http_build_query([
-            'secid' => $secid,
-            'fields1' => 'f1,f2,f3,f4,f5,f6',
-            'fields2' => 'f51,f52,f53,f54,f55,f56,f57,f58',
-            'klt' => 101,
-            'fqt' => 1,
-            'end' => '20500101',
-            'lmt' => $count,
-        ]);
-        $resp = $this->http->get($url, ['Referer' => 'https://quote.eastmoney.com/', 'Accept' => '*/*']);
-        if ($resp['error'] || $resp['http_code'] !== 200 || $resp['body'] === '') {
-            return null;
-        }
-        $parsed = HttpClient::parseJson($resp['body']);
-        if (!$parsed['ok']) {
-            return null;
-        }
-        $klines = $parsed['data']['data']['klines'] ?? $parsed['data']['klines'] ?? null;
-        if (!is_array($klines)) {
-            return null;
-        }
+        if (empty($fundSeries)) return null;
+        $startDate = (string)($fundSeries[0]['date'] ?? '');
+        $endDate = (string)($fundSeries[count($fundSeries) - 1]['date'] ?? '');
+        $result = $this->indexHistoryWindow($indexCode, $startDate, $endDate, $totalReturn);
+        if (!$result->hasData()) return null;
         $series = [];
-        foreach ($klines as $line) {
-            if (!is_string($line)) continue;
-            $parts = explode(',', $line);
-            if (count($parts) < 3) continue;
-            $date = $parts[0];
-            $close = $this->num($parts[2]);
+        foreach ((array)$result->data as $row) {
+            if (!is_array($row)) continue;
+            $date = (string)($row['date'] ?? '');
+            $close = $this->num($row['close'] ?? null);
             if ($date !== '' && $close !== null && $close > 0) {
                 $series[] = ['date' => $date, 'price' => $close];
             }
         }
-        if (empty($series)) {
-            return null;
-        }
-        $this->cache->set($key, ['series' => $series], $this->cacheTtl['index_kline'] ?? 300);
-        return $series;
+        return empty($series) ? null : $series;
     }
 
     /**

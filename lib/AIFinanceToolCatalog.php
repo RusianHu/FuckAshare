@@ -209,10 +209,23 @@ class AIFinanceToolCatalog
                 'Build a current dividend evidence profile for a fund. It checks direct dividend events, current dividend announcements, manager first-party evidence when supported, and resolves a link fund target ETF so asset-level ETF dividends are not confused with direct cash distributions to link-fund holders. Prefer this for questions about future dates, this month, whether a dividend is coming, or announcement verification.',
                 [
                     'code' => $fundCode,
+                    'event_date' => AIToolSchema::nullableString('Specific record or ex-dividend date in YYYY-MM-DD. Default latest unfinished event, otherwise latest event.'),
                     'limit' => AIToolSchema::nullableInteger('Maximum dividend events per fund. Default 10.', 1, 50),
                     'include_related' => AIToolSchema::nullableBoolean('Whether to resolve and inspect a link fund target ETF. Default true.'),
                     'include_announcements' => AIToolSchema::nullableBoolean('Whether to inspect current dividend announcements. Default true.'),
                     'announcement_limit' => AIToolSchema::nullableInteger('Maximum dividend announcements per fund. Default 5.', 1, 20),
+                ]
+            ),
+            'fa_get_fund_dividend_event_market' => AIToolSchema::tool(
+                'fa_get_fund_dividend_event_market',
+                'Aggregate one confirmed fund dividend event with NAV history, exchange-traded ETF OHLCV, current liquidity snapshot, official CSI total-return benchmark and deterministic cash-adjusted/recovery metrics. Pair this with fa_get_fund_dividend_profile for a single-fund dividend assessment.',
+                [
+                    'code' => $fundCode,
+                    'event_date' => AIToolSchema::nullableString('Specific record or ex-dividend date in YYYY-MM-DD. Default latest unfinished event, otherwise latest event.'),
+                    'before' => AIToolSchema::nullableInteger('Trading days before the event. Default 10.', 5, 30),
+                    'after' => AIToolSchema::nullableInteger('Trading days after the event. Default 15.', 5, 30),
+                    'previous_events' => AIToolSchema::nullableInteger('Number of earlier completed events to include. Default 1.', 0, 3),
+                    'include_benchmark' => AIToolSchema::nullableBoolean('Whether to include the official CSI total-return benchmark. Default true.'),
                 ]
             ),
             'fa_get_fund_documents' => AIToolSchema::tool(

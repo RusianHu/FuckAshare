@@ -2258,7 +2258,7 @@ const DividendModule = {
     analyzeWithAI(item) {
         AdvisorModule.setDividendContext(item);
         if (this.mode === 'fund') {
-            const prompt = `请研判当前基金分红事件，并由你自主选择必要工具交叉验证。必须调用 fa_get_fund_dividend_profile 核查直接分红、最新公告与目标 ETF 事件；除此之外最多选择 3 个最相关的研究工具，彼此独立的查询尽量放在同一轮并行执行。\n\n基金：${item.name}（${item.code}）\n基金类型：${item.fund_type || item.fund_category || '-'}\n登记日：${item.record_date}\n除息日：${item.ex_date}\n发放日：${item.pay_date || '-'}\n每份分红：${item.cash_per_unit ?? '缺失'}元\n参考净值：${item.nav ?? '缺失'}（${item.nav_date || '日期缺失'}）\n本次分配比例：${item.distribution_ratio_pct ?? '缺失'}%\n比例状态：${item.ratio_status || '-'}\n事件阶段：${this.fundStageLabel(item.event_stage)}\n数据时间：${this.meta.as_of || '未知'}\n\n请区分事实、推断和不确定性；分红来自基金财产、净值会相应下降，不是额外或无风险收益；不要把分配比例称为年化收益，不要套用股票红利税档；公告未核验时不得声称“没有公告”。`;
+            const prompt = `请研判当前基金分红事件，并由你自主选择必要工具交叉验证。必须同时调用 fa_get_fund_dividend_profile 与 fa_get_fund_dividend_event_market，核查直接分红、公告证据、事件日前后净值、ETF 场内日K、流动性和官方全收益基准；除此之外最多选择 2 个最相关的研究工具，彼此独立的查询尽量放在同一轮并行执行。\n\n基金：${item.name}（${item.code}）\n基金类型：${item.fund_type || item.fund_category || '-'}\n登记日：${item.record_date}\n除息日：${item.ex_date}\n发放日：${item.pay_date || '-'}\n每份分红：${item.cash_per_unit ?? '缺失'}元\n参考净值：${item.nav ?? '缺失'}（${item.nav_date || '日期缺失'}）\n本次分配比例：${item.distribution_ratio_pct ?? '缺失'}%\n比例状态：${item.ratio_status || '-'}\n事件阶段：${this.fundStageLabel(item.event_stage)}\n数据时间：${this.meta.as_of || '未知'}\n\n同日官方净值已有时不要再查盘中估值。只有实际基准序列且样本足够才能评价跟踪误差，只有成交额/换手率证据才能评价流动性；不要把 is_buy 解释为仅限二级市场。理论除息值与实际除息日净值分开表述；登记日收盘后不要提示“收盘前买入”。请区分事实、推断和不确定性；分红来自基金财产、净值会相应下降，不是额外或无风险收益；不要把分配比例称为年化收益，不推测基金红利税，只说明未覆盖的佣金、价差和政策数据缺口；公告未核验时不得声称“没有公告”。`;
             AdvisorModule.autoSend(prompt);
             return;
         }
@@ -3543,7 +3543,7 @@ const AdvisorModule = {
         if (assetType === 'fund') {
             if (assetLabel) {
                 return [
-                    { icon: Icons.calendar, text: '核查当前基金分红', prompt: `请针对当前基金分红事件 ${assetLabel} 调用 fa_get_fund_dividend_profile，核查直接分红、最新公告与目标 ETF 事件。` },
+                    { icon: Icons.calendar, text: '核查当前基金分红', prompt: `请针对当前基金分红事件 ${assetLabel} 同时调用 fa_get_fund_dividend_profile 与 fa_get_fund_dividend_event_market，核查直接分红、公告证据、事件净值、ETF 场内日K、流动性与官方全收益基准。` },
                     { icon: Icons.chart, text: '检查除息净值影响', prompt: `请分析当前基金分红事件 ${assetLabel} 的除息净值影响；调用基金分红档案，并按需结合净值历史交叉验证。` },
                     { icon: Icons.warning, text: '审查短持风险', prompt: `请对当前基金分红事件 ${assetLabel} 做短持风险审查，说明净值除息、波动、费用和数据缺口；不要套用股票红利税档。` },
                     { icon: Icons.table, text: '比较同日基金候选', prompt: '请调用 fa_get_upcoming_fund_dividends，比较与当前事件登记日接近的基金候选，并明确排序及分配比例口径。' }

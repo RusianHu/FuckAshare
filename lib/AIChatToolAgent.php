@@ -548,7 +548,7 @@ class AIChatToolAgent
             }
         }
 
-        if (in_array($name, ['fa_get_index_profile', 'fa_get_fund_dividend_history', 'fa_get_fund_dividend_profile', 'fa_get_fund_documents'], true) && $this->looksLikeFundRequest($latestUser)) {
+        if (in_array($name, ['fa_get_index_profile', 'fa_get_fund_dividend_history', 'fa_get_fund_dividend_profile', 'fa_get_fund_dividend_event_market', 'fa_get_fund_documents'], true) && $this->looksLikeFundRequest($latestUser)) {
             $codes = array_slice($this->extractFundCodes($latestUser), 0, 1);
             if (!empty($codes)) {
                 if ($name === 'fa_get_index_profile') {
@@ -564,10 +564,21 @@ class AIChatToolAgent
                 if ($name === 'fa_get_fund_dividend_profile') {
                     return [
                         'code' => $codes[0],
+                        'event_date' => $this->extractDividendEventDate($latestUser),
                         'limit' => 10,
                         'include_related' => true,
                         'include_announcements' => true,
                         'announcement_limit' => 5,
+                    ];
+                }
+                if ($name === 'fa_get_fund_dividend_event_market') {
+                    return [
+                        'code' => $codes[0],
+                        'event_date' => $this->extractDividendEventDate($latestUser),
+                        'before' => 10,
+                        'after' => 15,
+                        'previous_events' => 1,
+                        'include_benchmark' => true,
                     ];
                 }
                 return [
@@ -828,7 +839,7 @@ class AIChatToolAgent
         $hasCandidates = ($toolStats['fa_get_fund_rank'] ?? 0) > 0 || ($toolStats['fa_search_funds'] ?? 0) > 0 || ($toolStats['fa_screen_funds'] ?? 0) > 0;
         $hasInfo = ($toolStats['fa_get_fund_info'] ?? 0) > 0;
         $hasPerformance = ($toolStats['fa_get_fund_history'] ?? 0) > 0 || ($toolStats['fa_get_fund_estimate'] ?? 0) > 0 || ($toolStats['fa_get_fund_performance_stats'] ?? 0) > 0;
-        $hasStyleOrDividend = ($toolStats['fa_get_index_profile'] ?? 0) > 0 || ($toolStats['fa_get_fund_dividend_history'] ?? 0) > 0 || ($toolStats['fa_get_fund_dividend_profile'] ?? 0) > 0 || ($toolStats['fa_get_fund_holdings_or_index_exposure'] ?? 0) > 0;
+        $hasStyleOrDividend = ($toolStats['fa_get_index_profile'] ?? 0) > 0 || ($toolStats['fa_get_fund_dividend_history'] ?? 0) > 0 || ($toolStats['fa_get_fund_dividend_profile'] ?? 0) > 0 || ($toolStats['fa_get_fund_dividend_event_market'] ?? 0) > 0 || ($toolStats['fa_get_fund_holdings_or_index_exposure'] ?? 0) > 0;
 
         // 推荐类问题未评分时不轻易收敛
         if ($wantsRecommendation && ($toolStats['fa_score_funds'] ?? 0) === 0) {
@@ -872,6 +883,7 @@ class AIChatToolAgent
             'fa_get_index_profile',
             'fa_get_fund_dividend_history',
             'fa_get_fund_dividend_profile',
+            'fa_get_fund_dividend_event_market',
             'fa_get_upcoming_fund_dividends',
             'fa_get_fund_documents',
             'fa_screen_funds',
@@ -957,6 +969,15 @@ class AIChatToolAgent
         return array_values(array_unique($matches[0] ?? []));
     }
 
+    private function extractDividendEventDate(string $text): ?string
+    {
+        if (preg_match('/(?:除息日|除权除息日|事件日期)\s*[：:]?\s*(\d{4}-\d{2}-\d{2})/u', $text, $match)) {
+            $date = DateTimeImmutable::createFromFormat('!Y-m-d', $match[1], new DateTimeZone('Asia/Shanghai'));
+            if ($date && $date->format('Y-m-d') === $match[1]) return $match[1];
+        }
+        return null;
+    }
+
     private function currentTimeAnchorMessage(): array
     {
         $marketNow = new DateTimeImmutable('now', new DateTimeZone('Asia/Shanghai'));
@@ -1002,7 +1023,7 @@ class AIChatToolAgent
                 '多轮研究或存在工具失败时，最终回答前可调用 fa_research_state_summary 汇总已查字段、失败项和下一步建议；最终回答必须说明候选池召回来源、评分依据和数据缺口。',
                 '涉及基金排行、今日基金涨幅、基金最新信息或未指定代码的基金研究时，必须优先调用 fa_get_fund_rank；今日/涨幅问题使用 period=day，再按候选调用基金资料和估值工具。',
                 '涉及基金风格、是否红利型/指数型、跟踪指数、业绩基准或投资策略依据时，必须优先调用 fa_get_index_profile。',
-                '涉及基金分红、派息、收益分配、未来日期、本月事件、会不会分红或公告核实时：全市场、本周、本月或未来日期的基金分红问题优先调用 fa_get_upcoming_fund_dividends 做全市场召回、排序与风险摘要，不在同一请求中自动深挖多只基金；已明确单只基金时继续优先调用 fa_get_fund_dividend_profile 联查查询基金、目标 ETF 与最新公告；只有裸历史列表问题才优先用 fa_get_fund_dividend_history。回答时必须区分查询基金对持有人的直接分红与目标 ETF 进入基金资产的分红；未完成公告检查不得声称“没有公告”；不得把分配比例称为年化收益，不得套用股票 20%/10%/0% 持有期红利税档。',
+                '涉及基金分红、派息、收益分配、未来日期、本月事件、会不会分红或公告核实时：全市场、本周、本月或未来日期的基金分红问题优先调用 fa_get_upcoming_fund_dividends 做全市场召回、排序与风险摘要，不在同一请求中自动深挖多只基金；已明确单只基金事件时必须同时调用 fa_get_fund_dividend_profile 与 fa_get_fund_dividend_event_market，除此之外最多再选 2 个工具；只有裸历史列表问题才优先用 fa_get_fund_dividend_history。若聚合工具已有同日官方净值，不再调用盘中估值。只有拿到实际基准序列且样本对足够时才能评价跟踪误差；只有成交额、换手率等行情证据才能评价流动性；is_buy 只表示平台申购状态，不得解释为仅限二级市场。理论除息值与实际除息日净值必须分开表述；登记日收盘后不得再提示“收盘前买入”。必须区分查询基金对持有人的直接分红与目标 ETF 进入基金资产的分红；未完成公告检查不得声称“没有公告”；不得把分配比例称为年化收益，不推测基金红利税，只说明未覆盖的佣金、价差和政策数据缺口。',
                 '涉及基金合同、招募说明书、产品资料概要、季报/年报、公告或需要文档证据时，必须调用 fa_get_fund_documents；如果正文/PDF 解析不可用，最终回答要说明数据缺口。',
                 '基金研究中的候选深挖应控制在少量代表性基金，优先选择不超过 3 只；避免为了穷举而重复搜索同义词、重复查多期排行或重复查相同类型资料。聚合工具（fa_screen_funds/fa_get_fund_performance_stats/fa_score_funds）应优先于模型多次调用裸工具。',
                 '当已经拿到候选池、基金资料、历史表现、风格或分红依据并完成评分后，应停止继续搜索并直接给出结论；不要为了“更完整”而无止境追加工具调用。',
@@ -1335,6 +1356,7 @@ class AIChatToolAgent
             'fa_get_index_profile' => '基金指数画像',
             'fa_get_fund_dividend_history' => '基金分红历史',
             'fa_get_fund_dividend_profile' => '基金分红档案与关联事件',
+            'fa_get_fund_dividend_event_market' => '基金分红事件市场窗口',
             'fa_get_upcoming_fund_dividends' => '全市场基金分红扫描',
             'fa_get_fund_documents' => '基金文档',
             'fa_screen_funds' => '基金候选召回',
