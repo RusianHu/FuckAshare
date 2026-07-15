@@ -177,6 +177,13 @@ function check($condition, string $message): void
 }
 function near($actual, $expected, float $epsilon = 0.0001): bool { return is_numeric($actual) && abs((float)$actual - $expected) <= $epsilon; }
 
+function invokePrivate(object $object, string $method, array $args = [])
+{
+    $reflection = new ReflectionMethod(get_class($object), $method);
+    $reflection->setAccessible(true);
+    return $reflection->invokeArgs($object, $args);
+}
+
 // ── 测试数据 ──
 $today = date('Y-m-d');
 $tomorrow = date('Y-m-d', strtotime('+1 day'));
@@ -194,6 +201,24 @@ $rows = [
 ];
 
 $provider = new FakeFundDividendProvider($rows);
+
+// 当前历史净值接口返回 JSON；同时保留旧 JavaScript/HTML 解析兼容。
+$historyJsonFixture = json_encode([
+    'Data' => [
+        'LSJZList' => [
+            ['FSRQ' => '2026-01-21', 'DWJZ' => '1.2000', 'LJJZ' => '1.2124', 'JZZZL' => '-1.50', 'SGZT' => '场内买入', 'SHZT' => '场内卖出', 'FHSP' => '每份派现金0.0124元'],
+            ['FSRQ' => '2026-01-20', 'DWJZ' => '1.2300', 'LJJZ' => '1.2300', 'JZZZL' => '0.30', 'SGZT' => '场内买入', 'SHZT' => '场内卖出', 'FHSP' => ''],
+        ],
+    ],
+    'ErrCode' => 0,
+    'TotalCount' => 19,
+    'PageSize' => 2,
+    'PageIndex' => 1,
+], JSON_UNESCAPED_UNICODE);
+$historyParsed = invokePrivate(new FundService(), 'parseHistoryResponse', [$historyJsonFixture]);
+check(is_array($historyParsed) && count($historyParsed['items'] ?? []) === 2, '当前 JSON 历史净值响应可解析');
+check(($historyParsed['items'][0]['date'] ?? '') === '2026-01-21' && near($historyParsed['items'][0]['nav'] ?? null, 1.2), 'JSON 历史净值字段映射正确');
+check(($historyParsed['records'] ?? 0) === 19 && ($historyParsed['pages'] ?? 0) === 10, 'JSON 历史净值分页元数据正确');
 $navMap = [
     '510500' => ['nav' => 8.0, 'nav_date' => date('Y-m-d', strtotime('-1 day')), 'acc_nav' => 2.7, 'nav_chg_rate' => 0.5],
     '011973' => ['nav' => 1.07, 'nav_date' => date('Y-m-d', strtotime('-1 day')), 'acc_nav' => 1.07, 'nav_chg_rate' => 0.1],
@@ -358,6 +383,23 @@ check($detail->success && ($detail->data['selected_event']['record_date'] ?? '')
 check(($detail->data['announcement_match_status'] ?? '') === 'verified', '公告正文同时匹配金额与日期时标记 verified');
 check(($detail->data['summary']['cash_dividend_events'] ?? 0) === 2, '详情历史事件数与摘要正确');
 
+$perTenFund = new FakeFundService();
+$perTenFund->navMap = $navMap;
+$perTenFund->historyMap = $fund->historyMap;
+[$recordYear, $recordMonth, $recordDay] = explode('-', $today);
+[$exYear, $exMonth, $exDay] = explode('-', $dayAfter);
+$perTenFund->announcements = ['510500' => [[
+    'title' => '中证500ETF南方收益分配公告',
+    'date' => $today,
+    'url' => 'https://example.com/per-ten',
+    'pdf_url' => '',
+    'content_status' => 'api_extracted',
+    'content' => '本基金每 10 份基金份额发放红利 0.5000 元人民币。权益登记日 ' . $recordYear . ' 年 ' . (int)$recordMonth . ' 月 ' . (int)$recordDay . ' 日，除息日 ' . $exYear . ' 年 ' . (int)$exMonth . ' 月 ' . (int)$exDay . ' 日。',
+]]];
+$perTenSvc = new FundDividendService($provider, $perTenFund, new FundDividendMemoryCache());
+$perTenDetail = $perTenSvc->detail('510500');
+check(($perTenDetail->data['announcement_match_status'] ?? '') === 'verified', '公告每10份金额及带空格中文日期可核验');
+
 $unmatchedFund = new FakeFundService();
 $unmatchedFund->navMap = $navMap;
 $unmatchedFund->historyMap = $fund->historyMap;
@@ -465,6 +507,11 @@ if (in_array('--live', $argv, true)) {
         check($liveDetail->success && !empty($liveDetail->data['history']), '真实基金详情返回成功');
         $liveWindow = $live->eventMarketWindow('561580', '2026-07-20', 10, 15);
         check($liveWindow->success, '真实基金净值窗口返回成功');
+
+        $boseraDetail = $live->detail('563830', '2026-07-15');
+        check($boseraDetail->success && ($boseraDetail->data['announcement_match_status'] ?? '') === 'verified', '563830 真实公告正文核验成功');
+        $boseraWindow = $live->eventMarketWindow('563830', '2026-07-16', 10, 15);
+        check($boseraWindow->success && !empty($boseraWindow->data['rows']), '563830 真实除息前后净值窗口返回成功');
     }
     $livePagedProvider = new EastmoneyFundDividendClient();
     $livePaged = $livePagedProvider->calendar(date('Y-m-d', strtotime('-59 days')), $today);

@@ -354,24 +354,13 @@ class FundService
     {
         $page = max(1, min($page, 200));
         $pageSize = max(5, min($pageSize, 100));
-        $key = $this->cacheKey('history', "{$code}:{$page}:{$pageSize}");
+        $key = $this->cacheKey('history', "v2:{$code}:{$page}:{$pageSize}");
 
         return $this->useCache('history', $key, function() use ($code, $page, $pageSize) {
             return $this->withBreaker('history', function() use ($code, $page, $pageSize) {
-                $url = 'https://fundf10.eastmoney.com/F10DataApi.aspx?' . http_build_query([
-                    'type' => 'lsjz',
-                    'code' => $code,
-                    'page' => $page,
-                    'per'  => $pageSize,
-                    'sdate' => '',
-                    'edate' => '',
-                    'rt' => sprintf('%.6f', microtime(true)),
-                ]);
+                $url = $this->historyApiUrl($code, $page, $pageSize);
 
-                $resp = $this->http->get($url, [
-                    'Referer' => "https://fundf10.eastmoney.com/jjjz_{$code}.html",
-                    'Accept'  => '*/*',
-                ]);
+                $resp = $this->http->get($url, $this->historyApiHeaders($code));
 
                 if ($resp['error'] || $resp['http_code'] !== 200) {
                     return DataSourceResult::error(self::SOURCE_NAME, 'history', 'network_error', '请求失败: ' . ($resp['error'] ?: "HTTP {$resp['http_code']}"));
@@ -468,7 +457,7 @@ class FundService
     /**
      * 基金历史净值定点窗口（基金分红事件前后净值图专用）。
      *
-     * 复用 F10DataApi.aspx?type=lsjz，通过 sdate/edate 定点取窗，
+     * 使用当前 F10 历史净值 JSON API，通过 startDate/endDate 定点取窗，
      * 返回单位净值、累计净值和日增长率。用于分红事件前后净值窗口展示。
      */
     public function historyWindow(string $code, string $sdate, string $edate): DataSourceResult
@@ -482,24 +471,13 @@ class FundService
         if ($sdate > $edate) {
             return DataSourceResult::error(self::SOURCE_NAME, 'history_window', 'invalid_date', '开始日期不能晚于结束日期');
         }
-        $key = $this->cacheKey('history_window', "{$code}:{$sdate}:{$edate}");
+        $key = $this->cacheKey('history_window', "v2:{$code}:{$sdate}:{$edate}");
 
         return $this->useCache('history_window', $key, function () use ($code, $sdate, $edate) {
             return $this->withBreaker('history_window', function () use ($code, $sdate, $edate) {
-                $url = 'https://fundf10.eastmoney.com/F10DataApi.aspx?' . http_build_query([
-                    'type' => 'lsjz',
-                    'code' => $code,
-                    'page' => 1,
-                    'per'  => 100,
-                    'sdate' => $sdate,
-                    'edate' => $edate,
-                    'rt' => sprintf('%.6f', microtime(true)),
-                ]);
+                $url = $this->historyApiUrl($code, 1, 100, $sdate, $edate);
 
-                $resp = $this->http->get($url, [
-                    'Referer' => "https://fundf10.eastmoney.com/jjjz_{$code}.html",
-                    'Accept'  => '*/*',
-                ]);
+                $resp = $this->http->get($url, $this->historyApiHeaders($code));
 
                 if ($resp['error'] || $resp['http_code'] !== 200) {
                     return DataSourceResult::error(self::SOURCE_NAME, 'history_window', 'network_error', '请求失败: ' . ($resp['error'] ?: "HTTP {$resp['http_code']}"));
@@ -734,7 +712,7 @@ class FundService
         $pageSize = max(1, min($pageSize, 100));
         $docType = $docType === '' ? 'all' : $docType;
         $contentLimit = max(1000, min($contentLimit, 20000));
-        $key = $this->cacheKey('documents', implode(':', [$code, $page, $pageSize, $docType, $includeContent ? 1 : 0, $contentLimit]));
+        $key = $this->cacheKey('documents', 'v2:' . implode(':', [$code, $page, $pageSize, $docType, $includeContent ? 1 : 0, $contentLimit]));
 
         return $this->useCache('documents', $key, function() use ($code, $page, $pageSize, $docType, $includeContent, $contentLimit) {
             return $this->withBreaker('documents', function() use ($code, $page, $pageSize, $docType, $includeContent, $contentLimit) {
@@ -1161,7 +1139,7 @@ class FundService
         $pageRows = [];
         $toFetch = [];
         for ($p = 2; $p <= $neededPages; $p++) {
-            $ck = $this->cacheKey('history', "{$code}:{$p}:{$pageSize}");
+            $ck = $this->cacheKey('history', "v2:{$code}:{$p}:{$pageSize}");
             $cached = $this->cache->get($ck);
             if ($cached !== null && ($cached['success'] ?? false) && isset($cached['data'])) {
                 $pageRows[$p] = $cached['data'];
@@ -1174,14 +1152,11 @@ class FundService
         if (!empty($toFetch)) {
             $requests = [];
             foreach ($toFetch as $p) {
-                $url = 'https://fundf10.eastmoney.com/F10DataApi.aspx?' . http_build_query([
-                    'type' => 'lsjz', 'code' => $code, 'page' => $p, 'per' => $pageSize,
-                    'sdate' => '', 'edate' => '', 'rt' => sprintf('%.6f', microtime(true)),
-                ]);
+                $url = $this->historyApiUrl($code, $p, $pageSize);
                 $requests[] = [
                     'key' => "p{$p}",
                     'url' => $url,
-                    'headers' => ['Referer' => "https://fundf10.eastmoney.com/jjjz_{$code}.html", 'Accept' => '*/*'],
+                    'headers' => $this->historyApiHeaders($code),
                 ];
             }
             $responses = $this->http->multiGet($requests, $maxParallel);
@@ -1212,7 +1187,7 @@ class FundService
 
                 $pageRows[$p] = $parsed['items'];
                 $pagesFetched++;
-                $ck = $this->cacheKey('history', "{$code}:{$p}:{$pageSize}");
+                $ck = $this->cacheKey('history', "v2:{$code}:{$p}:{$pageSize}");
                 $this->cache->set($ck, [
                     'success' => true,
                     'source' => self::SOURCE_NAME,
@@ -3284,6 +3259,41 @@ class FundService
 
     private function parseHistoryResponse(string $body): ?array
     {
+        $jsonResult = HttpClient::parseJson($body);
+        if ($jsonResult['ok'] && is_array($jsonResult['data'] ?? null)) {
+            $json = $jsonResult['data'];
+            $data = $json['Data'] ?? null;
+            if ((int)($json['ErrCode'] ?? -1) !== 0 || !is_array($data) || !is_array($data['LSJZList'] ?? null)) {
+                return null;
+            }
+
+            $items = [];
+            foreach ($data['LSJZList'] as $row) {
+                if (!is_array($row)) continue;
+                $date = trim((string)($row['FSRQ'] ?? $row['SDATE'] ?? ''));
+                if ($date === '') continue;
+                $items[] = [
+                    'date' => $date,
+                    'nav' => (string)($row['DWJZ'] ?? ''),
+                    'acc_nav' => (string)($row['LJJZ'] ?? ''),
+                    'growth_rate' => (string)($row['JZZZL'] ?? ''),
+                    'purchase_status' => (string)($row['SGZT'] ?? ''),
+                    'redeem_status' => (string)($row['SHZT'] ?? ''),
+                    'dividend' => (string)($row['FHSP'] ?? $row['FHFCBZ'] ?? $row['FHFCZ'] ?? ''),
+                ];
+            }
+
+            $pageSize = max(1, (int)($json['PageSize'] ?? count($items) ?: 1));
+            $records = max(0, (int)($json['TotalCount'] ?? count($items)));
+            return [
+                'items' => $items,
+                'records' => $records,
+                'pages' => $records > 0 ? (int)ceil($records / $pageSize) : 0,
+                'page' => max(1, (int)($json['PageIndex'] ?? 1)),
+            ];
+        }
+
+        // 兼容旧 F10DataApi.aspx 的 JavaScript/HTML 响应，便于旧缓存与镜像源继续使用。
         if (!preg_match('/content:\s*"([\s\S]*?)"\s*,\s*records:/', $body, $contentMatch)) {
             return null;
         }
@@ -3320,6 +3330,25 @@ class FundService
             'records' => $records,
             'pages' => $pages,
             'page' => $page,
+        ];
+    }
+
+    private function historyApiUrl(string $code, int $page, int $pageSize, string $startDate = '', string $endDate = ''): string
+    {
+        return 'https://api.fund.eastmoney.com/f10/lsjz?' . http_build_query([
+            'fundCode' => $code,
+            'pageIndex' => $page,
+            'pageSize' => $pageSize,
+            'startDate' => $startDate,
+            'endDate' => $endDate,
+        ]);
+    }
+
+    private function historyApiHeaders(string $code): array
+    {
+        return [
+            'Referer' => "https://fundf10.eastmoney.com/jjjz_{$code}.html",
+            'Accept' => 'application/json,text/plain,*/*',
         ];
     }
 
@@ -3394,8 +3423,20 @@ class FundService
         $item['content'] = '';
         $url = (string)($item['url'] ?? '');
         if ($url !== '') {
+            $apiContent = $this->fetchAnnouncementApiText($url, $contentLimit);
+            if ($apiContent !== '') {
+                $item['content_status'] = 'api_extracted';
+                $item['content'] = $apiContent;
+                return $item;
+            }
+        }
+
+        $htmlContent = '';
+        if ($url !== '') {
             $htmlContent = $this->fetchAnnouncementHtmlText($url, $contentLimit);
-            if ($htmlContent !== '') {
+            // 东方财富公告详情由前端再请求正文 API；页面本身只有导航壳，不能据此终止 PDF 回退。
+            $isEastmoneyShell = preg_match('/fund\.eastmoney\.com\/gonggao\/[^,]+,AN\d+\.html/i', $url) === 1;
+            if ($htmlContent !== '' && !$isEastmoneyShell) {
                 $item['content_status'] = 'html_extracted';
                 $item['content'] = $htmlContent;
                 return $item;
@@ -3412,7 +3453,42 @@ class FundService
             }
         }
 
+        if ($item['content'] === '' && $htmlContent !== '') {
+            $item['content_status'] = 'html_shell';
+            $item['content_message'] = '公告页面仅返回导航壳，正文 API 与 PDF 均未能提供可核验内容。';
+        }
+
         return $item;
+    }
+
+    private function fetchAnnouncementApiText(string $url, int $limit): string
+    {
+        if (!preg_match('/[,\/]((?:AN)\d+)/i', $url, $m)) {
+            return '';
+        }
+        $artCode = strtoupper($m[1]);
+        $apiUrl = 'https://np-cnotice-fund.eastmoney.com/api/content/ann?' . http_build_query([
+            'client_source' => 'web_fund',
+            'show_all' => 1,
+            'art_code' => $artCode,
+        ]);
+        $resp = $this->http->get($apiUrl, [
+            'Referer' => 'https://fund.eastmoney.com/',
+            'Accept' => 'application/json,text/plain,*/*',
+        ]);
+        if ($resp['error'] || $resp['http_code'] !== 200 || $resp['body'] === '') {
+            return '';
+        }
+        $parsed = HttpClient::parseJson($resp['body']);
+        if (!$parsed['ok'] || !is_array($parsed['data'] ?? null)) {
+            return '';
+        }
+        $json = $parsed['data'];
+        if ((int)($json['success'] ?? 0) !== 1 || !is_array($json['data'] ?? null)) {
+            return '';
+        }
+        $content = trim((string)($json['data']['notice_content'] ?? ''));
+        return $content === '' ? '' : mb_substr($content, 0, $limit);
     }
 
     private function fetchAnnouncementHtmlText(string $url, int $limit): string

@@ -253,7 +253,7 @@ class FundDividendService
             return DataSourceResult::error(self::SOURCE_NAME, 'fund_dividend_detail', 'invalid_date', '事件日期必须为 YYYY-MM-DD');
         }
 
-        $key = 'fund_dividend:detail:' . $code . ':' . ($eventDate ?? 'latest');
+        $key = 'fund_dividend:detail:v2:' . $code . ':' . ($eventDate ?? 'latest');
         $cached = $this->cachedProviderResult(
             $key,
             (int)$this->config['detail_ttl'],
@@ -508,17 +508,32 @@ class FundDividendService
                 return true;
             }
         }
+        // ETF 公告常只披露“每 10 份”金额；日历事件则已归一为每份金额。
+        $compact = preg_replace('/\s+/u', '', $content) ?? $content;
+        $perTenCandidates = array_unique([
+            number_format($cash * 10, 4, '.', ''),
+            number_format($cash * 10, 3, '.', ''),
+            rtrim(rtrim(number_format($cash * 10, 4, '.', ''), '0'), '.'),
+        ]);
+        foreach ($perTenCandidates as $candidate) {
+            if ($candidate === '') continue;
+            $quoted = preg_quote($candidate, '/');
+            if (preg_match('/(?:每10份基金份额[^0-9]{0,40}|元\/10份基金份额[^0-9]{0,40})' . $quoted . '(?:元|人民币)?/u', $compact)) {
+                return true;
+            }
+        }
         return false;
     }
 
     private function contentContainsDate(string $content, string $date): bool
     {
         if ($date === '') return false;
-        if (strpos($content, $date) !== false) return true;
+        $compact = preg_replace('/\s+/u', '', $content) ?? $content;
+        if (strpos($compact, $date) !== false) return true;
         // 中文日期格式 2026年7月17日
         $cn = preg_replace('/^(\d{4})-(\d{1,2})-(\d{1,2})$/', '$1年$2月$3日', $date);
         $cn = preg_replace('/^(\d{4})年0?(\d{1,2})月0?(\d{1,2})日$/', '$1年$2月$3日', $cn ?? '');
-        if ($cn !== '' && $cn !== $date && strpos($content, $cn) !== false) return true;
+        if ($cn !== '' && $cn !== $date && strpos($compact, $cn) !== false) return true;
         return false;
     }
 
