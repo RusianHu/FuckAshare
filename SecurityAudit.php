@@ -59,6 +59,11 @@ class SecurityAudit
     /** 雪球 action 白名单 */
     const ALLOWED_XUEQIU_ACTIONS = ['quote', 'kline', 'hot_stock', 'screener', 'fundx'];
 
+    /** 新闻舆情 action / 资产类型 / 范围白名单 */
+    const ALLOWED_NEWS_ACTIONS = ['asset', 'market', 'sentiment'];
+    const ALLOWED_NEWS_ASSET_TYPES = ['stock', 'fund'];
+    const ALLOWED_NEWS_SCOPES = ['asset', 'market'];
+
     /** 雪球 K 线 period 白名单 */
     const ALLOWED_XUEQIU_PERIODS = ['1m', '5m', '15m', '30m', '60m', 'day', 'week', 'month'];
 

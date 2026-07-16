@@ -49,6 +49,7 @@ class CircuitBreaker
         'csindex'    => ['failureThreshold' => 3,  'cooldown' => 60],
         'eastmoney_dividend' => ['failureThreshold' => 3, 'cooldown' => 60],
         'eastmoney_fund_dividend' => ['failureThreshold' => 3, 'cooldown' => 60],
+        'eastmoney_news' => ['failureThreshold' => 3, 'cooldown' => 60],
     ];
 
     public function __construct(string $source, int $failureThreshold = 0, int $cooldown = 0)

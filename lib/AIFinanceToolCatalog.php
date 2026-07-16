@@ -82,6 +82,36 @@ class AIFinanceToolCatalog
                     'include_index_quotes' => ['type' => ['boolean', 'null'], 'description' => 'Whether to include major index quotes. Default true.'],
                 ]
             ),
+            'fa_get_asset_news' => AIToolSchema::tool(
+                'fa_get_asset_news',
+                'Get recent Eastmoney-search news for one stock or fund. The service resolves a missing asset name from the code, deduplicates results, and exposes only title, source, publication time, and original URL. Use for current catalysts or media coverage; it is not an official announcement feed.',
+                [
+                    'asset_type' => ['type' => 'string', 'enum' => ['stock', 'fund'], 'description' => 'Asset type.'],
+                    'code' => AIToolSchema::nullableString('Optional stock/fund code. Provide code or name.'),
+                    'name' => AIToolSchema::nullableString('Optional asset name. The service resolves it when a code is available.'),
+                    'limit' => AIToolSchema::nullableInteger('Maximum deduplicated news items. Default 20, max 50.', 1, 50),
+                ]
+            ),
+            'fa_get_market_hot_news' => AIToolSchema::tool(
+                'fa_get_market_hot_news',
+                'Get recent A-share or fund-market news across up to four Chinese keywords, deduplicated and ordered by publication time. Results contain only title, source, time, and URL.',
+                [
+                    'keywords' => AIToolSchema::nullableArray(['type' => 'string'], 'Optional market/sector/topic keywords. Defaults to A股, 沪指, 基金市场.', 0, 4),
+                    'limit' => AIToolSchema::nullableInteger('Maximum deduplicated news items. Default 30, max 50.', 1, 50),
+                ]
+            ),
+            'fa_get_sentiment_snapshot' => AIToolSchema::tool(
+                'fa_get_sentiment_snapshot',
+                'Build a deterministic, explainable sentiment snapshot from recent news titles for one asset or the overall market. Returns aggregate score, confidence, counts, coverage, and title-only examples. Treat it as a weak context signal rather than a fact or trading instruction.',
+                [
+                    'scope' => ['type' => 'string', 'enum' => ['asset', 'market'], 'description' => 'Analyze one asset or the overall market.'],
+                    'asset_type' => AIToolSchema::nullableEnum(['stock', 'fund'], 'Required in practice for asset scope; ignored for market scope.'),
+                    'code' => AIToolSchema::nullableString('Optional asset code for asset scope.'),
+                    'name' => AIToolSchema::nullableString('Optional asset name for asset scope.'),
+                    'keywords' => AIToolSchema::nullableArray(['type' => 'string'], 'Optional market keywords for market scope, max four.', 0, 4),
+                    'limit' => AIToolSchema::nullableInteger('News sample size. Default 30, min 5, max 50.', 5, 50),
+                ]
+            ),
             'fa_get_upcoming_dividends' => AIToolSchema::tool(
                 'fa_get_upcoming_dividends',
                 'Scan upcoming A-share dividend record-date events, merge current quotes, and deterministically calculate one-off gross and personal after-tax cash yields. Use this first for dividend calendar, record date, ex-dividend date, dividend capture, or near-term high-dividend questions. This is an event yield, not an annualized return.',

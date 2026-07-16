@@ -484,6 +484,8 @@ const APP = {
     indicatorSeries: {},
     currentStockCode: '',
     currentStockData: [],
+    stockQueryController: null,
+    stockQueryRequestId: 0,
     // 自选股
     watchlist: JSON.parse(localStorage.getItem('fa_watchlist') || '[]'),
     // 自选基金
@@ -1840,6 +1842,7 @@ const DividendModule = {
             </section>
             <section class="dividend-detail-section"><h4>当前事件</h4><div class="dividend-current-plan"><b>每份分红 ${cashText}</b><br>登记日 ${escapeHTML(event.record_date || selected.record_date || '-')} · 除息日 ${escapeHTML(event.ex_date || selected.ex_date || '-')} · 发放日 ${escapeHTML(event.pay_date || '-')}</div>
             <div class="dividend-fund-ratio"><span>参考分配比例（按最新净值）</span><b>${ratio}</b><small>状态：${escapeHTML(annStatusMap[data.announcement_match_status] || data.announcement_match_status || '-')}</small></div></section>
+            <section class="dividend-detail-section dividend-pulse-section"><div id="dividend-asset-pulse" class="asset-pulse-card asset-pulse-embedded" data-asset-pulse="fund" aria-live="polite"></div></section>
             ${announcements.length ? `<section class="dividend-detail-section"><h4>分红公告证据</h4><div class="dividend-announcement-list">${announcements.map(a => `<a class="dividend-announcement-item" href="${escapeAttr(a.url || a.pdf_url || '#')}" target="_blank" rel="noopener noreferrer"><span>${escapeHTML(a.date || '-')}</span><b>${escapeHTML(a.title || '未命名公告')}</b></a>`).join('')}</div></section>` : ''}
             ${related.length ? `<section class="dividend-detail-section"><h4>联接基金与目标 ETF</h4><div class="dividend-related-list">${related.map(r => `<div class="dividend-related-item"><div><b>${escapeHTML(r.name || r.code || '-')}</b><small>${escapeHTML(r.code || '')} · ${escapeHTML(r.relationship || 'target_etf')}</small></div><small class="dividend-related-note">${escapeHTML(r.interpretation_note || '目标 ETF 分红属于资产层收入，不等同于向联接基金持有人直接派现。')}</small></div>`).join('')}</div><p class="dividend-market-note">${escapeHTML(data.scope_note || '')}</p></section>` : ''}
             <section class="dividend-detail-section dividend-history-section">
@@ -1849,6 +1852,7 @@ const DividendModule = {
             </section>
             <section class="dividend-detail-section dividend-market-section"><div id="dividend-event-market" class="dividend-event-market"><p class="placeholder-text">选择一条历史分红，查看附近净值</p></div></section>
             <section class="dividend-detail-section"><a class="btn-sm" href="${escapeAttr(fund.source_url || selected.source_url || '#')}" target="_blank" rel="noopener noreferrer">查看数据源详情</a></section>`;
+        AssetPulseModule.focus('fund', { code: fund.code || selected.code, name: fund.name || selected.name }, { target: 'dividend-asset-pulse' });
         this.renderHistoryPage();
         if (history.length) {
             const selectedDate = selected.record_date || '';
@@ -1878,6 +1882,7 @@ const DividendModule = {
                 <div class="dividend-detail-metrics"><div class="dividend-detail-metric"><span>现金分红事件</span><b>${summary.cash_dividend_events ?? 0} 次</b></div><div class="dividend-detail-metric"><span>覆盖年份</span><b>${summary.years_with_cash_dividend ?? 0} 年</b></div><div class="dividend-detail-metric"><span>近5年每股合计</span><b>¥${this.number(summary.five_year_total_cash_per_share, 4)}</b></div></div>
             </section>
             <section class="dividend-detail-section"><h4>当前事件</h4><div class="dividend-current-plan"><b>${escapeHTML(event.plan_text || selected.plan_text || '暂无完整方案文本')}</b><br>登记日 ${escapeHTML(event.record_date || selected.record_date || '-')} · 除息日 ${escapeHTML(event.ex_date || selected.ex_date || '-')} · 派息日未由当前数据源提供</div></section>
+            <section class="dividend-detail-section dividend-pulse-section"><div id="dividend-asset-pulse" class="asset-pulse-card asset-pulse-embedded" data-asset-pulse="stock" aria-live="polite"></div></section>
             <section class="dividend-detail-section dividend-history-section">
                 <div class="dividend-section-heading"><div><h4>完整历史分红</h4><small>${history.length} 条记录 · ${escapeHTML(oldest)} 至 ${escapeHTML(newest)}</small></div><span class="dividend-history-hint">点选任一次，查看除息日前后日 K</span></div>
                 <div id="dividend-history-list" class="dividend-history-list"></div>
@@ -1885,6 +1890,7 @@ const DividendModule = {
             </section>
             <section class="dividend-detail-section dividend-market-section"><div id="dividend-event-market" class="dividend-event-market"><p class="placeholder-text">选择一条历史分红，查看附近行情</p></div></section>
             <section class="dividend-detail-section"><a class="btn-sm" href="${escapeAttr(data.source_url || selected.source_url || '#')}" target="_blank" rel="noopener noreferrer">查看数据源详情</a></section>`;
+        AssetPulseModule.focus('stock', { code: stock.code || selected.code, name: stock.name || selected.name }, { target: 'dividend-asset-pulse' });
         this.renderHistoryPage();
         if (history.length) {
             const selectedDate = selected.ex_date || selected.record_date || '';
@@ -2330,6 +2336,8 @@ const DividendModule = {
 // ============================================================
 const FundModule = {
     selectedFund: null,
+    detailController: null,
+    detailRequestId: 0,
     rankItems: [],
     rankMeta: {},
     currentRankType: 'all',
@@ -2570,24 +2578,32 @@ const FundModule = {
 
     async openDetail(code, name = '') {
         if (!/^\d{6}$/.test(code)) return;
+        this.detailController?.abort();
+        this.detailController = new AbortController();
+        const signal = this.detailController.signal;
+        const requestId = ++this.detailRequestId;
         const loading = document.getElementById('fund-detail-loading');
         const box = document.getElementById('fund-detail');
         const codeTag = document.getElementById('fund-detail-code');
         codeTag.textContent = code;
         loading.style.display = 'flex';
         box.innerHTML = '';
+        if (typeof AssetPulseModule !== 'undefined') {
+            AssetPulseModule.focus('fund', { code, name }, { target: 'fund-asset-pulse' });
+        }
 
         try {
             const [infoResp, historyResp, estimateResp] = await Promise.all([
-                fetch(`fund_info_api.php?codes=${encodeURIComponent(code)}`),
-                fetch(`fund_history_api.php?code=${encodeURIComponent(code)}&page=1&page_size=40`),
-                fetch(`fund_estimate_api.php?code=${encodeURIComponent(code)}`)
+                fetch(`fund_info_api.php?codes=${encodeURIComponent(code)}`, { signal }),
+                fetch(`fund_history_api.php?code=${encodeURIComponent(code)}&page=1&page_size=40`, { signal }),
+                fetch(`fund_estimate_api.php?code=${encodeURIComponent(code)}`, { signal })
             ]);
             const [infoData, historyData, estimateData] = await Promise.all([
                 infoResp.json(),
                 historyResp.json(),
                 estimateResp.json()
             ]);
+            if (requestId !== this.detailRequestId) return;
             loading.style.display = 'none';
             if (!infoData.success && !historyData.success) {
                 box.innerHTML = `<div class="error-msg">${escapeHTML(infoData.message || historyData.message || '加载基金详情失败')}</div>`;
@@ -2604,9 +2620,12 @@ const FundModule = {
             }
             this.renderDetail(this.selectedFund);
         } catch (e) {
+            if (e.name === 'AbortError' || requestId !== this.detailRequestId) return;
             loading.style.display = 'none';
             box.innerHTML = '<div class="error-msg">加载基金详情失败，请稍后重试</div>';
             console.error('加载基金详情失败:', e);
+        } finally {
+            if (requestId === this.detailRequestId) this.detailController = null;
         }
     },
 
@@ -3505,7 +3524,7 @@ const AdvisorModule = {
     /** 根据当前页面模块推导顾问资产上下文，避免基金页串用股票代码 */
     resolvePageContext() {
         const tab = this.getActiveTabName();
-        const tabNames = { stock: '股票行情', realtime: '实时看板', strategy: '策略池', sector: '板块资金', dividend: '分红日历', xueqiu: '雪球洞察', fund: '基金分析', ai: 'AI顾问' };
+        const tabNames = { stock: '股票行情', realtime: '实时看板', strategy: '策略池', sector: '板块资金', dividend: '分红日历', news: '新闻舆情', xueqiu: '雪球洞察', fund: '基金分析', ai: 'AI顾问' };
         const result = {
             tab,
             tabLabel: tabNames[tab] || tab,
@@ -3534,6 +3553,17 @@ const AdvisorModule = {
                 result.assetCode = fund.code;
                 result.assetName = fund.name;
                 result.assetLabel = fund.label;
+            }
+            return result;
+        }
+
+        if (tab === 'news') {
+            const news = typeof NewsModule !== 'undefined' ? NewsModule.current : null;
+            if (news && (news.mode === 'stock' || news.mode === 'fund')) {
+                result.assetType = news.mode;
+                result.assetCode = news.code || '';
+                result.assetName = news.name || '';
+                result.assetLabel = news.name && news.code ? `${news.name} (${news.code})` : (news.name || news.code || '');
             }
             return result;
         }
@@ -3572,26 +3602,42 @@ const AdvisorModule = {
                 : (isDividend ? (asset ? `当前${isFundDividend ? '基金' : '股票'}分红事件：${asset}。我会先刷新事件事实，再判断历史连续性和短期风险。` : `可以让我扫描未来7/14/30日${isFundDividend ? '基金' : '股票'}分红事件，或从列表选择一个事件继续研判。`) : '我已接入当前页面数据，可以直接问我股票趋势、主力意图或板块机会。');
         }
 
-        this.renderQuickActions(isFund ? this.getFundQuickActions(asset) : (isDividend ? this.getDividendQuickActions(asset, pageContext?.assetType) : this.getStockQuickActions()));
+        this.renderQuickActions(isFund ? this.getFundQuickActions(asset) : (isDividend ? this.getDividendQuickActions(asset, pageContext?.assetType) : this.getStockQuickActions(asset)));
     },
 
-    getStockQuickActions() {
-        return [
+    getStockQuickActions(assetLabel = '') {
+        const actions = [
             { icon: Icons.chart, text: '分析当前股票趋势', prompt: '帮我分析当前股票的趋势与支撑压力位' },
             { icon: Icons.flow, text: '判断主力资金意图', prompt: '帮我结合资金流向判断主力在吸筹还是出货' },
             { icon: Icons.hot, text: '从热榜筛选候选标的', prompt: '帮我从净流入热榜里筛选短期值得关注的标的' },
             { icon: Icons.search, text: '雪球热度+选股共振', prompt: '帮我结合雪球热度榜和条件选股数据，找出当前市场关注度与基本面共振的标的', source: 'xueqiu' }
         ];
+        if (assetLabel) {
+            actions[2] = {
+                icon: Icons.hot,
+                text: '研判当前股票舆情',
+                prompt: `请调用 fa_get_asset_news 与 fa_get_sentiment_snapshot，研判当前股票 ${assetLabel} 的最新热点与标题情绪；区分新闻事实、标题弱信号和推断，并说明样本量与不确定性。`
+            };
+        }
+        return actions;
     },
 
     getFundQuickActions(assetLabel = '') {
         const subject = assetLabel ? `当前基金 ${assetLabel}` : '当前基金';
-        return [
+        const actions = [
             { icon: Icons.chart, text: '分析基金收益质量', prompt: `请基于${subject}的净值、估值、历史走势和同类排行，分析收益质量、波动、回撤与结论摘要。` },
             { icon: Icons.flow, text: '评估波动与风险', prompt: `请评估${subject}近期估值涨跌、历史净值波动、最大回撤和申购赎回状态，指出主要风险和跟踪指标。` },
             { icon: Icons.table, text: '对照同类基金排行', prompt: `请结合${subject}与同类基金近1年、近3月排行样本，判断相对强弱、风格适配和替代选择标准。` },
             { icon: Icons.search, text: '检查持有适配度', prompt: `请从基金类型、基金经理、基金公司、规模、费率、业绩基准和投资者画像角度，评估${subject}是否适合继续关注。` }
         ];
+        if (assetLabel) {
+            actions[3] = {
+                icon: Icons.hot,
+                text: '研判当前基金舆情',
+                prompt: `请调用 fa_get_asset_news 与 fa_get_sentiment_snapshot，研判当前基金 ${assetLabel} 的最新热点与标题情绪；严格过滤泛基金资讯，并说明样本不足、相关性和不确定性。`
+            };
+        }
+        return actions;
     },
 
     getDividendQuickActions(assetLabel = '', assetType = 'stock') {
@@ -4869,6 +4915,490 @@ function autoResizeTextarea() {
 }
 
 // ============================================================
+// 全站标的舆情脉搏（行情 / 基金 / 详情抽屉复用）
+// ============================================================
+const AssetPulseModule = {
+    cache: new Map(),
+    inFlight: new Map(),
+    assets: new Map(),
+    cacheTtl: 60000,
+    initialized: false,
+
+    init() {
+        if (this.initialized) return;
+        this.initialized = true;
+        document.addEventListener('click', event => {
+            const button = event.target.closest('[data-pulse-action]');
+            if (!button) return;
+            const host = button.closest('[data-asset-pulse]');
+            if (!host) return;
+            const asset = {
+                type: host.dataset.assetType || host.dataset.assetPulse || 'stock',
+                code: host.dataset.assetCode || '',
+                name: host.dataset.assetName || ''
+            };
+            if (!asset.code && !asset.name) return;
+            const action = button.dataset.pulseAction;
+            if (action === 'refresh') this.refresh(host, asset);
+            if (action === 'full') this.openFullNews(asset);
+            if (action === 'ai') this.analyzeWithAI(asset);
+        });
+    },
+
+    normalizeAsset(assetType, asset = {}) {
+        const type = assetType === 'fund' ? 'fund' : 'stock';
+        let code = String(asset.code || asset.fundcode || asset.symbol || asset.dm || '').trim();
+        if (type === 'stock') code = code.replace(/[^A-Za-z0-9.]/g, '').toUpperCase().slice(0, 20);
+        else code = code.replace(/[^0-9]/g, '').slice(0, 6);
+        const name = String(asset.name || asset.mc || '').trim().slice(0, 80);
+        return { type, code, name };
+    },
+
+    assetKey(asset) {
+        return `${asset.type}|${asset.code}|${asset.name}`;
+    },
+
+    hostsFor(assetType, target = null) {
+        if (target instanceof Element) return [target];
+        if (typeof target === 'string' && target) {
+            const element = document.getElementById(target);
+            return element ? [element] : [];
+        }
+        return Array.from(document.querySelectorAll(`[data-asset-pulse="${assetType}"]`));
+    },
+
+    focus(assetType, asset = {}, options = {}) {
+        const normalized = this.normalizeAsset(assetType, asset);
+        if (!normalized.code && !normalized.name) return Promise.resolve(null);
+        this.assets.set(normalized.type, normalized);
+        const hosts = this.hostsFor(normalized.type, options.target || null);
+        if (!hosts.length) return Promise.resolve(null);
+        const key = this.assetKey(normalized);
+
+        hosts.forEach(host => {
+            host.dataset.assetType = normalized.type;
+            host.dataset.assetCode = normalized.code;
+            host.dataset.assetName = normalized.name;
+            host.dataset.pulseRequest = key;
+            this.renderLoading(host, normalized);
+        });
+
+        return this.load(normalized, Boolean(options.force)).then(payload => {
+            hosts.forEach(host => {
+                if (host.dataset.pulseRequest === key) this.render(host, normalized, payload);
+            });
+            return payload;
+        }).catch(error => {
+            hosts.forEach(host => {
+                if (host.dataset.pulseRequest === key) this.renderError(host, normalized, error);
+            });
+            return null;
+        });
+    },
+
+    async load(asset, force = false) {
+        const key = this.assetKey(asset);
+        const cached = this.cache.get(key);
+        if (!force && cached && Date.now() - cached.timestamp < this.cacheTtl) return cached.payload;
+        if (this.inFlight.has(key)) return this.inFlight.get(key);
+
+        const task = (async () => {
+            const base = new URLSearchParams({
+                action: 'asset',
+                asset_type: asset.type,
+                limit: '6'
+            });
+            if (asset.code) base.set('code', asset.code);
+            if (asset.name) base.set('name', asset.name);
+            const news = await this.fetchJson(`news_api.php?${base}`);
+
+            const sentimentParams = new URLSearchParams({
+                action: 'sentiment',
+                scope: 'asset',
+                asset_type: asset.type,
+                limit: '18'
+            });
+            if (asset.code) sentimentParams.set('code', asset.code);
+            if (asset.name) sentimentParams.set('name', asset.name);
+            let sentiment = null;
+            let sentimentError = '';
+            try {
+                sentiment = await this.fetchJson(`news_api.php?${sentimentParams}`);
+            } catch (error) {
+                sentimentError = error.message || '情绪快照暂不可用';
+            }
+
+            const payload = { news, sentiment, sentimentError };
+            this.cache.set(key, { timestamp: Date.now(), payload });
+            return payload;
+        })();
+
+        this.inFlight.set(key, task);
+        try {
+            return await task;
+        } finally {
+            this.inFlight.delete(key);
+        }
+    },
+
+    async fetchJson(url) {
+        const response = await fetch(url, { headers: { Accept: 'application/json' } });
+        let payload;
+        try {
+            payload = await response.json();
+        } catch (error) {
+            throw new Error(`新闻服务返回无效数据（HTTP ${response.status}）`);
+        }
+        if (!response.ok || !payload.success) {
+            throw new Error(payload.message || payload.error_message || `新闻服务暂不可用（HTTP ${response.status}）`);
+        }
+        return payload;
+    },
+
+    renderLoading(host, asset) {
+        const label = asset.name || asset.code || (asset.type === 'fund' ? '当前基金' : '当前股票');
+        host.classList.add('is-loading');
+        host.innerHTML = `
+            <div class="asset-pulse-head">
+                <div class="asset-pulse-heading"><span class="asset-pulse-orb"><i></i></span><div><small>标的舆情脉搏</small><b>${escapeHTML(label)}</b></div></div>
+                <span class="asset-pulse-status neutral">对齐中</span>
+            </div>
+            <div class="asset-pulse-loading"><span></span><span></span><span></span><p>正在匹配相关标题与情绪样本…</p></div>`;
+    },
+
+    render(host, requestedAsset, payload) {
+        host.classList.remove('is-loading', 'has-error');
+        const news = payload.news || {};
+        const snapshot = payload.sentiment?.data || null;
+        const mapped = news.meta?.asset || {};
+        const asset = this.normalizeAsset(requestedAsset.type, {
+            code: mapped.code || requestedAsset.code,
+            name: mapped.name || requestedAsset.name
+        });
+        host.dataset.assetType = asset.type;
+        host.dataset.assetCode = asset.code;
+        host.dataset.assetName = asset.name;
+        this.assets.set(asset.type, asset);
+
+        const items = Array.isArray(news.data) ? news.data.slice(0, 4) : [];
+        const labelMap = { positive: '偏正面', negative: '偏负面', neutral: '中性' };
+        const sentimentLabel = snapshot ? (labelMap[snapshot.label] || '中性') : '情绪暂缺';
+        const sentimentClass = snapshot?.label || 'neutral';
+        const numericScore = Number(snapshot?.score);
+        const score = Number.isFinite(numericScore) ? `${numericScore > 0 ? '+' : ''}${numericScore.toFixed(3)}` : '--';
+        const title = asset.name || asset.code || '当前标的';
+        const codeLabel = asset.name && asset.code ? asset.code : (asset.type === 'fund' ? '基金' : '股票');
+        const sampleSize = snapshot?.sample_size ?? items.length;
+        const sourceCount = snapshot?.source_count ?? new Set(items.map(item => item.source).filter(Boolean)).size;
+        const newestAt = snapshot?.newest_at || items[0]?.published_at || '';
+        const headlines = items.length ? items.map(item => {
+            const content = `<span class="asset-pulse-dot"></span><span class="asset-pulse-news-main"><b>${escapeHTML(item.title || '未命名新闻')}</b><small>${escapeHTML(item.source || '未知来源')} · ${escapeHTML(this.shortTime(item.published_at))}</small></span><span class="asset-pulse-news-arrow">↗</span>`;
+            return item.url
+                ? `<a class="asset-pulse-news" href="${escapeAttr(item.url)}" target="_blank" rel="noopener noreferrer">${content}</a>`
+                : `<div class="asset-pulse-news">${content}</div>`;
+        }).join('') : '<p class="asset-pulse-no-news">暂未找到足够相关的标题，可稍后刷新或进入完整舆情调整关键词。</p>';
+
+        host.innerHTML = `
+            <div class="asset-pulse-head">
+                <div class="asset-pulse-heading"><span class="asset-pulse-orb"><i></i></span><div><small>${asset.type === 'fund' ? '基金舆情脉搏' : '标的舆情脉搏'}</small><b>${escapeHTML(title)} <em>${escapeHTML(codeLabel)}</em></b></div></div>
+                <div class="asset-pulse-head-actions"><span class="asset-pulse-status ${escapeAttr(sentimentClass)}">${escapeHTML(sentimentLabel)}</span><button type="button" data-pulse-action="refresh" title="刷新舆情" aria-label="刷新当前标的舆情">↻</button></div>
+            </div>
+            <div class="asset-pulse-metrics">
+                <div class="asset-pulse-score ${escapeAttr(sentimentClass)}"><span>标题情绪</span><b>${score}</b><small>弱信号</small></div>
+                <div><span>相关样本</span><b>${escapeHTML(sampleSize)}</b><small>${escapeHTML(sourceCount)} 个来源</small></div>
+                <div><span>最新覆盖</span><b>${escapeHTML(this.shortTime(newestAt, true))}</b><small>${payload.sentimentError ? '情绪降级' : '近实时拉取'}</small></div>
+            </div>
+            <div class="asset-pulse-news-list">${headlines}</div>
+            <div class="asset-pulse-foot">
+                <p>仅基于标题与时间衰减，不代表事实判断。</p>
+                <div><button type="button" class="btn-sm" data-pulse-action="full">完整舆情</button><button type="button" class="btn-sm btn-ai" data-pulse-action="ai">${Icons.hot} AI研判</button></div>
+            </div>`;
+    },
+
+    renderError(host, asset, error) {
+        host.classList.remove('is-loading');
+        host.classList.add('has-error');
+        const label = asset.name || asset.code || '当前标的';
+        host.innerHTML = `
+            <div class="asset-pulse-head">
+                <div class="asset-pulse-heading"><span class="asset-pulse-orb muted"><i></i></span><div><small>标的舆情脉搏</small><b>${escapeHTML(label)}</b></div></div>
+                <span class="asset-pulse-status neutral">暂不可用</span>
+            </div>
+            <div class="asset-pulse-error"><p>${escapeHTML(error.message || '舆情服务暂时不可用')}</p><button type="button" class="btn-sm" data-pulse-action="refresh">重新加载</button></div>`;
+    },
+
+    shortTime(value, dateOnly = false) {
+        const text = String(value || '').trim();
+        if (!text) return '--';
+        const match = text.match(/^(\d{4})-(\d{2})-(\d{2})(?:\s+(\d{2}):(\d{2}))?/);
+        if (!match) return text.slice(0, dateOnly ? 10 : 16);
+        return dateOnly ? `${match[2]}-${match[3]}` : `${match[2]}-${match[3]} ${match[4] || '00'}:${match[5] || '00'}`;
+    },
+
+    refresh(host, asset) {
+        this.cache.delete(this.assetKey(this.normalizeAsset(asset.type, asset)));
+        this.focus(asset.type, asset, { target: host, force: true });
+    },
+
+    openFullNews(asset) {
+        const normalized = this.normalizeAsset(asset.type, asset);
+        const mode = document.getElementById('news-mode');
+        const input = document.getElementById('news-query-input');
+        if (mode) mode.value = normalized.type;
+        if (input) input.value = normalized.code || normalized.name;
+        if (typeof NewsModule !== 'undefined') {
+            const wasLoaded = NewsModule.loaded;
+            NewsModule.updateModeUI();
+            switchTab('news');
+            if (wasLoaded) NewsModule.search();
+        } else {
+            switchTab('news');
+        }
+    },
+
+    analyzeWithAI(asset) {
+        const normalized = this.normalizeAsset(asset.type, asset);
+        const typeLabel = normalized.type === 'fund' ? '基金' : '股票';
+        const label = normalized.name && normalized.code ? `${normalized.name}（${normalized.code}）` : (normalized.name || normalized.code);
+        const source = document.querySelector('.nav-tab.active')?.dataset.tab === 'dividend' ? '分红日历' : '标的舆情脉搏';
+        AdvisorModule.setAssetContext(normalized.type, normalized, source);
+        AdvisorModule.autoSend(`请研判${typeLabel} ${label} 的最新热点与舆情。必须调用 fa_get_asset_news 与 fa_get_sentiment_snapshot；需要判断市场反应时再自主选择行情、K线或资金工具。请区分新闻标题、可核验事实、标题情绪弱信号和推断，并说明数据时间、样本量、相关性与不确定性。`);
+    }
+};
+
+// ============================================================
+// 新闻舆情模块
+// ============================================================
+const NewsModule = {
+    initialized: false,
+    loaded: false,
+    current: null,
+
+    init() {
+        if (this.initialized) return;
+        this.initialized = true;
+        const mode = document.getElementById('news-mode');
+        const input = document.getElementById('news-query-input');
+        mode?.addEventListener('change', () => this.updateModeUI());
+        document.getElementById('news-query-btn')?.addEventListener('click', () => this.search());
+        document.getElementById('news-ai-btn')?.addEventListener('click', () => this.analyzeWithAI());
+        input?.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                this.search();
+            }
+        });
+        document.querySelectorAll('#news-quick-keywords [data-keyword]').forEach(button => {
+            button.addEventListener('click', () => {
+                if (mode) mode.value = 'market';
+                if (input) input.value = button.dataset.keyword || '';
+                this.updateModeUI();
+                this.search();
+            });
+        });
+        if (input && !input.value) input.value = 'A股,沪指';
+        this.updateModeUI();
+    },
+
+    onTabChange(tabName) {
+        if (tabName !== 'news' || this.loaded) return;
+        this.search();
+    },
+
+    updateModeUI() {
+        const mode = document.getElementById('news-mode')?.value || 'market';
+        const input = document.getElementById('news-query-input');
+        const quick = document.getElementById('news-quick-keywords');
+        const hint = document.getElementById('news-query-hint');
+        if (quick) quick.style.display = mode === 'market' ? 'flex' : 'none';
+        if (!input || !hint) return;
+        if (mode === 'stock') {
+            input.placeholder = '输入股票代码或名称，如：600519 / 贵州茅台';
+            hint.textContent = '股票代码会自动解析名称，并合并“代码 + 名称”搜索结果。';
+        } else if (mode === 'fund') {
+            input.placeholder = '输入基金代码或名称，如：005827 / 易方达蓝筹精选混合';
+            hint.textContent = '基金代码会自动解析基金名；严格过滤泛基金资讯，结果可能较少。';
+        } else {
+            input.placeholder = '市场关键词，支持逗号分隔，如：A股,沪指';
+            hint.textContent = '市场模式支持 1～4 个关键词；热点按跨关键词去重后的发布时间排序。';
+        }
+    },
+
+    parseAssetQuery(raw) {
+        const text = String(raw || '').trim();
+        const match = text.match(/(?:SH|SZ|BJ)?\d{6}(?:\.(?:SH|SZ|BJ))?/i);
+        return {
+            code: match ? match[0] : '',
+            name: match ? text.replace(match[0], '').replace(/^[\s,，()（）-]+|[\s,，()（）-]+$/g, '') : text
+        };
+    },
+
+    buildRequests() {
+        const mode = document.getElementById('news-mode')?.value || 'market';
+        const raw = document.getElementById('news-query-input')?.value.trim() || '';
+        const news = new URLSearchParams({ limit: '30' });
+        const sentiment = new URLSearchParams({ action: 'sentiment', limit: '30' });
+        let context = { mode, code: '', name: '', keywords: [] };
+
+        if (mode === 'market') {
+            const keywords = raw || 'A股,沪指';
+            news.set('action', 'market');
+            news.set('keywords', keywords);
+            sentiment.set('scope', 'market');
+            sentiment.set('keywords', keywords);
+            context.keywords = keywords.split(/[,，;；]+/).map(item => item.trim()).filter(Boolean).slice(0, 4);
+        } else {
+            const asset = this.parseAssetQuery(raw);
+            if (!asset.code && !asset.name) throw new Error('请输入股票或基金代码/名称');
+            news.set('action', 'asset');
+            news.set('asset_type', mode);
+            sentiment.set('scope', 'asset');
+            sentiment.set('asset_type', mode);
+            if (asset.code) {
+                news.set('code', asset.code);
+                sentiment.set('code', asset.code);
+            }
+            if (asset.name) {
+                news.set('name', asset.name);
+                sentiment.set('name', asset.name);
+            }
+            context = { mode, code: asset.code, name: asset.name, keywords: [] };
+        }
+        return { newsUrl: `news_api.php?${news}`, sentimentUrl: `news_api.php?${sentiment}`, context };
+    },
+
+    async fetchJson(url) {
+        const response = await fetch(url);
+        let data;
+        try {
+            data = await response.json();
+        } catch (error) {
+            throw new Error(`新闻接口返回无效数据（HTTP ${response.status}）`);
+        }
+        if (!response.ok || !data.success) throw new Error(data.message || `新闻接口请求失败（HTTP ${response.status}）`);
+        return data;
+    },
+
+    async search() {
+        const loading = document.getElementById('news-loading');
+        const errorBox = document.getElementById('news-error');
+        if (loading) loading.style.display = 'flex';
+        if (errorBox) errorBox.style.display = 'none';
+        try {
+            const request = this.buildRequests();
+            // 先完成新闻列表，再请求情绪，确保并行工具场景也能复用同一份新闻缓存。
+            const news = await this.fetchJson(request.newsUrl);
+            this.renderNews(news, request.context);
+            let sentiment = null;
+            try {
+                sentiment = await this.fetchJson(request.sentimentUrl);
+                this.renderSentiment(sentiment.data || {});
+            } catch (sentimentError) {
+                this.renderSentiment(null);
+                if (errorBox) {
+                    errorBox.textContent = `新闻已加载；情绪快照暂不可用：${sentimentError.message}`;
+                    errorBox.style.display = 'block';
+                }
+            }
+            this.current = {
+                ...request.context,
+                items: Array.isArray(news.data) ? news.data : [],
+                meta: news.meta || {},
+                sentiment: sentiment?.data || null
+            };
+            const mapped = news.meta?.asset || {};
+            if (request.context.mode !== 'market') {
+                this.current.code = mapped.code || request.context.code;
+                this.current.name = mapped.name || request.context.name;
+                AdvisorModule.setAssetContext(request.context.mode, mapped, '新闻舆情');
+            } else {
+                APP.advisorContext.source = '市场新闻舆情';
+                AdvisorModule.updateContext();
+            }
+            this.loaded = true;
+            return this.current;
+        } catch (error) {
+            if (errorBox) {
+                errorBox.textContent = error.message || '新闻查询失败，请稍后重试';
+                errorBox.style.display = 'block';
+            }
+            this.renderNews({ data: [], meta: {} }, { mode: document.getElementById('news-mode')?.value || 'market' });
+            this.renderSentiment(null);
+            return null;
+        } finally {
+            if (loading) loading.style.display = 'none';
+        }
+    },
+
+    renderNews(payload, context) {
+        const list = document.getElementById('news-list');
+        const title = document.getElementById('news-results-title');
+        const meta = document.getElementById('news-results-meta');
+        if (!list) return;
+        const items = Array.isArray(payload.data) ? payload.data : [];
+        const asset = payload.meta?.asset || {};
+        const label = context.mode === 'market'
+            ? `市场热点 · ${(payload.meta?.keywords || context.keywords || []).join(' / ')}`
+            : `${context.mode === 'fund' ? '基金' : '股票'}新闻 · ${asset.name || context.name || asset.code || context.code || ''}`;
+        if (title) title.innerHTML = `${Icons.table} ${escapeHTML(label)}`;
+        if (meta) meta.textContent = `${items.length} 条 · ${payload.meta?.mapping_status === 'resolved' ? '名称已自动映射 · ' : ''}${payload.source || 'eastmoney_news'}`;
+        if (!items.length) {
+            list.innerHTML = '<p class="placeholder-text">没有找到足够相关的新闻。基金代码检索结果较少时，可尝试输入基金全名。</p>';
+            return;
+        }
+        list.innerHTML = items.map((item, index) => `
+            <a class="news-item" href="${escapeAttr(item.url || '#')}" target="_blank" rel="noopener noreferrer">
+                <span class="news-item-rank">${index + 1}</span>
+                <span class="news-item-main">
+                    <b>${escapeHTML(item.title || '未命名新闻')}</b>
+                    <span><em>${escapeHTML(item.source || '未知来源')}</em><time>${escapeHTML(item.published_at || '时间未知')}</time></span>
+                </span>
+                <span class="news-item-open" aria-hidden="true">↗</span>
+            </a>
+        `).join('');
+    },
+
+    renderSentiment(snapshot) {
+        const score = Number(snapshot?.score);
+        const label = snapshot?.label || 'neutral';
+        const labelMap = { positive: '偏正面', negative: '偏负面', neutral: snapshot ? '中性' : '待查询' };
+        const pill = document.getElementById('news-sentiment-label');
+        const scoreEl = document.getElementById('news-sentiment-score');
+        if (pill) {
+            pill.className = `news-sentiment-pill ${label}`;
+            pill.textContent = labelMap[label] || '中性';
+        }
+        if (scoreEl) scoreEl.textContent = Number.isFinite(score) ? `${score > 0 ? '+' : ''}${score.toFixed(3)}` : '--';
+        const marker = document.getElementById('news-score-marker');
+        if (marker) marker.style.left = `${Number.isFinite(score) ? Math.max(0, Math.min(100, (score + 1) * 50)) : 50}%`;
+        const counts = snapshot?.counts || {};
+        const set = (id, value) => { const el = document.getElementById(id); if (el) el.textContent = String(value); };
+        set('news-positive-count', counts.positive || 0);
+        set('news-neutral-count', counts.neutral || 0);
+        set('news-negative-count', counts.negative || 0);
+        set('news-sample-size', snapshot?.sample_size || 0);
+        set('news-source-count', snapshot?.source_count || 0);
+        set('news-confidence', snapshot ? `${Math.round((Number(snapshot.confidence) || 0) * 100)}%` : '--');
+        set('news-freshness', snapshot?.newest_at ? `最新 ${snapshot.newest_at}` : '尚未加载');
+    },
+
+    async analyzeWithAI() {
+        let current = this.current;
+        if (!current) current = await this.search();
+        if (!current) return;
+        if (current.mode === 'market') {
+            const keywords = current.keywords.join('、') || 'A股、沪指、基金市场';
+            AdvisorModule.autoSend(`请研究当前市场新闻热点。必须调用 fa_get_market_hot_news 与 fa_get_sentiment_snapshot，关键词为：${keywords}。请把新闻事实、标题情绪弱信号和行情/资金信号分开，不要把热度或标题情绪当作事实；说明数据时间、样本量、来源失败项与不确定性。`);
+            return;
+        }
+        const assetType = current.mode === 'fund' ? '基金' : '股票';
+        const label = current.name && current.code ? `${current.name}（${current.code}）` : (current.name || current.code);
+        AdvisorModule.setAssetContext(current.mode, { code: current.code, name: current.name }, '新闻舆情AI研判');
+        AdvisorModule.autoSend(`请研究${assetType} ${label} 的最新新闻与舆情。必须调用 fa_get_asset_news 与 fa_get_sentiment_snapshot；需要判断市场反应时再自主选择行情、K线或资金工具。请区分新闻标题、官方事实、情绪弱信号和推断，说明数据时间、相关性、样本不足与上游失败项。`);
+    }
+};
+
+// ============================================================
 // 雪球洞察模块
 // ============================================================
 const XueqiuModule = {
@@ -5104,6 +5634,7 @@ function switchTab(tabName) {
     });
     document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + tabName));
     if (typeof DividendModule !== 'undefined') DividendModule.onTabChange(tabName);
+    if (typeof NewsModule !== 'undefined') NewsModule.onTabChange(tabName);
 
     // 切换到 AI Tab 时，同步消息历史到 #chat-container
     if (tabName === 'ai' && APP.chatContainer) {
@@ -5174,6 +5705,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // 初始化 AI 顾问面板
     AdvisorModule.init();
+    AssetPulseModule.init();
 
     // 创建会话
     fetch('create_session.php', { method: 'POST' })
@@ -5267,6 +5799,12 @@ document.addEventListener('DOMContentLoaded', function() {
         const frequency = document.getElementById('frequency').value;
         const count = document.getElementById('count').value;
         const end_date = document.getElementById('end_date').value;
+        APP.stockQueryController?.abort();
+        APP.stockQueryController = new AbortController();
+        const signal = APP.stockQueryController.signal;
+        const requestId = ++APP.stockQueryRequestId;
+        const queryWithAI = APP.queryWithAI;
+        APP.queryWithAI = false;
 
         loading.style.display = 'flex';
         errorDiv.style.display = 'none';
@@ -5275,13 +5813,15 @@ document.addEventListener('DOMContentLoaded', function() {
         if (typeof AdvisorModule !== 'undefined') {
             AdvisorModule.setAssetContext('stock', { code }, '股票查询');
         }
+        AssetPulseModule.focus('stock', { code }, { target: 'stock-asset-pulse' });
 
         const source = document.getElementById('data-source')?.value || 'auto';
         const url = `api.php?code=${encodeURIComponent(code)}&frequency=${encodeURIComponent(frequency)}&count=${encodeURIComponent(count)}&end_date=${encodeURIComponent(end_date)}&source=${encodeURIComponent(source)}`;
 
-        fetch(url)
+        fetch(url, { signal })
             .then(r => r.json())
             .then(data => {
+                if (requestId !== APP.stockQueryRequestId) return;
                 loading.style.display = 'none';
                 if (!data.success) throw new Error(data.message || '获取数据失败');
 
@@ -5327,19 +5867,22 @@ document.addEventListener('DOMContentLoaded', function() {
                     document.getElementById('export-data-btn').style.display = 'inline-block';
 
                     // 获取实时行情
-                    QuoteModule.fetch(code).then(q => QuoteModule.render(q));
+                    QuoteModule.fetch(code).then(q => {
+                        if (requestId === APP.stockQueryRequestId) QuoteModule.render(q);
+                    });
 
                     // 根据标志决定是否触发AI分析
-                    if (APP.queryWithAI) {
-                        APP.queryWithAI = false;
+                    if (queryWithAI) {
                         // 先获取资金流向数据，再拼接AI提示词
                         FlowModule.fetch(code).then(flowData => {
+                            if (requestId !== APP.stockQueryRequestId) return null;
                             FlowModule.render(flowData);
                             return flowData;
                         }).catch(e => {
                             console.warn('获取资金流向失败，AI分析将不含资金数据:', e);
                             return null;
                         }).then(flowData => {
+                            if (requestId !== APP.stockQueryRequestId) return;
                             // 将资金流向数据拼接到AI分析提示词
                             if (flowData && flowData.length > 0) {
                                 const recentFlow = flowData.slice(-10);
@@ -5358,7 +5901,9 @@ document.addEventListener('DOMContentLoaded', function() {
                         });
                     } else {
                         // 非AI分析模式，直接获取资金流向渲染面板
-                        FlowModule.fetch(code).then(f => FlowModule.render(f)).catch(e => console.warn('获取资金流向失败:', e));
+                        FlowModule.fetch(code).then(f => {
+                            if (requestId === APP.stockQueryRequestId) FlowModule.render(f);
+                        }).catch(e => console.warn('获取资金流向失败:', e));
                     }
                 } else {
                     errorDiv.textContent = '没有查询到数据';
@@ -5366,9 +5911,13 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
             })
             .catch(error => {
+                if (error.name === 'AbortError' || requestId !== APP.stockQueryRequestId) return;
                 loading.style.display = 'none';
                 errorDiv.textContent = error.message;
                 errorDiv.style.display = 'block';
+            })
+            .finally(() => {
+                if (requestId === APP.stockQueryRequestId) APP.stockQueryController = null;
             });
     });
 
@@ -5649,6 +6198,9 @@ document.addEventListener('DOMContentLoaded', function() {
     });
     document.getElementById('xq-screener-ai-btn')?.addEventListener('click', () => XueqiuModule.screenerAIQuery());
     document.getElementById('xq-fundx-btn')?.addEventListener('click', () => XueqiuModule.fetchFundx());
+
+    // === 新闻舆情 ===
+    NewsModule.init();
 
     // === 基金分析 ===
     FundModule.init();

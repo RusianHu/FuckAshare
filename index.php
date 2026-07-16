@@ -100,6 +100,7 @@ $fundDividendAutoRefreshSeconds = max(300, min(1800, (int)AppConfig::get('fund_d
             <button class="nav-tab" data-tab="strategy">策略池</button>
             <button class="nav-tab" data-tab="sector">资金与板块</button>
             <button class="nav-tab" data-tab="dividend">分红日历</button>
+            <button class="nav-tab" data-tab="news">新闻舆情</button>
             <button class="nav-tab" data-tab="xueqiu">雪球洞察</button>
             <button class="nav-tab" data-tab="fund">基金分析</button>
             <button class="nav-tab" data-tab="ai">AI顾问</button>
@@ -226,6 +227,12 @@ $fundDividendAutoRefreshSeconds = max(300, min(1800, (int)AppConfig::get('fund_d
                         <div class="card-header"><h3><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-flow"></use></svg></span> 资金流向</h3></div>
                         <div class="flow-content" id="flow-content">
                             <p class="placeholder-text">输入股票代码查询后显示</p>
+                        </div>
+                    </div>
+                    <div class="card asset-pulse-card" id="stock-asset-pulse" data-asset-pulse="stock" aria-live="polite">
+                        <div class="asset-pulse-empty">
+                            <span class="asset-pulse-empty-icon"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-hot"></use></svg></span></span>
+                            <div><b>标的舆情脉搏</b><p>查询股票后，这里会同步呈现相关热点、标题情绪与样本覆盖。</p></div>
                         </div>
                     </div>
                 </div>
@@ -522,6 +529,87 @@ $fundDividendAutoRefreshSeconds = max(300, min(1800, (int)AppConfig::get('fund_d
             </div>
         </div>
 
+        <!-- 新闻舆情页 -->
+        <div class="tab-panel" id="panel-news">
+            <div class="news-layout">
+                <div class="card news-query-card">
+                    <div class="card-header news-query-header">
+                        <div>
+                            <h3><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-quote"></use></svg></span> 新闻与舆情验证台</h3>
+                            <p class="news-subtitle">按股票、基金或市场关键词聚合东方财富新闻搜索，只展示标题、来源、时间和原文链接</p>
+                        </div>
+                        <span class="news-provider-badge">PoC · 东方财富搜索</span>
+                    </div>
+                    <div class="news-controls">
+                        <select id="news-mode" aria-label="新闻查询类型">
+                            <option value="market">市场热点</option>
+                            <option value="stock">指定股票</option>
+                            <option value="fund">指定基金</option>
+                        </select>
+                        <input type="text" id="news-query-input" placeholder="市场关键词，支持逗号分隔，如：A股,沪指" aria-label="新闻查询关键词" enterkeyhint="search" autocapitalize="off" spellcheck="false">
+                        <button id="news-query-btn" class="btn-sm btn-accent" type="button"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-search"></use></svg></span> 查询</button>
+                        <button id="news-ai-btn" class="btn-sm btn-ai" type="button"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-ai"></use></svg></span> AI研判</button>
+                    </div>
+                    <div class="news-quick-keywords" id="news-quick-keywords" aria-label="快捷市场关键词">
+                        <button type="button" data-keyword="A股,沪指">A股大盘</button>
+                        <button type="button" data-keyword="基金市场,公募基金">公募基金</button>
+                        <button type="button" data-keyword="科技股,人工智能">科技 AI</button>
+                        <button type="button" data-keyword="红利,高股息">红利高股息</button>
+                        <button type="button" data-keyword="医药,创新药">医药创新药</button>
+                    </div>
+                    <div class="news-query-hint" id="news-query-hint">市场模式支持 1～4 个关键词；热点按跨关键词去重后的发布时间排序。</div>
+                </div>
+
+                <div id="news-loading" class="loading-spinner news-loading" style="display:none;"><div class="spinner"></div><span>正在聚合新闻并计算标题情绪...</span></div>
+                <div id="news-error" class="error-msg" style="display:none;"></div>
+
+                <div class="news-summary-grid">
+                    <div class="card news-sentiment-card">
+                        <div class="news-summary-heading">
+                            <span>标题情绪快照</span>
+                            <span id="news-sentiment-label" class="news-sentiment-pill neutral">待查询</span>
+                        </div>
+                        <div class="news-score-row">
+                            <strong id="news-sentiment-score">--</strong>
+                            <div class="news-score-track" aria-hidden="true"><span id="news-score-marker"></span></div>
+                        </div>
+                        <div class="news-summary-metrics">
+                            <div><span>正面</span><b id="news-positive-count">0</b></div>
+                            <div><span>中性</span><b id="news-neutral-count">0</b></div>
+                            <div><span>负面</span><b id="news-negative-count">0</b></div>
+                        </div>
+                    </div>
+                    <div class="card news-coverage-card">
+                        <div class="news-summary-heading"><span>样本覆盖</span><span id="news-freshness">尚未加载</span></div>
+                        <div class="news-coverage-metrics">
+                            <div><span>新闻样本</span><b id="news-sample-size">0</b></div>
+                            <div><span>来源数量</span><b id="news-source-count">0</b></div>
+                            <div><span>置信度</span><b id="news-confidence">--</b></div>
+                        </div>
+                        <p>情绪值仅由标题词典与时间衰减确定性计算，是弱信号，不替代公告事实或人工核验。</p>
+                    </div>
+                </div>
+
+                <div class="card news-list-card">
+                    <div class="card-header">
+                        <div>
+                            <h3 id="news-results-title"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-table"></use></svg></span> 最新新闻</h3>
+                            <span id="news-results-meta" class="news-results-meta">选择查询条件后加载</span>
+                        </div>
+                    </div>
+                    <div id="news-list" class="news-list">
+                        <p class="placeholder-text">进入本页后将自动加载 A 股与沪指市场新闻</p>
+                    </div>
+                </div>
+
+                <div class="news-note-grid">
+                    <div class="card news-note-card"><h4>字段边界</h4><p>页面、API 与 AI 工具均不返回新闻正文，只保留标题、来源、发布时间和原文链接。</p></div>
+                    <div class="card news-note-card"><h4>数据口径</h4><p>“热点”是关键词搜索结果跨源去重后的新近性排序，不等同于交易所公告或全网热度榜。</p></div>
+                    <div class="card news-note-card"><h4>授权提示</h4><p>当前东方财富公开搜索仅用于技术验证；公开商业化或再分发前仍需确认内容与接口授权。</p></div>
+                </div>
+            </div>
+        </div>
+
         <!-- 雪球洞察页 -->
         <div class="tab-panel" id="panel-xueqiu">
             <div class="xueqiu-layout">
@@ -676,6 +764,14 @@ $fundDividendAutoRefreshSeconds = max(300, min(1800, (int)AppConfig::get('fund_d
                             <div id="fund-detail-loading" style="display:none;" class="loading-spinner"><div class="spinner"></div><span>加载基金详情...</span></div>
                             <div class="fund-detail" id="fund-detail">
                                 <p class="placeholder-text">从搜索结果、自选或排行中打开基金详情</p>
+                            </div>
+                            <div class="fund-asset-pulse-slot">
+                                <div id="fund-asset-pulse" class="asset-pulse-card asset-pulse-inline" data-asset-pulse="fund" aria-live="polite">
+                                    <div class="asset-pulse-empty asset-pulse-empty-compact">
+                                        <span class="asset-pulse-empty-icon"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-hot"></use></svg></span></span>
+                                        <div><b>基金舆情</b><p>选择基金后同步加载相关标题与情绪弱信号。</p></div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>

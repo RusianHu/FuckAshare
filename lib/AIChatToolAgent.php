@@ -643,6 +643,37 @@ class AIChatToolAgent
             }
         }
 
+        if ($name === 'fa_get_asset_news') {
+            $isFund = $this->looksLikeFundRequest($latestUser);
+            $codes = $isFund ? $this->extractFundCodes($latestUser) : $this->extractStockCodes($latestUser);
+            if (!empty($codes)) {
+                return [
+                    'asset_type' => $isFund ? 'fund' : 'stock',
+                    'code' => $codes[0],
+                    'name' => null,
+                    'limit' => 20,
+                ];
+            }
+        }
+
+        if ($name === 'fa_get_market_hot_news' && preg_match('/(新闻|热点|资讯|舆情|催化)/u', $latestUser)) {
+            return ['keywords' => null, 'limit' => 30];
+        }
+
+        if ($name === 'fa_get_sentiment_snapshot' && preg_match('/(新闻|热点|资讯|舆情|情绪|催化)/u', $latestUser)) {
+            $isFund = $this->looksLikeFundRequest($latestUser);
+            $codes = $isFund ? $this->extractFundCodes($latestUser) : $this->extractStockCodes($latestUser);
+            $assetScope = !empty($codes);
+            return [
+                'scope' => $assetScope ? 'asset' : 'market',
+                'asset_type' => $assetScope ? ($isFund ? 'fund' : 'stock') : null,
+                'code' => $assetScope ? $codes[0] : null,
+                'name' => null,
+                'keywords' => null,
+                'limit' => 30,
+            ];
+        }
+
         return null;
     }
 
@@ -1002,7 +1033,7 @@ class AIChatToolAgent
         $lines = [
             '你是一位专业、谨慎的金融研究助理，服务于 A 股、基金、板块资金和市场热度研究。',
             $includeToolInstructions
-                ? '你可以使用服务端提供的只读工具查询行情、K线、资金流、股票分红日历、基金、雪球热度、市场宽度和确定性技术指标。'
+                ? '你可以使用服务端提供的只读工具查询行情、K线、资金流、股票分红日历、基金、新闻舆情、雪球热度、市场宽度和确定性技术指标。'
                 : '当前渠道未启用正式工具调用；不要编造实时价格、资金流、基金净值、排行或新闻；如需实时事实，请说明需要通过服务端数据源查询。',
             $includeToolInstructions
                 ? '优先用工具获取事实数据；不要编造实时价格、资金流、基金净值、排行或新闻。'
@@ -1013,6 +1044,7 @@ class AIChatToolAgent
             $lines = array_merge($lines, [
                 '涉及大盘环境、市场情绪、市场宽度、涨跌家数、涨停跌停、普涨普跌或赚钱效应时，必须优先调用 fa_get_market_breadth。',
                 '涉及市场扫描、资金流入、今日涨幅排行、热门股票或候选标的时，先调用 fa_get_market_breadth 判断市场环境，再调用 fa_get_hot_stocks；按涨幅排序使用 sort=f3，按主力净流入排序使用 sort=f62。',
+                '涉及单只股票/基金的最新新闻、媒体报道、事件催化或舆情时，调用 fa_get_asset_news 获取标题事实，并调用 fa_get_sentiment_snapshot 获取可解释的标题情绪弱信号；涉及大盘、板块或主题新闻热点时，调用 fa_get_market_hot_news，并按需调用 fa_get_sentiment_snapshot。新闻搜索不是官方公告源，标题情绪不等于事实、全网舆情或交易信号，回答必须说明样本量、时间和相关性缺口。',
                 '涉及股票分红日历、临近分红、股权登记日、除权除息日、抢息、抢分红或本次现金股息率时，必须先查询股票分红工具：全市场或日期窗口扫描使用 fa_get_upcoming_dividends；已明确单只股票时优先使用 fa_get_stock_dividend_profile，无需先重复扫描全市场；不要用雪球年度股息率替代实施事件。',
                 '研判单只分红候选时应调用 fa_get_stock_dividend_profile 核查历史分红，再由你按问题需要从行情、技术指标、资金流和市场宽度中最多选择 3 个关键工具；档案已有有效价格时不要重复查询行情，用户未询问大盘环境时不必调用市场宽度；相互独立的查询应尽量在同一轮并行发出，避免无意义的串行轮次和过大的工具上下文；本次事件现金率不是年化收益，必须说明除息价格调整、税费和价格波动风险。',
                 '基金筛选/推荐/挑选类问题（如“帮我挑几只红利型基金”“最好的XX基金”）且未指定代码时，必须优先调用 fa_screen_funds 召回候选池，不要只用 fa_search_funds 单关键词搜索；红利主题用 theme=dividend。',
@@ -1343,6 +1375,9 @@ class AIChatToolAgent
             'fa_get_sector_flow' => '板块资金流',
             'fa_get_hot_stocks' => '市场热榜',
             'fa_get_market_breadth' => '市场宽度',
+            'fa_get_asset_news' => '标的最新新闻',
+            'fa_get_market_hot_news' => '市场热点新闻',
+            'fa_get_sentiment_snapshot' => '新闻标题情绪快照',
             'fa_get_upcoming_dividends' => '临近分红候选',
             'fa_get_stock_dividend_profile' => '个股分红历史',
             'fa_get_xueqiu_hot_stock' => '雪球热股',

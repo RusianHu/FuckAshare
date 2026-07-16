@@ -83,6 +83,7 @@ return [
         'eastmoney_dividend' => ['failure_threshold' => 3, 'cooldown' => 60], // ✅ 东方财富分红公司行动
         'eastmoney_fund_dividend' => ['failure_threshold' => 3, 'cooldown' => 60], // ✅ 东方财富基金分红事件源；默认 3 次 / 60s
         'csindex' => ['failure_threshold' => 3, 'cooldown' => 60], // ✅ 中证指数官网历史表现；独立熔断，默认 3 次 / 60s
+        'eastmoney_news' => ['failure_threshold' => 3, 'cooldown' => 60], // ✅ 东方财富公开新闻搜索 PoC；独立熔断
     ],
 
     // ════════════════════════════════════════════════════════════
@@ -104,6 +105,9 @@ return [
         'sector_flow'    => 60,     // ✅ 板块资金流向；默认 60s
         'hot_stocks'     => 30,     // ✅ 热门股票资金榜；默认 30s
         'market_breadth' => 20,     // ✅ 市场宽度/涨跌家数/近似涨跌停统计；默认 20s
+        'news_asset'     => 60,     // ✅ 指定股票/基金新闻；默认 60s
+        'news_market'    => 60,     // ✅ 市场关键词热点新闻；默认 60s
+        'news_sentiment' => 90,     // ✅ 标题情绪快照；默认 90s
 
         // ── FundService（基金）──
         'estimate'       => 10,     // ✅ 基金实时估值（盘中短缓存）；默认 10s
@@ -159,6 +163,15 @@ return [
         'stampede_lock_ttl'   => 5,       // ✅ 防击穿锁超时；默认 5s
         'stampede_wait_ms'    => 500,     // ✅ 防击穿等待；默认 500ms
     ],
+
+    // ── 新闻舆情 PoC ──
+    // 东方财富公开搜索仅作为可替换 Provider；对外严格只返回标题、来源、时间、链接。
+    'news' => [
+        'provider' => 'eastmoney',
+        'default_market_keywords' => ['A股', '沪指', '基金市场'],
+        'max_queries' => 4,
+    ],
+
     // ════════════════════════════════════════════════════════════
     // ── 基金研究聚合工具配置 ──
     // ════════════════════════════════════════════════════════════

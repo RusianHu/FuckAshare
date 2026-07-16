@@ -9,6 +9,7 @@ require_once __DIR__ . '/MarketDataService.php';
 require_once __DIR__ . '/FundService.php';
 require_once __DIR__ . '/DividendService.php';
 require_once __DIR__ . '/FundDividendService.php';
+require_once __DIR__ . '/NewsService.php';
 require_once __DIR__ . '/StockCode.php';
 require_once __DIR__ . '/DataSourceResult.php';
 
@@ -26,6 +27,9 @@ class AIToolExecutor
     /** @var FundDividendService */
     private $fundDividend;
 
+    /** @var NewsService */
+    private $news;
+
     /** @var int */
     private $outputCharLimit;
 
@@ -38,6 +42,9 @@ class AIToolExecutor
         'fa_get_sector_flow' => 'executeSectorFlow',
         'fa_get_hot_stocks' => 'executeHotStocks',
         'fa_get_market_breadth' => 'executeMarketBreadth',
+        'fa_get_asset_news' => 'executeAssetNews',
+        'fa_get_market_hot_news' => 'executeMarketHotNews',
+        'fa_get_sentiment_snapshot' => 'executeSentimentSnapshot',
         'fa_get_upcoming_dividends' => 'executeUpcomingDividends',
         'fa_get_stock_dividend_profile' => 'executeStockDividendProfile',
         'fa_get_xueqiu_hot_stock' => 'executeXueqiuHotStock',
@@ -73,12 +80,13 @@ class AIToolExecutor
         $this->researchState = $state;
     }
 
-    public function __construct(?MarketDataService $market = null, ?FundService $fund = null, int $outputCharLimit = 30000, ?DividendService $dividend = null, ?FundDividendService $fundDividend = null)
+    public function __construct(?MarketDataService $market = null, ?FundService $fund = null, int $outputCharLimit = 30000, ?DividendService $dividend = null, ?FundDividendService $fundDividend = null, ?NewsService $news = null)
     {
         $this->market = $market ?: new MarketDataService();
         $this->fund = $fund ?: new FundService();
         $this->dividend = $dividend ?: new DividendService(null, $this->market);
         $this->fundDividend = $fundDividend ?: new FundDividendService(null, $this->fund, null, $this->market);
+        $this->news = $news ?: new NewsService(null, $this->market, $this->fund);
         $this->outputCharLimit = max(100, $outputCharLimit);
     }
 
@@ -180,6 +188,49 @@ class AIToolExecutor
             $this->enum($args['scope'] ?? null, SecurityAudit::ALLOWED_MARKET_BREADTH_SCOPES, 'a_share'),
             $this->bool($args['include_limit_stats'] ?? null, true),
             $this->bool($args['include_index_quotes'] ?? null, true)
+        ), $started);
+    }
+
+    private function executeAssetNews(array $args, float $started): array
+    {
+        $assetType = $this->enum($args['asset_type'] ?? null, ['stock', 'fund'], 'stock');
+        $code = $this->safeText($args['code'] ?? '', SecurityAudit::MAX_CODE_LENGTH, true);
+        $name = $this->safeText($args['name'] ?? '', SecurityAudit::MAX_KEYWORD_LENGTH, true);
+        if ($code !== '') {
+            $code = $assetType === 'fund' ? $this->fundCode($code) : $this->stockCode($code);
+        }
+        return $this->fromResult($this->news->assetNews(
+            $assetType,
+            $code,
+            $name,
+            $this->int($args['limit'] ?? null, 1, 50, 20)
+        ), $started);
+    }
+
+    private function executeMarketHotNews(array $args, float $started): array
+    {
+        return $this->fromResult($this->news->marketHotNews(
+            $this->newsKeywords($args['keywords'] ?? null),
+            $this->int($args['limit'] ?? null, 1, 50, 30)
+        ), $started);
+    }
+
+    private function executeSentimentSnapshot(array $args, float $started): array
+    {
+        $scope = $this->enum($args['scope'] ?? null, ['asset', 'market'], 'market');
+        $assetType = $this->enum($args['asset_type'] ?? null, ['stock', 'fund'], 'stock');
+        $code = $this->safeText($args['code'] ?? '', SecurityAudit::MAX_CODE_LENGTH, true);
+        $name = $this->safeText($args['name'] ?? '', SecurityAudit::MAX_KEYWORD_LENGTH, true);
+        if ($scope === 'asset' && $code !== '') {
+            $code = $assetType === 'fund' ? $this->fundCode($code) : $this->stockCode($code);
+        }
+        return $this->fromResult($this->news->sentimentSnapshot(
+            $scope,
+            $assetType,
+            $code,
+            $name,
+            $this->newsKeywords($args['keywords'] ?? null),
+            $this->int($args['limit'] ?? null, 5, 50, 30)
         ), $started);
     }
 
@@ -974,5 +1025,18 @@ class AIToolExecutor
             throw new InvalidArgumentException('文本参数包含不允许的外部地址或命令字符');
         }
         return $text;
+    }
+
+    /** @return string[] */
+    private function newsKeywords($values): array
+    {
+        if ($values === null) return [];
+        if (!is_array($values)) throw new InvalidArgumentException('keywords 必须是数组');
+        $result = [];
+        foreach (array_slice($values, 0, 4) as $value) {
+            $text = $this->safeText($value, 60, true);
+            if ($text !== '') $result[$text] = $text;
+        }
+        return array_values($result);
     }
 }
