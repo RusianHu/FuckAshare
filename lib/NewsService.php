@@ -5,6 +5,9 @@
 
 require_once __DIR__ . '/NewsDataProvider.php';
 require_once __DIR__ . '/EastmoneyNewsClient.php';
+require_once __DIR__ . '/EastmoneyF10NewsClient.php';
+require_once __DIR__ . '/EastmoneyFastNewsClient.php';
+require_once __DIR__ . '/CompositeNewsProvider.php';
 require_once __DIR__ . '/MarketDataService.php';
 require_once __DIR__ . '/FundService.php';
 require_once __DIR__ . '/CacheStoreFactory.php';
@@ -43,7 +46,7 @@ class NewsService
         ?FundService $fund = null,
         ?CacheStore $cache = null
     ) {
-        $this->provider = $provider ?: new EastmoneyNewsClient();
+        $this->provider = $provider ?: $this->createDefaultProvider();
         $this->market = $market ?: new MarketDataService();
         $this->fund = $fund ?: new FundService();
         $this->cache = $cache ?: CacheStoreFactory::getInstance();
@@ -58,6 +61,15 @@ class NewsService
         $this->defaultMarketKeywords = $this->normalizeKeywords(is_array($configuredKeywords) ? $configuredKeywords : self::DEFAULT_MARKET_KEYWORDS);
         if (empty($this->defaultMarketKeywords)) $this->defaultMarketKeywords = self::DEFAULT_MARKET_KEYWORDS;
         $this->maxQueries = max(1, min(4, (int)AppConfig::get('news.max_queries', 4)));
+    }
+
+    private function createDefaultProvider(): NewsDataProvider
+    {
+        $provider = strtolower(trim((string)AppConfig::get('news.provider', 'eastmoney_composite')));
+        if ($provider === 'eastmoney') return new EastmoneyNewsClient();
+        if ($provider === 'eastmoney_f10') return new EastmoneyF10NewsClient();
+        if ($provider === 'eastmoney_fast') return new EastmoneyFastNewsClient();
+        return new CompositeNewsProvider(new EastmoneyNewsClient(), new EastmoneyF10NewsClient(), new EastmoneyFastNewsClient());
     }
 
     public function assetNews(string $assetType, string $code = '', string $name = '', int $limit = 20): DataSourceResult
@@ -107,6 +119,12 @@ class NewsService
                 'total' => count($items),
                 'partial' => (bool)($upstream->meta['partial'] ?? false),
                 'query_statuses' => $upstream->meta['query_statuses'] ?? [],
+                'active_provider' => $upstream->meta['active_provider'] ?? $upstream->source,
+                'provider_chain' => $upstream->meta['provider_chain'] ?? [$upstream->source],
+                'provider_statuses' => $upstream->meta['provider_statuses'] ?? [],
+                'provider_route_reason' => $upstream->meta['provider_route_reason'] ?? null,
+                'provider_route_stage' => $upstream->meta['provider_route_stage'] ?? null,
+                'capability_filtered' => (bool)($upstream->meta['capability_filtered'] ?? false),
                 'fields' => ['title', 'source', 'published_at', 'url'],
                 'content_exposed' => false,
             ]);
@@ -133,6 +151,12 @@ class NewsService
                 'total' => count($items),
                 'partial' => (bool)($upstream->meta['partial'] ?? false),
                 'query_statuses' => $upstream->meta['query_statuses'] ?? [],
+                'active_provider' => $upstream->meta['active_provider'] ?? $upstream->source,
+                'provider_chain' => $upstream->meta['provider_chain'] ?? [$upstream->source],
+                'provider_statuses' => $upstream->meta['provider_statuses'] ?? [],
+                'provider_route_reason' => $upstream->meta['provider_route_reason'] ?? null,
+                'provider_route_stage' => $upstream->meta['provider_route_stage'] ?? null,
+                'capability_filtered' => (bool)($upstream->meta['capability_filtered'] ?? false),
                 'fields' => ['title', 'source', 'published_at', 'url'],
                 'content_exposed' => false,
             ]);

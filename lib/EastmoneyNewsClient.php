@@ -82,6 +82,7 @@ class EastmoneyNewsClient implements NewsDataProvider
         $items = [];
         $statuses = [];
         $successCount = 0;
+        $capabilityFiltered = false;
 
         foreach ($keywords as $keyword) {
             $response = $responses[$keyword] ?? ['body' => '', 'http_code' => 0, 'error' => 'missing_response', 'content_type' => ''];
@@ -107,7 +108,13 @@ class EastmoneyNewsClient implements NewsDataProvider
             }
 
             $successCount++;
-            $rows = $parsed['result']['cmsArticleWebOld'] ?? [];
+            $payload = $parsed['payload'];
+            $resultPayload = is_array($payload['result'] ?? null) ? $payload['result'] : [];
+            $resultBuckets = array_keys($resultPayload);
+            $hasNewsBucket = array_key_exists('cmsArticleWebOld', $resultPayload);
+            $regionFiltered = !$hasNewsBucket && in_array('passportWeb', $resultBuckets, true);
+            if ($regionFiltered) $capabilityFiltered = true;
+            $rows = $resultPayload['cmsArticleWebOld'] ?? [];
             $rowCount = 0;
             if (is_array($rows)) {
                 foreach ($rows as $row) {
@@ -124,6 +131,11 @@ class EastmoneyNewsClient implements NewsDataProvider
                 'success' => true,
                 'http_code' => 200,
                 'count' => $rowCount,
+                'requested_callback' => $callbacks[$keyword],
+                'actual_callback' => $parsed['callback'],
+                'callback_rewritten' => $parsed['callback'] !== $callbacks[$keyword],
+                'result_buckets' => $resultBuckets,
+                'capability' => $regionFiltered ? 'region_filtered_news_bucket' : 'news_search',
             ];
         }
 
@@ -140,6 +152,8 @@ class EastmoneyNewsClient implements NewsDataProvider
             'keywords' => $keywords,
             'query_statuses' => $statuses,
             'partial' => $successCount < count($keywords),
+            'capability_filtered' => $capabilityFiltered,
+            'capability_reason' => $capabilityFiltered ? 'cmsArticleWebOld_missing_passportWeb_only' : null,
             'copyright_notice' => '仅返回标题、来源、时间和原文链接；公开商业化使用前需确认数据授权。',
         ]);
     }
@@ -172,14 +186,21 @@ class EastmoneyNewsClient implements NewsDataProvider
         ], '', '&', PHP_QUERY_RFC3986);
     }
 
-    private function parseJsonp(string $body, string $callback): ?array
+    private function parseJsonp(string $body, string $requestedCallback): ?array
     {
         $body = trim($body);
-        if (!preg_match('/^' . preg_quote($callback, '/') . '\((.*)\)\s*;?$/s', $body, $matches)) {
+        // 海外出口可能忽略 cb 参数并返回服务端生成的 jQuery callback；
+        // 只校验安全的 JS 标识符形态，不再强制与请求值相同。
+        if (!preg_match('/^([A-Za-z_$][A-Za-z0-9_.$]{0,127})\((.*)\)\s*;?$/s', $body, $matches)) {
             return null;
         }
-        $parsed = HttpClient::parseJson($matches[1]);
-        return $parsed['ok'] && is_array($parsed['data']) ? $parsed['data'] : null;
+        $parsed = HttpClient::parseJson($matches[2]);
+        if (!$parsed['ok'] || !is_array($parsed['data'])) return null;
+        return [
+            'callback' => $matches[1],
+            'requested_callback' => $requestedCallback,
+            'payload' => $parsed['data'],
+        ];
     }
 
     private function normalizeItem(array $row, string $keyword): ?array

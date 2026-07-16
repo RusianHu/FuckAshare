@@ -84,6 +84,8 @@ return [
         'eastmoney_fund_dividend' => ['failure_threshold' => 3, 'cooldown' => 60], // ✅ 东方财富基金分红事件源；默认 3 次 / 60s
         'csindex' => ['failure_threshold' => 3, 'cooldown' => 60], // ✅ 中证指数官网历史表现；独立熔断，默认 3 次 / 60s
         'eastmoney_news' => ['failure_threshold' => 3, 'cooldown' => 60], // ✅ 东方财富公开新闻搜索 PoC；独立熔断
+        'eastmoney_f10_news' => ['failure_threshold' => 3, 'cooldown' => 60], // ✅ 东方财富个股 F10 公司资讯；独立熔断
+        'eastmoney_fast_news' => ['failure_threshold' => 3, 'cooldown' => 60], // ✅ 东方财富 7×24 快讯；与搜索接口独立熔断
     ],
 
     // ════════════════════════════════════════════════════════════
@@ -167,9 +169,10 @@ return [
     // ── 新闻舆情 PoC ──
     // 东方财富公开搜索仅作为可替换 Provider；对外严格只返回标题、来源、时间、链接。
     'news' => [
-        'provider' => 'eastmoney',
+        'provider' => 'eastmoney_composite',
         'default_market_keywords' => ['A股', '沪指', '基金市场'],
         'max_queries' => 4,
+        'fast_news_page_size' => 100,
     ],
 
     // ════════════════════════════════════════════════════════════

@@ -60,6 +60,107 @@ class FakeNewsHttpClient extends HttpClient
     }
 }
 
+class RewrittenCallbackNewsHttpClient extends HttpClient
+{
+    public function __construct() {}
+
+    public function multiGet(array $requests, int $maxParallel = 4): array
+    {
+        $result = [];
+        foreach ($requests as $request) {
+            $payload = [
+                'result' => [
+                    'passportWeb' => [[
+                        'title' => '股吧结果不应冒充新闻',
+                    ]],
+                ],
+            ];
+            $result[(string)$request['key']] = [
+                'body' => 'jQuery35109988776655_1770000000000(' . json_encode($payload, JSON_UNESCAPED_UNICODE) . ');',
+                'http_code' => 200,
+                'error' => null,
+                'content_type' => 'application/javascript',
+            ];
+        }
+        return $result;
+    }
+}
+
+class FakeFastNewsHttpClient extends HttpClient
+{
+    public function __construct() {}
+
+    public function multiGet(array $requests, int $maxParallel = 4): array
+    {
+        $rows = [
+            [
+                'code' => '202607163800000099',
+                'title' => '贵州茅台拟推进新一轮回购计划',
+                'summary' => '内部摘要不得出现在 Provider 输出中',
+                'showTime' => '2026-07-16 18:30:00',
+                'stockList' => ['1.600519'],
+            ],
+            [
+                'code' => '202607163800000098',
+                'title' => '易方达蓝筹精选混合披露定期报告',
+                'summary' => '基金摘要不得外泄',
+                'showTime' => '2026-07-16 18:20:00',
+                'stockList' => ['0.005827'],
+            ],
+            [
+                'code' => '202607163800000097',
+                'title' => 'A股市场交投活跃度回升',
+                'summary' => '市场快讯摘要',
+                'showTime' => '2026-07-16 18:10:00',
+                'stockList' => [],
+            ],
+        ];
+        $result = [];
+        foreach ($requests as $request) {
+            $result[(string)$request['key']] = [
+                'body' => json_encode(['code' => 1, 'data' => ['fastNewsList' => $rows]], JSON_UNESCAPED_UNICODE),
+                'http_code' => 200,
+                'error' => null,
+                'content_type' => 'application/json',
+            ];
+        }
+        return $result;
+    }
+}
+
+class FakeF10NewsHttpClient extends HttpClient
+{
+    public function __construct() {}
+
+    public function multiGet(array $requests, int $maxParallel = 4): array
+    {
+        $payload = [
+            'gszx' => [
+                'data' => [
+                    'items' => [[
+                        'uniqueUrl' => 'http://finance.eastmoney.com/a/202607163809159994.html',
+                        'title' => '贵州茅台公司资讯更新',
+                        'source' => '测试资讯',
+                        'showDateTime' => 1784195574000,
+                        'summary' => 'F10 摘要不得出现在客户端',
+                    ]],
+                ],
+            ],
+            'gsgg' => [],
+        ];
+        $result = [];
+        foreach ($requests as $request) {
+            $result[(string)$request['key']] = [
+                'body' => json_encode($payload, JSON_UNESCAPED_UNICODE),
+                'http_code' => 200,
+                'error' => null,
+                'content_type' => 'application/json',
+            ];
+        }
+        return $result;
+    }
+}
+
 class FakeNewsProvider implements NewsDataProvider
 {
     public $queries = [];
@@ -159,6 +260,54 @@ try {
     newsCheck(($clientResult->data[0]['url'] ?? '') === 'https://finance.eastmoney.com/a/202607163800000001.html', '新闻链接必须升级为 HTTPS');
     newsCheck(!isset($clientResult->data[0]['content']) && strpos(json_encode($clientResult->data, JSON_UNESCAPED_UNICODE), '正文') === false, 'Provider 不得返回新闻正文');
 
+    $regionBreaker = new CircuitBreaker('news_region_test_' . getmypid(), 3, 60);
+    $regionClient = new EastmoneyNewsClient(new RewrittenCallbackNewsHttpClient(), $regionBreaker);
+    $regionResult = $regionClient->search('600519', 10);
+    newsCheck($regionResult->success && count($regionResult->data) === 0, '海外 callback 重写响应必须解析为有效空新闻结果');
+    newsCheck(($regionResult->meta['capability_filtered'] ?? false) === true, '仅 passportWeb 时必须标记地域能力裁剪');
+    newsCheck(($regionResult->meta['query_statuses'][0]['callback_rewritten'] ?? false) === true, '必须记录实际 callback 与请求 callback 不一致');
+    newsCheck(($regionBreaker->getState()['failures'] ?? -1) === 0, '地域能力裁剪不得累计熔断失败');
+
+    $fastClient = new EastmoneyFastNewsClient(
+        new FakeFastNewsHttpClient(),
+        new CircuitBreaker('news_fast_test_' . getmypid(), 3, 60)
+    );
+    $fastStock = $fastClient->searchMany(['贵州茅台', '600519'], 10);
+    newsCheck($fastStock->success && count($fastStock->data) === 1, '7×24 快讯必须按标题或关联证券代码匹配股票');
+    newsCheck(($fastStock->data[0]['url'] ?? '') === 'https://finance.eastmoney.com/a/202607163800000099.html', '7×24 快讯必须生成可访问的东方财富原文链接');
+    newsCheck(strpos(json_encode($fastStock->data, JSON_UNESCAPED_UNICODE), '摘要') === false, '7×24 Provider 不得透传 summary');
+
+    $f10Client = new EastmoneyF10NewsClient(
+        new FakeF10NewsHttpClient(),
+        new CircuitBreaker('news_f10_test_' . getmypid(), 3, 60)
+    );
+    $f10Stock = $f10Client->searchMany(['贵州茅台', '600519'], 10);
+    newsCheck($f10Stock->success && count($f10Stock->data) === 1, 'F10 Provider 必须按股票代码返回公司资讯');
+    newsCheck(($f10Stock->data[0]['url'] ?? '') === 'https://finance.eastmoney.com/a/202607163809159994.html', 'F10 公司资讯链接必须升级为 HTTPS');
+    newsCheck(strpos(json_encode($f10Stock->data, JSON_UNESCAPED_UNICODE), '摘要') === false, 'F10 Provider 不得透传 summary');
+    $f10Fund = $f10Client->searchMany(['易方达蓝筹精选混合', '005827'], 10);
+    newsCheck($f10Fund->success && count($f10Fund->data) === 0 && ($f10Fund->meta['skipped_reason'] ?? '') === 'fund_query_not_supported', 'F10 股票 Provider 不得把基金代码误当股票');
+
+    $composite = new CompositeNewsProvider($regionClient, $fastClient);
+    $routed = $composite->searchMany(['贵州茅台', '600519'], 10);
+    newsCheck($routed->success && count($routed->data) === 1, '海外搜索能力裁剪时必须由 7×24 Provider 自动接管');
+    newsCheck(($routed->meta['active_provider'] ?? '') === 'eastmoney_fast_news', '组合 Provider 必须标记实际接管源');
+    newsCheck(($routed->meta['provider_route_reason'] ?? '') === 'cmsArticleWebOld_missing_passportWeb_only', '组合 Provider 必须保留地域裁剪路由原因');
+    $threeStageComposite = new CompositeNewsProvider($regionClient, $f10Client, $fastClient);
+    $f10Routed = $threeStageComposite->searchMany(['贵州茅台', '600519'], 10);
+    newsCheck($f10Routed->success && count($f10Routed->data) === 1, '海外个股搜索裁剪时必须优先由 F10 公司资讯接管');
+    newsCheck(($f10Routed->meta['active_provider'] ?? '') === 'eastmoney_f10_news' && ($f10Routed->meta['provider_route_stage'] ?? '') === 'secondary', '三段路由必须记录 F10 接管阶段');
+    $routedService = new NewsService(
+        $composite,
+        new FakeNewsMarketService(),
+        new FakeNewsFundService(),
+        new FileCacheStore($cacheDir . '_route')
+    );
+    $routedStock = $routedService->assetNews('stock', '600519', '', 10);
+    newsCheck($routedStock->success && count($routedStock->data) === 1, '地域裁剪接管结果必须通过标的新闻服务公开返回');
+    newsCheck(($routedStock->meta['active_provider'] ?? '') === 'eastmoney_fast_news', '公开 API 元数据必须保留实际接管 Provider');
+    newsCheck(array_keys($routedStock->data[0]) === ['title', 'source', 'published_at', 'url'], '快讯接管后仍必须严格保持四字段边界');
+
     $provider = new FakeNewsProvider();
     $service = new NewsService($provider, new FakeNewsMarketService(), new FakeNewsFundService(), CacheStoreFactory::getInstance());
 
@@ -222,16 +371,19 @@ try {
         $liveStock = $live->assetNews('stock', '600519', '', 5);
         $liveFund = $live->assetNews('fund', '005827', '', 5);
         $liveMarket = $live->marketHotNews(['A股', '沪指'], 5);
+        $liveFast = (new EastmoneyFastNewsClient())->searchMany(['A股'], 5);
         newsCheck($liveStock->success && count($liveStock->data) > 0, 'Live 股票新闻必须返回数据');
         newsCheck($liveFund->success, 'Live 基金新闻请求必须成功（允许精确结果为空）');
         newsCheck($liveMarket->success && count($liveMarket->data) > 0, 'Live 市场新闻必须返回数据');
+        newsCheck($liveFast->success && count($liveFast->data) > 0, 'Live 东方财富 7×24 快讯必须返回数据');
         foreach (array_merge($liveStock->data, $liveFund->data, $liveMarket->data) as $item) {
             newsCheck(array_keys($item) === ['title', 'source', 'published_at', 'url'], 'Live 新闻结果不得泄漏额外字段');
         }
-        echo 'Live news checks passed: stock=' . count($liveStock->data) . ', fund=' . count($liveFund->data) . ', market=' . count($liveMarket->data) . "\n";
+        echo 'Live news checks passed: stock=' . count($liveStock->data) . ', fund=' . count($liveFund->data) . ', market=' . count($liveMarket->data) . ', fast=' . count($liveFast->data) . "\n";
     }
 } finally {
     CacheStoreFactory::reset();
     removeNewsTestTree($cacheDir);
     removeNewsTestTree($cacheDir . '_live');
+    removeNewsTestTree($cacheDir . '_route');
 }
