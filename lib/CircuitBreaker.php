@@ -52,6 +52,8 @@ class CircuitBreaker
         'eastmoney_news' => ['failureThreshold' => 3, 'cooldown' => 60],
         'eastmoney_f10_news' => ['failureThreshold' => 3, 'cooldown' => 60],
         'eastmoney_fast_news' => ['failureThreshold' => 3, 'cooldown' => 60],
+        'google_news_rss' => ['failureThreshold' => 3, 'cooldown' => 120],
+        'eastmoney_fund_announcements' => ['failureThreshold' => 3, 'cooldown' => 60],
     ];
 
     public function __construct(string $source, int $failureThreshold = 0, int $cooldown = 0)

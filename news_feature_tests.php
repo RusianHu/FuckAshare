@@ -161,6 +161,61 @@ class FakeF10NewsHttpClient extends HttpClient
     }
 }
 
+class FakeFundNewsHttpClient extends HttpClient
+{
+    public $requestCount = 0;
+
+    public function __construct() {}
+
+    public function multiGet(array $requests, int $maxParallel = 4): array
+    {
+        $result = [];
+        foreach ($requests as $request) {
+            $this->requestCount++;
+            $url = (string)$request['url'];
+            $key = (string)$request['key'];
+            if (strpos($url, 'news.google.com/rss/search') !== false) {
+                parse_str((string)parse_url($url, PHP_URL_QUERY), $query);
+                $keyword = trim((string)($query['q'] ?? ''), '"');
+                $title = preg_match('/^\d{6}$/', $keyword)
+                    ? "基金 {$keyword} 最新媒体报道"
+                    : $keyword . '最新媒体报道';
+                $body = '<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><item>'
+                    . '<title>' . htmlspecialchars($title . ' - 测试财经', ENT_XML1, 'UTF-8') . '</title>'
+                    . '<link>https://news.google.com/rss/articles/test-' . rawurlencode($keyword) . '</link>'
+                    . '<pubDate>Thu, 16 Jul 2026 10:00:00 GMT</pubDate>'
+                    . '<source url="https://example.com">测试财经</source>'
+                    . '<description>摘要不得出现在 Provider 输出中</description>'
+                    . '</item></channel></rss>';
+                $result[$key] = ['body' => $body, 'http_code' => 200, 'error' => null, 'content_type' => 'application/xml'];
+                continue;
+            }
+
+            parse_str((string)parse_url($url, PHP_URL_QUERY), $query);
+            $code = (string)($query['fundcode'] ?? '008163');
+            $body = json_encode(['Data' => [[
+                'FUNDCODE' => $code,
+                'TITLE' => "基金 {$code} 分红公告",
+                'PUBLISHDATE' => '2026-07-15T00:00:00',
+                'ID' => 'AN202607151234567890',
+                'CONTENT' => '公告正文不得出现在 Provider 输出中',
+            ]]], JSON_UNESCAPED_UNICODE);
+            $result[$key] = ['body' => $body, 'http_code' => 200, 'error' => null, 'content_type' => 'application/json'];
+        }
+        return $result;
+    }
+}
+
+class EmptyNewsProvider implements NewsDataProvider
+{
+    public function sourceName(): string { return 'empty_news'; }
+    public function search(string $keyword, int $limit = 20): DataSourceResult { return $this->searchMany([$keyword], $limit); }
+    public function searchMany(array $keywords, int $limitPerKeyword = 20): DataSourceResult
+    {
+        return DataSourceResult::success($this->sourceName(), 'search_news', [], ['query_statuses' => []]);
+    }
+}
+
 class FakeNewsProvider implements NewsDataProvider
 {
     public $queries = [];
@@ -288,6 +343,17 @@ try {
     $f10Fund = $f10Client->searchMany(['易方达蓝筹精选混合', '005827'], 10);
     newsCheck($f10Fund->success && count($f10Fund->data) === 0 && ($f10Fund->meta['skipped_reason'] ?? '') === 'fund_query_not_supported', 'F10 股票 Provider 不得把基金代码误当股票');
 
+    $fundNewsHttp = new FakeFundNewsHttpClient();
+    $fundNewsClient = new FundNewsClient(
+        $fundNewsHttp,
+        new CircuitBreaker('fund_rss_test_' . getmypid(), 3, 60),
+        new CircuitBreaker('fund_announcement_test_' . getmypid(), 3, 60)
+    );
+    $fundFallback = $fundNewsClient->searchMany(['南方标普中国A股大盘红利低波50ETF联接A', '008163'], 10);
+    newsCheck($fundFallback->success && count($fundFallback->data) >= 3, '基金专用回退必须合并 RSS 媒体报道与基金公告');
+    newsCheck(($fundFallback->meta['rss_count'] ?? 0) >= 2 && ($fundFallback->meta['announcement_count'] ?? 0) >= 1, '基金回退必须记录各来源样本数');
+    newsCheck(strpos(json_encode($fundFallback->data, JSON_UNESCAPED_UNICODE), '摘要不得') === false && strpos(json_encode($fundFallback->data, JSON_UNESCAPED_UNICODE), '公告正文') === false, '基金回退不得透传摘要或公告正文');
+
     $composite = new CompositeNewsProvider($regionClient, $fastClient);
     $routed = $composite->searchMany(['贵州茅台', '600519'], 10);
     newsCheck($routed->success && count($routed->data) === 1, '海外搜索能力裁剪时必须由 7×24 Provider 自动接管');
@@ -307,6 +373,21 @@ try {
     newsCheck($routedStock->success && count($routedStock->data) === 1, '地域裁剪接管结果必须通过标的新闻服务公开返回');
     newsCheck(($routedStock->meta['active_provider'] ?? '') === 'eastmoney_fast_news', '公开 API 元数据必须保留实际接管 Provider');
     newsCheck(array_keys($routedStock->data[0]) === ['title', 'source', 'published_at', 'url'], '快讯接管后仍必须严格保持四字段边界');
+
+    $fundFallbackService = new NewsService(
+        new EmptyNewsProvider(),
+        new FakeNewsMarketService(),
+        new FakeNewsFundService(),
+        new FileCacheStore($cacheDir . '_fund_route'),
+        $fundNewsClient
+    );
+    $fundFallbackResult = $fundFallbackService->assetNews('fund', '005827', '', 10);
+    newsCheck($fundFallbackResult->success && count($fundFallbackResult->data) >= 2, '主搜索为空时基金专用 Provider 必须自动接管');
+    newsCheck(($fundFallbackResult->meta['active_provider'] ?? '') === 'fund_news_fallback', '基金 API 元数据必须标记实际接管源');
+    newsCheck(array_keys($fundFallbackResult->data[0]) === ['title', 'source', 'published_at', 'url'], '基金回退公开结果仍必须严格保持四字段边界');
+    $fundRequestsBeforeStock = $fundNewsHttp->requestCount;
+    $fundFallbackService->assetNews('stock', '600519', '贵州茅台', 10);
+    newsCheck($fundNewsHttp->requestCount === $fundRequestsBeforeStock, '基金专用回退不得被股票查询调用');
 
     $provider = new FakeNewsProvider();
     $service = new NewsService($provider, new FakeNewsMarketService(), new FakeNewsFundService(), CacheStoreFactory::getInstance());
@@ -369,11 +450,11 @@ try {
         CacheStoreFactory::useFileStore($cacheDir . '_live');
         $live = new NewsService();
         $liveStock = $live->assetNews('stock', '600519', '', 5);
-        $liveFund = $live->assetNews('fund', '005827', '', 5);
+        $liveFund = $live->assetNews('fund', '008163', '', 5);
         $liveMarket = $live->marketHotNews(['A股', '沪指'], 5);
         $liveFast = (new EastmoneyFastNewsClient())->searchMany(['A股'], 5);
         newsCheck($liveStock->success && count($liveStock->data) > 0, 'Live 股票新闻必须返回数据');
-        newsCheck($liveFund->success, 'Live 基金新闻请求必须成功（允许精确结果为空）');
+        newsCheck($liveFund->success && count($liveFund->data) > 0, 'Live 基金 008163 新闻必须通过媒体或公告回退返回数据');
         newsCheck($liveMarket->success && count($liveMarket->data) > 0, 'Live 市场新闻必须返回数据');
         newsCheck($liveFast->success && count($liveFast->data) > 0, 'Live 东方财富 7×24 快讯必须返回数据');
         foreach (array_merge($liveStock->data, $liveFund->data, $liveMarket->data) as $item) {
@@ -386,4 +467,5 @@ try {
     removeNewsTestTree($cacheDir);
     removeNewsTestTree($cacheDir . '_live');
     removeNewsTestTree($cacheDir . '_route');
+    removeNewsTestTree($cacheDir . '_fund_route');
 }

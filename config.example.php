@@ -86,6 +86,8 @@ return [
         'eastmoney_news' => ['failure_threshold' => 3, 'cooldown' => 60], // ✅ 东方财富公开新闻搜索 PoC；独立熔断
         'eastmoney_f10_news' => ['failure_threshold' => 3, 'cooldown' => 60], // ✅ 东方财富个股 F10 公司资讯；独立熔断
         'eastmoney_fast_news' => ['failure_threshold' => 3, 'cooldown' => 60], // ✅ 东方财富 7×24 快讯；与搜索接口独立熔断
+        'google_news_rss' => ['failure_threshold' => 3, 'cooldown' => 120], // ✅ 海外基金媒体新闻 RSS；独立熔断
+        'eastmoney_fund_announcements' => ['failure_threshold' => 3, 'cooldown' => 60], // ✅ 东方财富基金公告；独立熔断
     ],
 
     // ════════════════════════════════════════════════════════════
@@ -173,6 +175,10 @@ return [
         'default_market_keywords' => ['A股', '沪指', '基金市场'],
         'max_queries' => 4,
         'fast_news_page_size' => 100,
+        'fund_fallback_enabled' => true,
+        'fund_google_news_rss' => true,
+        'fund_announcements' => true,
+        'fund_rss_max_queries' => 2,
     ],
 
     // ════════════════════════════════════════════════════════════
