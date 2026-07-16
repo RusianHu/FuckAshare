@@ -100,6 +100,7 @@ return [
     'cache_ttl' => [
         // ── MarketDataService（股票行情）──
         'quote'          => 10,     // ✅ 实时行情报价；默认 10s
+        'stock_search'   => 600,    // ✅ 股票代码/名称/拼音关键词搜索；默认 600s
         'kline_min'      => 60,     // ✅ 分钟级 K 线（1m/5m/15m/30m/60m）；默认 60s
         'kline_day'      => 300,    // ✅ 日线/周线/月线 K 线；默认 300s
         'hot_stock'      => 60,     // ✅ 雪球热度榜；默认 60s

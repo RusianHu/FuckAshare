@@ -50,6 +50,9 @@ function submitStockQuery(code, options = {}) {
     const form = document.getElementById('stockForm');
     if (!codeInput || !form || !code) return;
     codeInput.value = code;
+    delete codeInput.dataset.stockCode;
+    delete codeInput.dataset.stockName;
+    delete codeInput.dataset.selectedLabel;
     if (options.source && sourceInput) sourceInput.value = options.source;
     if (options.frequency && frequencyInput) frequencyInput.value = options.frequency;
     if (options.count && countInput) countInput.value = options.count;
@@ -483,6 +486,7 @@ const APP = {
     volumeSeries: null,
     indicatorSeries: {},
     currentStockCode: '',
+    currentStockName: '',
     currentStockData: [],
     stockQueryController: null,
     stockQueryRequestId: 0,
@@ -567,8 +571,9 @@ function codeToSecid(code) {
     if (code.includes('.XSHE')) return '0.' + code.replace('.XSHE', '');
     if (code.toLowerCase().startsWith('sh')) return '1.' + code.substring(2);
     if (code.toLowerCase().startsWith('sz')) return '0.' + code.substring(2);
+    if (code.toLowerCase().startsWith('bj')) return '0.' + code.substring(2);
     if (/^6\d{5}$/.test(code)) return '1.' + code;
-    if (/^(0|3)\d{5}$/.test(code)) return '0.' + code;
+    if (/^(0|3|4|8)\d{5}$/.test(code) || /^92\d{4}$/.test(code)) return '0.' + code;
     return '1.' + code;
 }
 
@@ -577,11 +582,187 @@ function normalizeCode(code) {
     code = code.trim();
     if (code.includes('.XSHG')) return 'sh' + code.replace('.XSHG', '');
     if (code.includes('.XSHE')) return 'sz' + code.replace('.XSHE', '');
+    if (/^(?:[48]\d{5}|92\d{4})$/.test(code)) return 'bj' + code;
     if (/^[0-9]{6}$/.test(code)) {
         return (code.startsWith('6') ? 'sh' : 'sz') + code;
     }
     return code.toLowerCase();
 }
+
+// ============================================================
+// 股票关键词搜索与候选选择
+// ============================================================
+const StockSearchModule = {
+    input: null,
+    resultsEl: null,
+    items: [],
+    activeIndex: -1,
+    timer: null,
+    controller: null,
+    requestVersion: 0,
+
+    init() {
+        this.input = document.getElementById('code');
+        this.resultsEl = document.getElementById('stock-search-results');
+        if (!this.input || !this.resultsEl) return;
+
+        this.input.addEventListener('input', () => {
+            this.clearSelection();
+            const keyword = this.input.value.trim();
+            clearTimeout(this.timer);
+            this.controller?.abort();
+            if (!keyword) {
+                this.hide();
+                return;
+            }
+            this.timer = setTimeout(() => this.search(keyword), 220);
+        });
+        this.input.addEventListener('keydown', (event) => this.onKeydown(event));
+        this.input.addEventListener('focus', () => {
+            if (this.items.length && this.input.value.trim()) this.show();
+        });
+        this.input.addEventListener('blur', () => window.setTimeout(() => this.hide(), 120));
+        this.resultsEl.addEventListener('mousedown', event => event.preventDefault());
+        this.resultsEl.addEventListener('click', event => {
+            const option = event.target.closest('[data-stock-index]');
+            if (!option) return;
+            this.select(Number(option.dataset.stockIndex));
+        });
+    },
+
+    async search(keyword) {
+        const version = ++this.requestVersion;
+        this.controller = new AbortController();
+        try {
+            const response = await fetch(`stock_search_api.php?key=${encodeURIComponent(keyword)}&limit=10`, {
+                signal: this.controller.signal,
+                cache: 'no-store'
+            });
+            const payload = await response.json();
+            if (version !== this.requestVersion || keyword !== this.input.value.trim()) return;
+            if (!payload.success) {
+                this.renderMessage(payload.message || '股票搜索暂时不可用', 'error');
+                return;
+            }
+            this.render(payload.data || []);
+        } catch (error) {
+            if (error.name !== 'AbortError' && version === this.requestVersion) {
+                this.renderMessage('股票搜索暂时不可用，可继续输入准确代码查询', 'error');
+            }
+        } finally {
+            if (version === this.requestVersion) this.controller = null;
+        }
+    },
+
+    render(items) {
+        this.items = Array.isArray(items) ? items : [];
+        this.activeIndex = -1;
+        if (!this.items.length) {
+            this.renderMessage('未找到匹配的沪深北 A 股', 'empty');
+            return;
+        }
+        this.resultsEl.innerHTML = this.items.map((item, index) => `
+            <button type="button" class="stock-search-option" role="option" aria-selected="false" data-stock-index="${index}">
+                <span class="stock-search-primary">
+                    <strong>${escapeHTML(item.name || '-')}</strong>
+                    <span>${escapeHTML(item.symbol || item.code || '')}</span>
+                </span>
+                <span class="stock-search-meta">${escapeHTML(item.security_type || item.market || 'A股')} · ${escapeHTML(item.pinyin || '')}</span>
+            </button>
+        `).join('');
+        this.show();
+    },
+
+    renderMessage(message, type = 'empty') {
+        this.items = [];
+        this.activeIndex = -1;
+        this.resultsEl.innerHTML = `<div class="stock-search-message ${type === 'error' ? 'is-error' : ''}">${escapeHTML(message)}</div>`;
+        this.show();
+    },
+
+    showCandidates(items) {
+        if (Array.isArray(items) && items.length) this.render(items);
+    },
+
+    select(index) {
+        const item = this.items[index];
+        if (!item) return;
+        this.input.value = item.name || item.symbol;
+        this.input.dataset.stockCode = item.symbol;
+        this.input.dataset.stockName = item.name || '';
+        this.input.dataset.selectedLabel = this.input.value;
+        this.hide();
+        this.input.focus();
+    },
+
+    syncResolved(stock) {
+        if (!stock || !stock.symbol) return;
+        const current = this.input.value.trim();
+        if (stock.name && (current === stock.name || current === stock.symbol || current === stock.code)) {
+            this.input.value = stock.name;
+        }
+        this.input.dataset.stockCode = stock.symbol;
+        this.input.dataset.stockName = stock.name || '';
+        this.input.dataset.selectedLabel = this.input.value;
+        this.hide();
+    },
+
+    resolvedQuery() {
+        if (this.input.dataset.stockCode && this.input.dataset.selectedLabel === this.input.value) {
+            return this.input.dataset.stockCode;
+        }
+        return this.input.value.trim();
+    },
+
+    resolvedName() {
+        if (this.input.dataset.stockCode && this.input.dataset.selectedLabel === this.input.value) {
+            return this.input.dataset.stockName || '';
+        }
+        return '';
+    },
+
+    clearSelection() {
+        delete this.input.dataset.stockCode;
+        delete this.input.dataset.stockName;
+        delete this.input.dataset.selectedLabel;
+    },
+
+    onKeydown(event) {
+        if (this.resultsEl.hidden || !this.items.length) return;
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+            event.preventDefault();
+            const delta = event.key === 'ArrowDown' ? 1 : -1;
+            this.activeIndex = (this.activeIndex + delta + this.items.length) % this.items.length;
+            this.updateActive();
+        } else if (event.key === 'Enter' && this.activeIndex >= 0) {
+            event.preventDefault();
+            this.select(this.activeIndex);
+        } else if (event.key === 'Escape') {
+            event.preventDefault();
+            this.hide();
+        }
+    },
+
+    updateActive() {
+        this.resultsEl.querySelectorAll('[data-stock-index]').forEach((option, index) => {
+            const active = index === this.activeIndex;
+            option.classList.toggle('is-active', active);
+            option.setAttribute('aria-selected', active ? 'true' : 'false');
+            if (active) option.scrollIntoView({ block: 'nearest' });
+        });
+    },
+
+    show() {
+        this.resultsEl.hidden = false;
+        this.input.setAttribute('aria-expanded', 'true');
+    },
+
+    hide() {
+        this.resultsEl.hidden = true;
+        this.input?.setAttribute('aria-expanded', 'false');
+        this.activeIndex = -1;
+    }
+};
 
 // ============================================================
 // 技术指标计算
@@ -1178,8 +1359,7 @@ const WatchlistModule = {
             if (data.success && data.data.length > 0) {
                 for (const q of data.data) {
                     const code = q.code || '';
-                    const marketPrefix = Number(q.market) === 0 ? 'sz' : 'sh';
-                    const normalized = /^[0-9]{6}$/.test(code) ? marketPrefix + code : normalizeCode(code);
+                    const normalized = q.symbol || normalizeCode(code);
                     const wItem = APP.watchlist.find(w => normalizeCode(w.code) === normalized || w.code === code);
                     if (!wItem) continue;
                     const el = document.getElementById('wl-price-' + wItem.code.replace('.', ''));
@@ -5715,6 +5895,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // 初始化图表
     ChartModule.init();
+    StockSearchModule.init();
 
     // Tab切换
     document.querySelectorAll('.nav-tab').forEach(tab => {
@@ -5769,8 +5950,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // 加自选按钮
     document.getElementById('add-watchlist-btn')?.addEventListener('click', () => {
-        const code = document.getElementById('code').value.trim();
-        if (code) WatchlistModule.add(code, code);
+        const code = APP.currentStockCode || StockSearchModule.resolvedQuery();
+        if (code) WatchlistModule.add(code, APP.currentStockName || code);
     });
 
     // 指标切换
@@ -5787,15 +5968,17 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // AI分析按钮：设置标志后触发表单查询，查询完成后自动跳转AI标签卡
     document.getElementById('ai-analyze-btn')?.addEventListener('click', () => {
-        const code = document.getElementById('code').value.trim();
-        if (!code) { alert('请先输入股票代码'); return; }
+        const code = StockSearchModule.resolvedQuery();
+        if (!code) { alert('请先输入股票代码、名称或拼音关键词'); return; }
         APP.queryWithAI = true;
         stockForm.dispatchEvent(new Event('submit'));
     });
 
     stockForm.addEventListener('submit', function(e) {
         e.preventDefault();
-        const code = document.getElementById('code').value.trim();
+        const query = StockSearchModule.resolvedQuery();
+        const selectedStockName = StockSearchModule.resolvedName();
+        if (!query) return;
         const frequency = document.getElementById('frequency').value;
         const count = document.getElementById('count').value;
         const end_date = document.getElementById('end_date').value;
@@ -5809,27 +5992,36 @@ document.addEventListener('DOMContentLoaded', function() {
         loading.style.display = 'flex';
         errorDiv.style.display = 'none';
         stockTable.style.display = 'none';
-        APP.currentStockCode = code;
-        if (typeof AdvisorModule !== 'undefined') {
-            AdvisorModule.setAssetContext('stock', { code }, '股票查询');
-        }
-        AssetPulseModule.focus('stock', { code }, { target: 'stock-asset-pulse' });
-
         const source = document.getElementById('data-source')?.value || 'auto';
-        const url = `api.php?code=${encodeURIComponent(code)}&frequency=${encodeURIComponent(frequency)}&count=${encodeURIComponent(count)}&end_date=${encodeURIComponent(end_date)}&source=${encodeURIComponent(source)}`;
+        const url = `api.php?code=${encodeURIComponent(query)}&frequency=${encodeURIComponent(frequency)}&count=${encodeURIComponent(count)}&end_date=${encodeURIComponent(end_date)}&source=${encodeURIComponent(source)}`;
 
         fetch(url, { signal })
             .then(r => r.json())
             .then(data => {
                 if (requestId !== APP.stockQueryRequestId) return;
                 loading.style.display = 'none';
-                if (!data.success) throw new Error(data.message || '获取数据失败');
+                if (!data.success) {
+                    StockSearchModule.showCandidates(data.candidates || data.meta?.candidates || []);
+                    throw new Error(data.message || '获取数据失败');
+                }
+
+                const resolvedStock = data.stock || {};
+                const code = resolvedStock.symbol || resolvedStock.code || query;
+                const stockName = resolvedStock.name || selectedStockName || '';
+                APP.currentStockCode = code;
+                APP.currentStockName = stockName;
+                StockSearchModule.syncResolved({ ...resolvedStock, symbol: code, name: stockName });
+                if (typeof AdvisorModule !== 'undefined') {
+                    AdvisorModule.setAssetContext('stock', { code, name: stockName }, '股票查询');
+                }
+                AssetPulseModule.focus('stock', { code, name: stockName }, { target: 'stock-asset-pulse' });
 
                 stockData.innerHTML = '';
                 if (data.data && data.data.length > 0) {
                     // 更新图表
                     ChartModule.updateData(data.data);
-                    document.getElementById('chart-title').innerHTML = `${Icons.chart} ${escapeHTML(code)} K线图表`;
+                    const stockLabel = stockName ? `${stockName} · ${code}` : code;
+                    document.getElementById('chart-title').innerHTML = `${Icons.chart} ${escapeHTML(stockLabel)} K线图表`;
 
                     // 更新加自选按钮
                     const starBtn = document.getElementById('add-watchlist-btn');
@@ -5838,7 +6030,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     }
 
                     // 更新表格
-                    let aiStr = `股票代码: ${code}\n频率: ${frequency}\n数据条数: ${count}\n\n`;
+                    let aiStr = `${stockName ? `股票名称: ${stockName}\n` : ''}股票代码: ${code}\n频率: ${frequency}\n数据条数: ${count}\n\n`;
                     aiStr += "日期/时间,开盘价,收盘价,最高价,最低价,成交量\n";
 
                     data.data.forEach(row => {

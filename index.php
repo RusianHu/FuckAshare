@@ -133,7 +133,8 @@ $fundDividendAutoRefreshSeconds = max(300, min(1800, (int)AppConfig::get('fund_d
                         <form id="stockForm" class="query-form-inline" autocomplete="off">
                             <div class="form-row">
                                 <div class="form-group form-group-code flex-1">
-                                    <input type="text" id="code" name="code" placeholder="股票代码 如: sh000001" aria-label="股票代码" enterkeyhint="search" autocapitalize="off" spellcheck="false" required>
+                                    <input type="text" id="code" name="code" placeholder="股票代码、名称或拼音 如：招商银行 / zsyh" aria-label="股票代码、名称或拼音关键词" enterkeyhint="search" autocapitalize="off" spellcheck="false" role="combobox" aria-autocomplete="list" aria-controls="stock-search-results" aria-expanded="false" required>
+                                    <div id="stock-search-results" class="stock-search-results" role="listbox" aria-label="股票搜索候选" hidden></div>
                                 </div>
                                 <div class="form-group form-group-frequency">
                                     <select id="frequency" name="frequency" aria-label="K线周期">

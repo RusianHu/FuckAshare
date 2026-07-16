@@ -89,9 +89,11 @@ class EastmoneyClient
         if (isset($parsed['data']['data']['diff']) && is_array($parsed['data']['data']['diff'])) {
             foreach ($parsed['data']['data']['diff'] as $item) {
                 $market = $item['f13'] ?? 1;
-                $prefix = ($market === 0) ? 'sz' : 'sh';
+                $itemCode = (string)($item['f12'] ?? '');
+                $parsedCode = StockCode::parse($itemCode);
                 $stocks[] = [
-                    'code'          => $item['f12'] ?? '',
+                    'code'          => $itemCode,
+                    'symbol'        => $parsedCode->isValid() ? $parsedCode->toDisplay() : $itemCode,
                     'market'        => $market,
                     'name'          => $item['f14'] ?? '',
                     'price'         => $item['f2'] ?? 0,

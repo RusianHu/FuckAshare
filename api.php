@@ -22,11 +22,11 @@ function returnError($message) {
     exit;
 }
 
-// 获取并验证参数
-$code = SecurityAudit::getParam('code', '', [
+// code 参数兼容历史命名；现在也接受股票名称/拼音关键词，随后由解析服务收敛为稳定代码。
+$query = SecurityAudit::getParam('code', '', [
     'required'  => true,
-    'pattern'   => SecurityAudit::STOCK_CODE_PATTERN,
-    'maxLength' => SecurityAudit::MAX_CODE_LENGTH,
+    'maxLength' => SecurityAudit::MAX_KEYWORD_LENGTH,
+    'sanitize'  => 'keyword',
 ]);
 
 $frequency = SecurityAudit::getParam('frequency', '1d', [
@@ -48,12 +48,32 @@ $source   = SecurityAudit::getParam('source', 'auto', ['whitelist' => SecurityAu
 $fallback = SecurityAudit::getParam('fallback', 1, ['int' => true]) === 1;
 $raw      = SecurityAudit::getParam('raw', 0, ['int' => true]) === 1;
 
+require_once __DIR__ . '/lib/StockSearchService.php';
+$stockResolver = new StockSearchService();
+$resolved = $stockResolver->resolve($query);
+if (!$resolved->success || !is_array($resolved->data)) {
+    echo json_encode([
+        'success' => false,
+        'code' => $resolved->errorCode ?: 'stock_resolve_failed',
+        'message' => $resolved->errorMessage ?: '无法解析股票关键词',
+        'query' => $query,
+        'candidates' => $resolved->meta['candidates'] ?? [],
+        'meta' => $resolved->meta,
+    ], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+$stock = $resolved->data;
+$code = (string)$stock['symbol'];
+
 // 如果指定了雪球数据源或 auto+fallback，使用 MarketDataService
 if ($source === 'xueqiu' || ($source === 'auto' && $fallback)) {
     require_once __DIR__ . '/lib/MarketDataService.php';
     $service = new MarketDataService();
     $result = $service->kline($code, $frequency, $count, $end_date, $source, $fallback, $raw);
-    echo $result->toJson($raw);
+    $response = $result->toResponse($raw);
+    $response['query'] = $query;
+    $response['stock'] = $stock;
+    echo json_encode($response, JSON_UNESCAPED_UNICODE);
     exit;
 }
 
@@ -106,6 +126,8 @@ if (json_last_error() !== JSON_ERROR_NONE) {
 echo json_encode([
     'success' => true,
     'code' => $code,
+    'query' => $query,
+    'stock' => $stock,
     'frequency' => $frequency,
     'count' => $count,
     'end_date' => $end_date,

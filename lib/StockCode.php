@@ -3,7 +3,7 @@
  * StockCode — 股票代码归一化与多数据源格式转换
  *
  * 支持输入格式：
- *   600519 / sh600519 / SH600519 / 600519.XSHG / 000001.XSHE
+ *   600519 / sh600519 / SH600519 / bj920001 / 600519.XSHG / 000001.XSHE
  *
  * 数据源格式：
  *   东方财富: 1.600519 / 0.000001
@@ -41,15 +41,15 @@ class StockCode
         // 600519.XSHG / 000001.XSHE 格式
         if (preg_match('/^(\d{6})\.(XSHG|XSHE)$/i', $input, $m)) {
             $obj->code = $m[1];
-            $obj->market = ($m[2] === 'XSHG') ? 'SH' : 'SZ';
+            $obj->market = (strtoupper($m[2]) === 'XSHG') ? 'SH' : 'SZ';
         }
-        // sh600519 / sz000001 格式
-        elseif (preg_match('/^(sh|sz)(\d{6})$/i', $input, $m)) {
+        // sh600519 / sz000001 / bj920001 格式
+        elseif (preg_match('/^(sh|sz|bj)(\d{6})$/i', $input, $m)) {
             $obj->code = $m[2];
             $obj->market = strtoupper($m[1]);
         }
-        // SH600519 格式 (雪球风格)
-        elseif (preg_match('/^(SH|SZ)(\d{6})$/', $upper, $m)) {
+        // SH600519 / BJ920001 格式 (雪球风格)
+        elseif (preg_match('/^(SH|SZ|BJ)(\d{6})$/', $upper, $m)) {
             $obj->code = $m[2];
             $obj->market = $m[1];
         }
