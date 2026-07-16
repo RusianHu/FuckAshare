@@ -38,6 +38,9 @@ class StockSearchService
         $this->http = $http ?: new HttpClient([
             'timeout' => 8,
             'connect_timeout' => 4,
+            // 东方财富 searchapi（IIS）按 JA3 指纹投喂陈旧 JSONP，关闭 ALPN 改变
+            // libcurl+OpenSSL 的 ClientHello 指纹即可拿到真实 JSON。
+            'disable_alpn' => true,
             'headers' => [
                 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36',
                 'Referer: https://quote.eastmoney.com/',

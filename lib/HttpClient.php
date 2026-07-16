@@ -31,11 +31,21 @@ class HttpClient
     private $connectTimeout;
 
     /**
+     * 是否禁用 TLS ALPN 扩展。
+     * 东方财富 searchapi（IIS）会按 ClientHello 指纹（JA3）对部分 libcurl+OpenSSL
+     * 组合投喂陈旧 JSONP 诱饵；关闭 ALPN 可改变指纹拿到真实 JSON。仅对受影响的
+     * 端点按需开启，避免影响其它支持 HTTP/2 的数据源。
+     * @var bool
+     */
+    private $disableAlpn = false;
+
+    /**
      * @param array $opts [
      *   'timeout'         => 10,
      *   'connect_timeout' => 5,
      *   'headers'         => [],
      *   'cookie_jar'      => null,  // 临时文件路径
+     *   'disable_alpn'    => false, // 禁用 TLS ALPN（绕过 IIS JA3 指纹投喂）
      * ]
      */
     public function __construct(array $opts = [])
@@ -44,6 +54,7 @@ class HttpClient
         $this->connectTimeout = $opts['connect_timeout'] ?? self::DEFAULT_CONNECT_TIMEOUT;
         $this->defaultHeaders = $opts['headers'] ?? [];
         $this->cookieJar      = $opts['cookie_jar'] ?? null;
+        $this->disableAlpn    = $opts['disable_alpn'] ?? false;
     }
 
     /**
@@ -92,6 +103,9 @@ class HttpClient
         curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
         curl_setopt($ch, CURLOPT_MAXREDIRS, 3);
         curl_setopt($ch, CURLOPT_ENCODING, '');
+        if ($this->disableAlpn) {
+            curl_setopt($ch, CURLOPT_SSL_ENABLE_ALPN, false);
+        }
 
         // 合并请求头（转为 "Key: Value" 格式）
         $allHeaders = array_merge($this->defaultHeaders, $headers);
@@ -174,6 +188,9 @@ class HttpClient
             curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
             curl_setopt($ch, CURLOPT_MAXREDIRS, 3);
             curl_setopt($ch, CURLOPT_ENCODING, '');
+            if ($this->disableAlpn) {
+                curl_setopt($ch, CURLOPT_SSL_ENABLE_ALPN, false);
+            }
 
             $allHeaders = array_merge($this->defaultHeaders, $headers);
             $headerLines = [];
