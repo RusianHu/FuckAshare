@@ -656,6 +656,30 @@ class AIChatToolAgent
             }
         }
 
+        if ($name === 'fa_get_stock_announcements' && preg_match('/(公告|披露|公司事件|重大事项|年报|季报|业绩预告|问询函)/u', $latestUser)) {
+            $codes = $this->extractStockCodes($latestUser);
+            $scope = empty($codes) && preg_match('/(全市场|市场|沪深|A股|近期重要)/u', $latestUser) ? 'market' : 'stock';
+            return [
+                'scope' => $scope,
+                'code' => !empty($codes) ? $codes[0] : null,
+                'name' => null,
+                'market' => 'all',
+                'event_type' => 'all',
+                'importance' => 'important',
+                'date_from' => null,
+                'date_to' => null,
+                'page' => 1,
+                'limit' => $scope === 'market' ? 30 : 20,
+            ];
+        }
+
+        if ($name === 'fa_get_stock_announcement_detail' && preg_match('/\b(AN\d{18})\b/i', $latestUser, $announcementMatch)) {
+            return [
+                'announcement_id' => strtoupper($announcementMatch[1]),
+                'content_limit' => 12000,
+            ];
+        }
+
         if ($name === 'fa_get_market_hot_news' && preg_match('/(新闻|热点|资讯|舆情|催化)/u', $latestUser)) {
             return ['keywords' => null, 'limit' => 30];
         }
@@ -906,6 +930,8 @@ class AIChatToolAgent
             'fa_get_stock_quote',
             'fa_get_stock_kline',
             'fa_get_stock_flow',
+            'fa_get_stock_announcements',
+            'fa_get_stock_announcement_detail',
             'fa_calculate_kline_indicators',
             'fa_get_fund_info',
             'fa_get_fund_estimate',
@@ -942,6 +968,9 @@ class AIChatToolAgent
 
     private function looksLikeStockResearchRequest(string $text): bool
     {
+        if ($this->looksLikeStockAnnouncementRequest($text)) {
+            return true;
+        }
         if ($this->looksLikeFundRequest($text)) {
             return false;
         }
@@ -954,7 +983,17 @@ class AIChatToolAgent
 
     private function looksLikeFundRequest(string $text): bool
     {
-        return (bool)preg_match('/(基金|净值|估值|基金经理|基金公司|申购|赎回|同类排行|同类排名|基金排行|基金排名|基金信息|基金资料|开放式基金|ETF|etf|QDII|qdii|红利型|红利策略|分红|派息|收益分配|跟踪指数|业绩基准|招募说明书|基金合同|产品资料概要|季报|年报|公告)/u', $text);
+        return (bool)preg_match('/(基金|净值|估值|基金经理|基金公司|申购|赎回|同类排行|同类排名|基金排行|基金排名|基金信息|基金资料|开放式基金|ETF|etf|QDII|qdii|红利型|红利策略|分红|派息|收益分配|跟踪指数|业绩基准|招募说明书|基金合同|产品资料概要|季报|年报)/u', $text);
+    }
+
+    private function looksLikeStockAnnouncementRequest(string $text): bool
+    {
+        if (preg_match('/(基金|ETF|etf|QDII|qdii).{0,10}(公告|季报|年报|披露)|(?:公告|季报|年报|披露).{0,10}(基金|ETF|etf)/u', $text)) {
+            return false;
+        }
+        return (bool)preg_match('/(股票|个股|上市公司|公司事件|重大事项|公告|披露|问询函|业绩预告)/u', $text)
+            && ((bool)preg_match('/\b(?:(?:sh|sz|bj|SH|SZ|BJ)\d{6}|\d{6}(?:\.(?:XSHG|XSHE|SH|SZ|BJ))?)\b/u', $text)
+                || (bool)preg_match('/(股票|个股|上市公司|全市场|A股|沪深|公司事件)/u', $text));
     }
 
     private function looksLikeMarketBreadthRequest(string $text): bool
@@ -1033,7 +1072,7 @@ class AIChatToolAgent
         $lines = [
             '你是一位专业、谨慎的金融研究助理，服务于 A 股、基金、板块资金和市场热度研究。',
             $includeToolInstructions
-                ? '你可以使用服务端提供的只读工具查询行情、K线、资金流、股票分红日历、基金、新闻舆情、雪球热度、市场宽度和确定性技术指标。'
+                ? '你可以使用服务端提供的只读工具查询行情、K线、资金流、股票公告与公司事件、股票分红日历、基金、新闻舆情、雪球热度、市场宽度和确定性技术指标。'
                 : '当前渠道未启用正式工具调用；不要编造实时价格、资金流、基金净值、排行或新闻；如需实时事实，请说明需要通过服务端数据源查询。',
             $includeToolInstructions
                 ? '优先用工具获取事实数据；不要编造实时价格、资金流、基金净值、排行或新闻。'
@@ -1045,6 +1084,7 @@ class AIChatToolAgent
                 '涉及大盘环境、市场情绪、市场宽度、涨跌家数、涨停跌停、普涨普跌或赚钱效应时，必须优先调用 fa_get_market_breadth。',
                 '涉及市场扫描、资金流入、今日涨幅排行、热门股票或候选标的时，先调用 fa_get_market_breadth 判断市场环境，再调用 fa_get_hot_stocks；按涨幅排序使用 sort=f3，按主力净流入排序使用 sort=f62。',
                 '涉及单只股票/基金的最新新闻、媒体报道、事件催化或舆情时，调用 fa_get_asset_news 获取标题事实，并调用 fa_get_sentiment_snapshot 获取可解释的标题情绪弱信号；涉及大盘、板块或主题新闻热点时，调用 fa_get_market_hot_news，并按需调用 fa_get_sentiment_snapshot。新闻搜索不是官方公告源，标题情绪不等于事实、全网舆情或交易信号，回答必须说明样本量、时间和相关性缺口。',
+                '涉及上市公司公告、披露文件、业绩预告、问询函或公司事件时，调用 fa_get_stock_announcements 获取公告索引和确定性事件分类；需要解释金额、比例、日期、条件或风险时，必须再调用 fa_get_stock_announcement_detail 读取正文。公告重要性只用于降噪，不等于利好或利空；公告不得进入新闻标题情绪计算。基金公告仍使用 fa_get_fund_documents。',
                 '涉及股票分红日历、临近分红、股权登记日、除权除息日、抢息、抢分红或本次现金股息率时，必须先查询股票分红工具：全市场或日期窗口扫描使用 fa_get_upcoming_dividends；已明确单只股票时优先使用 fa_get_stock_dividend_profile，无需先重复扫描全市场；不要用雪球年度股息率替代实施事件。',
                 '研判单只分红候选时应调用 fa_get_stock_dividend_profile 核查历史分红，再由你按问题需要从行情、技术指标、资金流和市场宽度中最多选择 3 个关键工具；档案已有有效价格时不要重复查询行情，用户未询问大盘环境时不必调用市场宽度；相互独立的查询应尽量在同一轮并行发出，避免无意义的串行轮次和过大的工具上下文；本次事件现金率不是年化收益，必须说明除息价格调整、税费和价格波动风险。',
                 '基金筛选/推荐/挑选类问题（如“帮我挑几只红利型基金”“最好的XX基金”）且未指定代码时，必须优先调用 fa_screen_funds 召回候选池，不要只用 fa_search_funds 单关键词搜索；红利主题用 theme=dividend。',
@@ -1378,6 +1418,8 @@ class AIChatToolAgent
             'fa_get_asset_news' => '标的最新新闻',
             'fa_get_market_hot_news' => '市场热点新闻',
             'fa_get_sentiment_snapshot' => '新闻标题情绪快照',
+            'fa_get_stock_announcements' => '股票公告与公司事件',
+            'fa_get_stock_announcement_detail' => '股票公告正文',
             'fa_get_upcoming_dividends' => '临近分红候选',
             'fa_get_stock_dividend_profile' => '个股分红历史',
             'fa_get_xueqiu_hot_stock' => '雪球热股',

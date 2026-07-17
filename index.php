@@ -105,7 +105,7 @@ $assetVersions = [
             <button class="nav-tab" data-tab="strategy">策略池</button>
             <button class="nav-tab" data-tab="sector">资金与板块</button>
             <button class="nav-tab" data-tab="dividend">分红日历</button>
-            <button class="nav-tab" data-tab="news">新闻舆情</button>
+            <button class="nav-tab" data-tab="news">资讯公告</button>
             <button class="nav-tab" data-tab="xueqiu">雪球洞察</button>
             <button class="nav-tab" data-tab="fund">基金分析</button>
             <button class="nav-tab" data-tab="ai">AI顾问</button>
@@ -535,14 +535,14 @@ $assetVersions = [
             </div>
         </div>
 
-        <!-- 新闻舆情页 -->
+        <!-- 资讯、公告与舆情页 -->
         <div class="tab-panel" id="panel-news">
             <div class="news-layout">
                 <div class="card news-query-card">
                     <div class="card-header news-query-header">
                         <div>
-                            <h3><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-quote"></use></svg></span> 新闻与舆情验证台</h3>
-                            <p class="news-subtitle">按股票、基金或市场关键词聚合东方财富新闻搜索，只展示标题、来源、时间和原文链接</p>
+                            <h3><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-quote"></use></svg></span> 资讯、公告与舆情</h3>
+                            <p class="news-subtitle">公司披露公告与媒体新闻分层展示；公告用于核验事实，标题情绪仅作为外部弱信号</p>
                         </div>
                         <span class="news-provider-badge">PoC · 东方财富搜索</span>
                     </div>
@@ -565,6 +565,51 @@ $assetVersions = [
                     </div>
                     <div class="news-query-hint" id="news-query-hint">市场模式支持 1～4 个关键词；热点按跨关键词去重后的发布时间排序。</div>
                 </div>
+
+                <section id="announcement-section" class="card announcement-card" aria-labelledby="announcement-title">
+                    <div class="card-header announcement-header">
+                        <div>
+                            <h3 id="announcement-title"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-table"></use></svg></span> 全市场重要公告</h3>
+                            <span id="announcement-meta" class="news-results-meta">披露文件事实层 · 尚未加载</span>
+                        </div>
+                        <div class="announcement-header-actions">
+                            <span class="announcement-provider-badge">公告聚合 · 东方财富</span>
+                            <button id="announcement-ai-btn" class="btn-sm btn-ai" type="button"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-ai"></use></svg></span> AI概览</button>
+                        </div>
+                    </div>
+                    <div class="announcement-controls">
+                        <select id="announcement-event-type" aria-label="公司事件类型">
+                            <option value="all">全部事件</option>
+                            <option value="performance">业绩披露</option>
+                            <option value="capital_operation">资本运作</option>
+                            <option value="ownership">股权事项</option>
+                            <option value="operation">经营事项</option>
+                            <option value="dividend">分红事项</option>
+                            <option value="governance">公司治理</option>
+                            <option value="risk_regulatory">监管风险</option>
+                            <option value="other">其他事项</option>
+                        </select>
+                        <select id="announcement-importance" aria-label="公告重要性">
+                            <option value="important">重要公告</option>
+                            <option value="all">全部公告</option>
+                            <option value="routine">程序性公告</option>
+                        </select>
+                        <label class="announcement-date-field"><span>起始日</span><input id="announcement-date-from" type="date" aria-label="公告起始日期"></label>
+                        <label class="announcement-date-field"><span>截止日</span><input id="announcement-date-to" type="date" aria-label="公告截止日期"></label>
+                        <button id="announcement-filter-btn" class="btn-sm" type="button">应用筛选</button>
+                    </div>
+                    <div id="announcement-loading" class="loading-spinner announcement-loading" style="display:none;"><div class="spinner"></div><span>正在读取披露公告...</span></div>
+                    <div id="announcement-error" class="error-msg announcement-error" style="display:none;"></div>
+                    <div id="announcement-list" class="announcement-list" aria-live="polite">
+                        <p class="placeholder-text">进入本页后将自动加载近期重要公告</p>
+                    </div>
+                    <div id="announcement-pagination" class="announcement-pagination" style="display:none;">
+                        <button id="announcement-prev-page" class="btn-sm" type="button">上一页</button>
+                        <span id="announcement-page-label">第 1 页</span>
+                        <button id="announcement-next-page" class="btn-sm" type="button">下一页</button>
+                    </div>
+                    <p class="announcement-boundary-note">“重要”仅为确定性降噪分类，不代表利好或利空；涉及金额、比例、日期和条件时请打开正文核验。</p>
+                </section>
 
                 <div id="news-loading" class="loading-spinner news-loading" style="display:none;"><div class="spinner"></div><span>正在聚合新闻并计算标题情绪...</span></div>
                 <div id="news-error" class="error-msg" style="display:none;"></div>
@@ -610,7 +655,7 @@ $assetVersions = [
 
                 <div class="news-note-grid">
                     <div class="card news-note-card"><h4>字段边界</h4><p>页面、API 与 AI 工具均不返回新闻正文，只保留标题、来源、发布时间和原文链接。</p></div>
-                    <div class="card news-note-card"><h4>数据口径</h4><p>“热点”是关键词搜索结果跨源去重后的新近性排序，不等同于交易所公告或全网热度榜。</p></div>
+                    <div class="card news-note-card"><h4>数据口径</h4><p>公司公告与媒体新闻独立请求、独立展示；公告不会进入标题情绪样本。</p></div>
                     <div class="card news-note-card"><h4>授权提示</h4><p>当前东方财富公开搜索仅用于技术验证；公开商业化或再分发前仍需确认内容与接口授权。</p></div>
                 </div>
             </div>
@@ -968,6 +1013,16 @@ $assetVersions = [
                 <button id="dividend-detail-close" class="modal-close-btn" type="button" aria-label="关闭分红详情">×</button>
             </div>
             <div id="dividend-detail-content" class="dividend-detail-content"><div class="loading-spinner"><div class="spinner"></div><span>加载分红历史...</span></div></div>
+        </aside>
+    </div>
+
+    <div class="announcement-detail-overlay" id="announcement-detail-overlay" aria-hidden="true">
+        <aside class="announcement-detail-drawer" role="dialog" aria-modal="true" aria-labelledby="announcement-detail-title" tabindex="-1">
+            <div class="announcement-detail-header">
+                <div><span class="announcement-detail-eyebrow">公司披露文件</span><h3 id="announcement-detail-title">公告详情</h3></div>
+                <button id="announcement-detail-close" class="modal-close-btn" type="button" aria-label="关闭公告详情">×</button>
+            </div>
+            <div id="announcement-detail-content" class="announcement-detail-content"><div class="loading-spinner"><div class="spinner"></div><span>加载公告正文...</span></div></div>
         </aside>
     </div>
 

@@ -5159,6 +5159,9 @@ const AssetPulseModule = {
             if (action === 'refresh') this.refresh(host, asset);
             if (action === 'full') this.openFullNews(asset);
             if (action === 'ai') this.analyzeWithAI(asset);
+            if (action === 'announcement-detail' && button.dataset.announcementId && typeof NewsModule !== 'undefined') {
+                NewsModule.openAnnouncementDetail(button.dataset.announcementId, button);
+            }
         });
     },
 
@@ -5245,7 +5248,25 @@ const AssetPulseModule = {
                 sentimentError = error.message || '情绪快照暂不可用';
             }
 
-            const payload = { news, sentiment, sentimentError };
+            let announcements = null;
+            let announcementError = '';
+            if (asset.type === 'stock') {
+                const announcementParams = new URLSearchParams({
+                    action: 'list',
+                    scope: 'stock',
+                    importance: 'important',
+                    limit: '2'
+                });
+                if (asset.code) announcementParams.set('code', asset.code);
+                if (asset.name) announcementParams.set('name', asset.name);
+                try {
+                    announcements = await this.fetchJson(`announcement_api.php?${announcementParams}`);
+                } catch (error) {
+                    announcementError = error.message || '公告暂不可用';
+                }
+            }
+
+            const payload = { news, sentiment, sentimentError, announcements, announcementError };
             this.cache.set(key, { timestamp: Date.now(), payload });
             return payload;
         })();
@@ -5264,10 +5285,10 @@ const AssetPulseModule = {
         try {
             payload = await response.json();
         } catch (error) {
-            throw new Error(`新闻服务返回无效数据（HTTP ${response.status}）`);
+            throw new Error(`数据服务返回无效响应（HTTP ${response.status}）`);
         }
         if (!response.ok || !payload.success) {
-            throw new Error(payload.message || payload.error_message || `新闻服务暂不可用（HTTP ${response.status}）`);
+            throw new Error(payload.message || payload.error_message || `数据服务暂不可用（HTTP ${response.status}）`);
         }
         return payload;
     },
@@ -5277,7 +5298,7 @@ const AssetPulseModule = {
         host.classList.add('is-loading');
         host.innerHTML = `
             <div class="asset-pulse-head">
-                <div class="asset-pulse-heading"><span class="asset-pulse-orb"><i></i></span><div><small>标的舆情脉搏</small><b>${escapeHTML(label)}</b></div></div>
+                <div class="asset-pulse-heading"><span class="asset-pulse-orb"><i></i></span><div><small>标的资讯脉搏</small><b>${escapeHTML(label)}</b></div></div>
                 <span class="asset-pulse-status neutral">对齐中</span>
             </div>
             <div class="asset-pulse-loading"><span></span><span></span><span></span><p>正在匹配相关标题与情绪样本…</p></div>`;
@@ -5308,6 +5329,15 @@ const AssetPulseModule = {
         const sampleSize = snapshot?.sample_size ?? items.length;
         const sourceCount = snapshot?.source_count ?? new Set(items.map(item => item.source).filter(Boolean)).size;
         const newestAt = snapshot?.newest_at || items[0]?.published_at || '';
+        const announcementItems = requestedAsset.type === 'stock' && Array.isArray(payload.announcements?.data)
+            ? payload.announcements.data.slice(0, 2)
+            : [];
+        const eventLabels = { performance: '业绩', capital_operation: '资本', ownership: '股权', operation: '经营', dividend: '分红', governance: '治理', risk_regulatory: '风险', other: '事项' };
+        const announcementBlock = requestedAsset.type === 'stock' ? `
+            <div class="asset-pulse-announcements">
+                <div class="asset-pulse-announcement-label"><span>公司公告与事件</span><span>${announcementItems.length ? `${announcementItems.length} 条近期重要公告` : (payload.announcementError ? '暂不可用' : '暂无重要公告')}</span></div>
+                ${announcementItems.map(item => `<button type="button" class="asset-pulse-announcement" data-pulse-action="announcement-detail" data-announcement-id="${escapeAttr(item.id || '')}"><span>${escapeHTML(eventLabels[item.event_type] || '公告')}</span><b>${escapeHTML(item.title || '未命名公告')}</b><em>›</em></button>`).join('')}
+            </div>` : '';
         const headlines = items.length ? items.map(item => {
             const content = `<span class="asset-pulse-dot"></span><span class="asset-pulse-news-main"><b>${escapeHTML(item.title || '未命名新闻')}</b><small>${escapeHTML(item.source || '未知来源')} · ${escapeHTML(this.shortTime(item.published_at))}</small></span><span class="asset-pulse-news-arrow">↗</span>`;
             return item.url
@@ -5317,7 +5347,7 @@ const AssetPulseModule = {
 
         host.innerHTML = `
             <div class="asset-pulse-head">
-                <div class="asset-pulse-heading"><span class="asset-pulse-orb"><i></i></span><div><small>${asset.type === 'fund' ? '基金舆情脉搏' : '标的舆情脉搏'}</small><b>${escapeHTML(title)} <em>${escapeHTML(codeLabel)}</em></b></div></div>
+                <div class="asset-pulse-heading"><span class="asset-pulse-orb"><i></i></span><div><small>${asset.type === 'fund' ? '基金舆情脉搏' : '标的资讯脉搏'}</small><b>${escapeHTML(title)} <em>${escapeHTML(codeLabel)}</em></b></div></div>
                 <div class="asset-pulse-head-actions"><span class="asset-pulse-status ${escapeAttr(sentimentClass)}">${escapeHTML(sentimentLabel)}</span><button type="button" data-pulse-action="refresh" title="刷新舆情" aria-label="刷新当前标的舆情">↻</button></div>
             </div>
             <div class="asset-pulse-metrics">
@@ -5325,10 +5355,11 @@ const AssetPulseModule = {
                 <div><span>相关样本</span><b>${escapeHTML(sampleSize)}</b><small>${escapeHTML(sourceCount)} 个来源</small></div>
                 <div><span>最新覆盖</span><b>${escapeHTML(this.shortTime(newestAt, true))}</b><small>${payload.sentimentError ? '情绪降级' : '近实时拉取'}</small></div>
             </div>
+            ${announcementBlock}
             <div class="asset-pulse-news-list">${headlines}</div>
             <div class="asset-pulse-foot">
-                <p>仅基于标题与时间衰减，不代表事实判断。</p>
-                <div><button type="button" class="btn-sm" data-pulse-action="full">完整舆情</button><button type="button" class="btn-sm btn-ai" data-pulse-action="ai">${Icons.hot} AI研判</button></div>
+                <p>${asset.type === 'stock' ? '公告用于事实核验；标题情绪仅是弱信号。' : '仅基于标题与时间衰减，不代表事实判断。'}</p>
+                <div><button type="button" class="btn-sm" data-pulse-action="full">完整资讯</button><button type="button" class="btn-sm btn-ai" data-pulse-action="ai">${Icons.hot} AI研判</button></div>
             </div>`;
     },
 
@@ -5338,7 +5369,7 @@ const AssetPulseModule = {
         const label = asset.name || asset.code || '当前标的';
         host.innerHTML = `
             <div class="asset-pulse-head">
-                <div class="asset-pulse-heading"><span class="asset-pulse-orb muted"><i></i></span><div><small>标的舆情脉搏</small><b>${escapeHTML(label)}</b></div></div>
+                <div class="asset-pulse-heading"><span class="asset-pulse-orb muted"><i></i></span><div><small>标的资讯脉搏</small><b>${escapeHTML(label)}</b></div></div>
                 <span class="asset-pulse-status neutral">暂不可用</span>
             </div>
             <div class="asset-pulse-error"><p>${escapeHTML(error.message || '舆情服务暂时不可用')}</p><button type="button" class="btn-sm" data-pulse-action="refresh">重新加载</button></div>`;
@@ -5377,9 +5408,13 @@ const AssetPulseModule = {
         const normalized = this.normalizeAsset(asset.type, asset);
         const typeLabel = normalized.type === 'fund' ? '基金' : '股票';
         const label = normalized.name && normalized.code ? `${normalized.name}（${normalized.code}）` : (normalized.name || normalized.code);
-        const source = document.querySelector('.nav-tab.active')?.dataset.tab === 'dividend' ? '分红日历' : '标的舆情脉搏';
+        const source = document.querySelector('.nav-tab.active')?.dataset.tab === 'dividend' ? '分红日历' : '标的资讯脉搏';
         AdvisorModule.setAssetContext(normalized.type, normalized, source);
-        AdvisorModule.autoSend(`请研判${typeLabel} ${label} 的最新热点与舆情。必须调用 fa_get_asset_news 与 fa_get_sentiment_snapshot；需要判断市场反应时再自主选择行情、K线或资金工具。请区分新闻标题、可核验事实、标题情绪弱信号和推断，并说明数据时间、样本量、相关性与不确定性。`);
+        if (normalized.type === 'stock') {
+            AdvisorModule.autoSend(`请研判股票 ${label} 的最新公告、公司事件、媒体热点与舆情。必须调用 fa_get_stock_announcements、fa_get_asset_news 与 fa_get_sentiment_snapshot；如需解释公告中的金额、比例、日期、条件或风险，再调用 fa_get_stock_announcement_detail。请分开陈述公告事实、媒体标题、标题情绪弱信号和推断，并说明来源与不确定性。`);
+        } else {
+            AdvisorModule.autoSend(`请研判${typeLabel} ${label} 的最新热点与舆情。必须调用 fa_get_asset_news 与 fa_get_sentiment_snapshot；需要判断市场反应时再自主选择行情、K线或资金工具。请区分新闻标题、可核验事实、标题情绪弱信号和推断，并说明数据时间、样本量、相关性与不确定性。`);
+        }
     }
 };
 
@@ -5390,6 +5425,9 @@ const NewsModule = {
     initialized: false,
     loaded: false,
     current: null,
+    announcementPage: 1,
+    announcementPayload: null,
+    announcementLastFocused: null,
 
     init() {
         if (this.initialized) return;
@@ -5399,6 +5437,26 @@ const NewsModule = {
         mode?.addEventListener('change', () => this.updateModeUI());
         document.getElementById('news-query-btn')?.addEventListener('click', () => this.search());
         document.getElementById('news-ai-btn')?.addEventListener('click', () => this.analyzeWithAI());
+        document.getElementById('announcement-filter-btn')?.addEventListener('click', () => this.loadAnnouncements(1));
+        document.getElementById('announcement-ai-btn')?.addEventListener('click', () => this.analyzeAnnouncementsWithAI());
+        document.getElementById('announcement-prev-page')?.addEventListener('click', () => this.loadAnnouncements(Math.max(1, this.announcementPage - 1)));
+        document.getElementById('announcement-next-page')?.addEventListener('click', () => this.loadAnnouncements(this.announcementPage + 1));
+        document.getElementById('announcement-list')?.addEventListener('click', event => {
+            const button = event.target.closest('[data-announcement-id]');
+            if (button) this.openAnnouncementDetail(button.dataset.announcementId, button);
+        });
+        document.getElementById('announcement-detail-close')?.addEventListener('click', () => this.closeAnnouncementDetail());
+        document.getElementById('announcement-detail-overlay')?.addEventListener('click', event => {
+            if (event.target.id === 'announcement-detail-overlay') this.closeAnnouncementDetail();
+            const aiButton = event.target.closest('[data-announcement-ai]');
+            if (aiButton) this.analyzeAnnouncementDetail(aiButton.dataset.announcementAi);
+            const dividendButton = event.target.closest('[data-announcement-dividend]');
+            if (dividendButton) this.openDividendFromAnnouncement(dividendButton.dataset.code || '', dividendButton.dataset.name || '', dividendButton);
+        });
+        document.addEventListener('keydown', event => {
+            const overlay = document.getElementById('announcement-detail-overlay');
+            if (event.key === 'Escape' && overlay?.classList.contains('open')) this.closeAnnouncementDetail();
+        });
         input?.addEventListener('keydown', (event) => {
             if (event.key === 'Enter') {
                 event.preventDefault();
@@ -5427,7 +5485,14 @@ const NewsModule = {
         const input = document.getElementById('news-query-input');
         const quick = document.getElementById('news-quick-keywords');
         const hint = document.getElementById('news-query-hint');
+        const announcementSection = document.getElementById('announcement-section');
+        const importance = document.getElementById('announcement-importance');
         if (quick) quick.style.display = mode === 'market' ? 'flex' : 'none';
+        if (announcementSection) announcementSection.style.display = mode === 'fund' ? 'none' : '';
+        if (importance) {
+            importance.disabled = mode === 'market';
+            if (mode === 'market') importance.value = 'important';
+        }
         if (!input || !hint) return;
         if (mode === 'stock') {
             input.placeholder = '输入股票代码或名称，如：600519 / 贵州茅台';
@@ -5439,6 +5504,170 @@ const NewsModule = {
             input.placeholder = '市场关键词，支持逗号分隔，如：A股,沪指';
             hint.textContent = '市场模式支持 1～4 个关键词；热点按跨关键词去重后的发布时间排序。';
         }
+    },
+
+    buildAnnouncementUrl(context, page = 1) {
+        if (!context || context.mode === 'fund') return '';
+        const params = new URLSearchParams({
+            action: 'list',
+            scope: context.mode === 'market' ? 'market' : 'stock',
+            event_type: document.getElementById('announcement-event-type')?.value || 'all',
+            importance: context.mode === 'market' ? 'important' : (document.getElementById('announcement-importance')?.value || 'important'),
+            page: String(Math.max(1, page)),
+            limit: context.mode === 'market' ? '30' : '20'
+        });
+        const dateFrom = document.getElementById('announcement-date-from')?.value || '';
+        const dateTo = document.getElementById('announcement-date-to')?.value || '';
+        if (dateFrom) params.set('date_from', dateFrom);
+        if (dateTo) params.set('date_to', dateTo);
+        if (context.mode === 'stock') {
+            if (context.code) params.set('code', context.code);
+            if (context.name) params.set('name', context.name);
+        }
+        return `announcement_api.php?${params}`;
+    },
+
+    async loadAnnouncements(page = 1, contextOverride = null) {
+        let context = contextOverride || this.current;
+        if (!context) {
+            try { context = this.buildRequests().context; } catch (error) { return null; }
+        }
+        const section = document.getElementById('announcement-section');
+        if (context.mode === 'fund') {
+            if (section) section.style.display = 'none';
+            return null;
+        }
+        if (section) section.style.display = '';
+        const url = this.buildAnnouncementUrl(context, page);
+        if (!url) return null;
+        const loading = document.getElementById('announcement-loading');
+        const errorBox = document.getElementById('announcement-error');
+        if (loading) loading.style.display = 'flex';
+        if (errorBox) errorBox.style.display = 'none';
+        try {
+            const payload = await this.fetchJson(url, '公告');
+            this.announcementPage = Math.max(1, page);
+            this.announcementPayload = payload;
+            this.renderAnnouncements(payload, context);
+            if (this.current) {
+                this.current.announcements = Array.isArray(payload.data) ? payload.data : [];
+                this.current.announcementMeta = payload.meta || {};
+            }
+            return payload;
+        } catch (error) {
+            if (errorBox) {
+                errorBox.textContent = error.message || '公告查询失败，请稍后重试';
+                errorBox.style.display = 'block';
+            }
+            this.renderAnnouncements({ data: [], meta: {} }, context);
+            return null;
+        } finally {
+            if (loading) loading.style.display = 'none';
+        }
+    },
+
+    renderAnnouncements(payload, context) {
+        const list = document.getElementById('announcement-list');
+        const title = document.getElementById('announcement-title');
+        const meta = document.getElementById('announcement-meta');
+        const pagination = document.getElementById('announcement-pagination');
+        const previous = document.getElementById('announcement-prev-page');
+        const next = document.getElementById('announcement-next-page');
+        const pageLabel = document.getElementById('announcement-page-label');
+        if (!list) return;
+        const items = Array.isArray(payload.data) ? payload.data : [];
+        const asset = payload.meta?.asset || {};
+        const eventLabels = { performance: '业绩披露', capital_operation: '资本运作', ownership: '股权事项', operation: '经营事项', dividend: '分红事项', governance: '公司治理', risk_regulatory: '监管风险', other: '其他事项' };
+        const importanceLabels = { important: '重要', normal: '一般', routine: '程序性' };
+        if (title) title.innerHTML = `${Icons.table} ${context.mode === 'market' ? '全市场重要公告' : `${escapeHTML(asset.name || context.name || asset.code || context.code || '指定股票')} · 公司公告`}`;
+        if (meta) {
+            const boundary = payload.meta?.scan_limited ? ' · 已达扫描上限' : '';
+            const partial = payload.meta?.partial ? ' · 部分上游失败' : '';
+            meta.textContent = `${items.length} 条 · 第 ${payload.meta?.page || this.announcementPage} 页 · ${payload.source || 'eastmoney_announcements'}${boundary}${partial}`;
+        }
+        if (!items.length) {
+            list.innerHTML = '<p class="placeholder-text">当前筛选条件下没有公告。可切换“全部公告”或扩大日期范围。</p>';
+        } else {
+            list.innerHTML = items.map(item => `
+                <button type="button" class="announcement-item" data-announcement-id="${escapeAttr(item.id || '')}">
+                    <span class="announcement-item-badges"><em class="announcement-badge ${escapeAttr(item.importance || 'normal')}">${escapeHTML(importanceLabels[item.importance] || '一般')}</em><em class="announcement-badge event">${escapeHTML(eventLabels[item.event_type] || '其他事项')}</em></span>
+                    <span class="announcement-item-main"><b>${escapeHTML(item.title || '未命名公告')}</b><span><em>${escapeHTML(item.name || item.code || '未知公司')}</em><time>${escapeHTML(item.disclosure_date || item.published_at || '日期未知')}</time>${item.category_raw ? `<span>${escapeHTML(item.category_raw)}</span>` : ''}</span></span>
+                    <span class="announcement-item-open" aria-hidden="true">›</span>
+                </button>`).join('');
+        }
+        const hasMore = Boolean(payload.meta?.has_more);
+        if (pagination) pagination.style.display = items.length || this.announcementPage > 1 ? 'flex' : 'none';
+        if (previous) previous.disabled = this.announcementPage <= 1;
+        if (next) next.disabled = !hasMore;
+        if (pageLabel) pageLabel.textContent = `第 ${this.announcementPage} 页`;
+    },
+
+    async openAnnouncementDetail(id, trigger = null) {
+        if (!/^AN\d{18}$/i.test(String(id || ''))) return;
+        this.announcementLastFocused = trigger || document.activeElement;
+        const overlay = document.getElementById('announcement-detail-overlay');
+        const drawer = overlay?.querySelector('.announcement-detail-drawer');
+        const content = document.getElementById('announcement-detail-content');
+        const title = document.getElementById('announcement-detail-title');
+        if (!overlay || !content) return;
+        overlay.classList.add('open');
+        overlay.setAttribute('aria-hidden', 'false');
+        document.body.classList.add('announcement-drawer-open');
+        if (title) title.textContent = '公告详情';
+        content.innerHTML = '<div class="loading-spinner"><div class="spinner"></div><span>加载公告正文...</span></div>';
+        setTimeout(() => drawer?.focus(), 20);
+        try {
+            const payload = await this.fetchJson(`announcement_api.php?action=detail&id=${encodeURIComponent(id)}&content_limit=12000`, '公告正文');
+            const item = payload.data || {};
+            if (title) title.textContent = item.title || '公告详情';
+            const eventLabels = { performance: '业绩披露', capital_operation: '资本运作', ownership: '股权事项', operation: '经营事项', dividend: '分红事项', governance: '公司治理', risk_regulatory: '监管风险', other: '其他事项' };
+            const links = [
+                item.document_url ? `<a class="btn-sm" href="${escapeAttr(item.document_url)}" target="_blank" rel="noopener noreferrer">查看 PDF 文件</a>` : '',
+                item.provider_url ? `<a class="btn-sm" href="${escapeAttr(item.provider_url)}" target="_blank" rel="noopener noreferrer">查看聚合详情</a>` : '',
+                `<button type="button" class="btn-sm btn-ai" data-announcement-ai="${escapeAttr(item.id || id)}">${Icons.hot} AI解读</button>`,
+                item.event_type === 'dividend' && item.code ? `<button type="button" class="btn-sm" data-announcement-dividend="1" data-code="${escapeAttr(item.code)}" data-name="${escapeAttr(item.name || '')}">查看分红档案</button>` : ''
+            ].filter(Boolean).join('');
+            const statusText = item.content_status === 'truncated' ? '正文已按长度限制截断' : (item.content_status === 'empty' ? '正文暂不可用，请查看 PDF' : '正文已加载');
+            content.innerHTML = `
+                <div class="announcement-detail-meta"><span><b>${escapeHTML(item.name || item.code || '-')}</b>${item.code ? ` · ${escapeHTML(item.code)}` : ''}</span><span>${escapeHTML(eventLabels[item.event_type] || '其他事项')}</span><span>${escapeHTML(item.disclosure_date || item.published_at || '日期未知')}</span><span>${escapeHTML(item.provider || payload.source || '公告聚合')}</span></div>
+                <div class="announcement-detail-actions">${links}</div>
+                <section class="announcement-detail-body"><h4>公告正文</h4>${item.content ? `<pre>${escapeHTML(item.content)}</pre>` : '<p class="placeholder-text">正文暂不可用，请通过 PDF 或聚合详情页核验。</p>'}<p class="announcement-detail-notice">${escapeHTML(statusText)} · 重要性分类只用于降噪，不代表投资方向。</p></section>`;
+        } catch (error) {
+            content.innerHTML = `<div class="error-msg">${escapeHTML(error.message || '公告正文加载失败')}</div>`;
+        }
+    },
+
+    closeAnnouncementDetail() {
+        const overlay = document.getElementById('announcement-detail-overlay');
+        if (!overlay?.classList.contains('open')) return;
+        overlay.classList.remove('open');
+        overlay.setAttribute('aria-hidden', 'true');
+        document.body.classList.remove('announcement-drawer-open');
+        this.announcementLastFocused?.focus?.();
+        this.announcementLastFocused = null;
+    },
+
+    analyzeAnnouncementDetail(id) {
+        if (!id) return;
+        this.closeAnnouncementDetail();
+        AdvisorModule.autoSend(`请调用 fa_get_stock_announcement_detail 读取并解读公告 ${id}。请提取公告主体、核心事项、金额或比例、关键日期、实施条件、主要风险和待核实项；只依据正文陈述事实，不机械标注利好或利空，并附原文链接。`);
+    },
+
+    openDividendFromAnnouncement(code, name, trigger) {
+        if (!code || typeof DividendModule === 'undefined') return;
+        this.closeAnnouncementDetail();
+        if (DividendModule.mode !== 'stock') DividendModule.switchMode('stock');
+        switchTab('dividend');
+        DividendModule.openDetail({ code, name, market: '' }, trigger);
+    },
+
+    async analyzeAnnouncementsWithAI() {
+        const context = this.current || this.buildRequests().context;
+        if (context.mode === 'fund') return;
+        if (!this.announcementPayload) await this.loadAnnouncements(1, context);
+        const label = context.mode === 'market' ? '近期全市场重要公告' : `${context.name || context.code || '当前股票'}的近期公告`;
+        if (context.mode === 'stock') AdvisorModule.setAssetContext('stock', { code: context.code, name: context.name }, '公司公告与事件');
+        AdvisorModule.autoSend(`请研究${label}。必须先调用 fa_get_stock_announcements；从中选择最多 3 篇真正影响基本面或风险判断的公告，需要解释具体金额、比例、日期、条件或风险时再调用 fa_get_stock_announcement_detail。请区分公告事实、确定性分类与推断，不输出机械利好/利空标签。`);
     },
 
     parseAssetQuery(raw) {
@@ -5484,15 +5713,15 @@ const NewsModule = {
         return { newsUrl: `news_api.php?${news}`, sentimentUrl: `news_api.php?${sentiment}`, context };
     },
 
-    async fetchJson(url) {
+    async fetchJson(url, label = '新闻') {
         const response = await fetch(url);
         let data;
         try {
             data = await response.json();
         } catch (error) {
-            throw new Error(`新闻接口返回无效数据（HTTP ${response.status}）`);
+            throw new Error(`${label}接口返回无效数据（HTTP ${response.status}）`);
         }
-        if (!response.ok || !data.success) throw new Error(data.message || `新闻接口请求失败（HTTP ${response.status}）`);
+        if (!response.ok || !data.success) throw new Error(data.message || `${label}接口请求失败（HTTP ${response.status}）`);
         return data;
     },
 
@@ -5503,6 +5732,7 @@ const NewsModule = {
         if (errorBox) errorBox.style.display = 'none';
         try {
             const request = this.buildRequests();
+            const announcementTask = request.context.mode === 'fund' ? null : this.loadAnnouncements(1, request.context);
             // 先完成新闻列表，再请求情绪，确保并行工具场景也能复用同一份新闻缓存。
             const news = await this.fetchJson(request.newsUrl);
             this.renderNews(news, request.context);
@@ -5521,15 +5751,22 @@ const NewsModule = {
                 ...request.context,
                 items: Array.isArray(news.data) ? news.data : [],
                 meta: news.meta || {},
-                sentiment: sentiment?.data || null
+                sentiment: sentiment?.data || null,
+                announcements: [],
+                announcementMeta: {}
             };
+            if (announcementTask) {
+                const announcementPayload = await announcementTask;
+                this.current.announcements = Array.isArray(announcementPayload?.data) ? announcementPayload.data : [];
+                this.current.announcementMeta = announcementPayload?.meta || {};
+            }
             const mapped = news.meta?.asset || {};
             if (request.context.mode !== 'market') {
                 this.current.code = mapped.code || request.context.code;
                 this.current.name = mapped.name || request.context.name;
-                AdvisorModule.setAssetContext(request.context.mode, mapped, '新闻舆情');
+                AdvisorModule.setAssetContext(request.context.mode, mapped, '资讯公告');
             } else {
-                APP.advisorContext.source = '市场新闻舆情';
+                APP.advisorContext.source = '市场资讯公告';
                 AdvisorModule.updateContext();
             }
             this.loaded = true;
@@ -5605,13 +5842,17 @@ const NewsModule = {
         if (!current) return;
         if (current.mode === 'market') {
             const keywords = current.keywords.join('、') || 'A股、沪指、基金市场';
-            AdvisorModule.autoSend(`请研究当前市场新闻热点。必须调用 fa_get_market_hot_news 与 fa_get_sentiment_snapshot，关键词为：${keywords}。请把新闻事实、标题情绪弱信号和行情/资金信号分开，不要把热度或标题情绪当作事实；说明数据时间、样本量、来源失败项与不确定性。`);
+            AdvisorModule.autoSend(`请研究当前市场重要公告与新闻热点。必须调用 fa_get_stock_announcements（scope=market）、fa_get_market_hot_news 与 fa_get_sentiment_snapshot，新闻关键词为：${keywords}。需要解释公告具体条款时再调用 fa_get_stock_announcement_detail。请把公告事实、媒体新闻、标题情绪弱信号和行情/资金信号分开，不要把重要性或标题情绪当作投资方向；说明数据时间、样本量、来源失败项与不确定性。`);
             return;
         }
         const assetType = current.mode === 'fund' ? '基金' : '股票';
         const label = current.name && current.code ? `${current.name}（${current.code}）` : (current.name || current.code);
-        AdvisorModule.setAssetContext(current.mode, { code: current.code, name: current.name }, '新闻舆情AI研判');
-        AdvisorModule.autoSend(`请研究${assetType} ${label} 的最新新闻与舆情。必须调用 fa_get_asset_news 与 fa_get_sentiment_snapshot；需要判断市场反应时再自主选择行情、K线或资金工具。请区分新闻标题、官方事实、情绪弱信号和推断，说明数据时间、相关性、样本不足与上游失败项。`);
+        AdvisorModule.setAssetContext(current.mode, { code: current.code, name: current.name }, '资讯公告AI研判');
+        if (current.mode === 'stock') {
+            AdvisorModule.autoSend(`请研究股票 ${label} 的最新公司公告、媒体新闻与舆情。必须调用 fa_get_stock_announcements、fa_get_asset_news 与 fa_get_sentiment_snapshot；需要解释公告具体条款时再调用 fa_get_stock_announcement_detail，需要判断市场反应时再自主选择行情、K线或资金工具。请分开陈述公告事实、媒体标题、标题情绪弱信号和推断，并说明数据时间、来源失败项与不确定性。`);
+        } else {
+            AdvisorModule.autoSend(`请研究${assetType} ${label} 的最新新闻与舆情。必须调用 fa_get_asset_news 与 fa_get_sentiment_snapshot；需要判断市场反应时再自主选择行情、K线或资金工具。请区分新闻标题、官方事实、情绪弱信号和推断，说明数据时间、相关性、样本不足与上游失败项。`);
+        }
     }
 };
 

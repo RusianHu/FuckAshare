@@ -112,6 +112,30 @@ class AIFinanceToolCatalog
                     'limit' => AIToolSchema::nullableInteger('News sample size. Default 30, min 5, max 50.', 5, 50),
                 ]
             ),
+            'fa_get_stock_announcements' => AIToolSchema::tool(
+                'fa_get_stock_announcements',
+                'Query disclosed A-share company announcements and deterministic company-event categories. Use stock scope for one company or market scope for recent important announcements. Results are an official-filing fact layer obtained through an aggregation provider and are never part of news-title sentiment.',
+                [
+                    'scope' => ['type' => 'string', 'enum' => ['stock', 'market'], 'description' => 'One stock or the overall A-share market.'],
+                    'code' => AIToolSchema::nullableString('Stock code for stock scope. Provide code or name.'),
+                    'name' => AIToolSchema::nullableString('Stock name for stock scope. The service resolves it to one A-share stock.'),
+                    'market' => AIToolSchema::nullableEnum(['all', 'sh', 'sz', 'bj'], 'Market filter. Default all; inferred for a resolved stock.'),
+                    'event_type' => AIToolSchema::nullableEnum(['all', 'performance', 'capital_operation', 'ownership', 'operation', 'dividend', 'governance', 'risk_regulatory', 'other'], 'Normalized company-event filter. Default all.'),
+                    'importance' => AIToolSchema::nullableEnum(['all', 'important', 'routine'], 'Importance/noise filter. Market scope always uses important. Default important.'),
+                    'date_from' => AIToolSchema::nullableString('Optional start date in YYYY-MM-DD. Defaults to 30 days for stock or 3 days for market.'),
+                    'date_to' => AIToolSchema::nullableString('Optional end date in YYYY-MM-DD.'),
+                    'page' => AIToolSchema::nullableInteger('Logical result page. Default 1.', 1, 100),
+                    'limit' => AIToolSchema::nullableInteger('Maximum announcements on this page. Default 20 for stock or 30 for market, max 50.', 1, 50),
+                ]
+            ),
+            'fa_get_stock_announcement_detail' => AIToolSchema::tool(
+                'fa_get_stock_announcement_detail',
+                'Read one disclosed company announcement by its verified announcement ID. Returns sanitized filing text, PDF URL, source metadata, event category, and truncation status. Call this before asserting amounts, ratios, dates, conditions, or risks that are not fully established by the title.',
+                [
+                    'announcement_id' => ['type' => 'string', 'pattern' => '^AN\\d{18}$', 'description' => 'Verified announcement ID returned by fa_get_stock_announcements.'],
+                    'content_limit' => AIToolSchema::nullableInteger('Maximum filing-text characters returned. Default 12000, max 20000.', 1000, 20000),
+                ]
+            ),
             'fa_get_upcoming_dividends' => AIToolSchema::tool(
                 'fa_get_upcoming_dividends',
                 'Scan upcoming A-share dividend record-date events, merge current quotes, and deterministically calculate one-off gross and personal after-tax cash yields. Use this first for dividend calendar, record date, ex-dividend date, dividend capture, or near-term high-dividend questions. This is an event yield, not an annualized return.',

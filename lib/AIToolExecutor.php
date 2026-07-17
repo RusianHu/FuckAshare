@@ -10,6 +10,7 @@ require_once __DIR__ . '/FundService.php';
 require_once __DIR__ . '/DividendService.php';
 require_once __DIR__ . '/FundDividendService.php';
 require_once __DIR__ . '/NewsService.php';
+require_once __DIR__ . '/AnnouncementService.php';
 require_once __DIR__ . '/StockCode.php';
 require_once __DIR__ . '/DataSourceResult.php';
 
@@ -30,6 +31,9 @@ class AIToolExecutor
     /** @var NewsService */
     private $news;
 
+    /** @var AnnouncementService */
+    private $announcement;
+
     /** @var int */
     private $outputCharLimit;
 
@@ -45,6 +49,8 @@ class AIToolExecutor
         'fa_get_asset_news' => 'executeAssetNews',
         'fa_get_market_hot_news' => 'executeMarketHotNews',
         'fa_get_sentiment_snapshot' => 'executeSentimentSnapshot',
+        'fa_get_stock_announcements' => 'executeStockAnnouncements',
+        'fa_get_stock_announcement_detail' => 'executeStockAnnouncementDetail',
         'fa_get_upcoming_dividends' => 'executeUpcomingDividends',
         'fa_get_stock_dividend_profile' => 'executeStockDividendProfile',
         'fa_get_xueqiu_hot_stock' => 'executeXueqiuHotStock',
@@ -80,13 +86,14 @@ class AIToolExecutor
         $this->researchState = $state;
     }
 
-    public function __construct(?MarketDataService $market = null, ?FundService $fund = null, int $outputCharLimit = 30000, ?DividendService $dividend = null, ?FundDividendService $fundDividend = null, ?NewsService $news = null)
+    public function __construct(?MarketDataService $market = null, ?FundService $fund = null, int $outputCharLimit = 30000, ?DividendService $dividend = null, ?FundDividendService $fundDividend = null, ?NewsService $news = null, ?AnnouncementService $announcement = null)
     {
         $this->market = $market ?: new MarketDataService();
         $this->fund = $fund ?: new FundService();
         $this->dividend = $dividend ?: new DividendService(null, $this->market);
         $this->fundDividend = $fundDividend ?: new FundDividendService(null, $this->fund, null, $this->market);
         $this->news = $news ?: new NewsService(null, $this->market, $this->fund);
+        $this->announcement = $announcement ?: new AnnouncementService();
         $this->outputCharLimit = max(100, $outputCharLimit);
     }
 
@@ -231,6 +238,38 @@ class AIToolExecutor
             $name,
             $this->newsKeywords($args['keywords'] ?? null),
             $this->int($args['limit'] ?? null, 5, 50, 30)
+        ), $started);
+    }
+
+    private function executeStockAnnouncements(array $args, float $started): array
+    {
+        $scope = $this->enum($args['scope'] ?? null, SecurityAudit::ALLOWED_ANNOUNCEMENT_SCOPES, 'stock');
+        $code = $this->safeText($args['code'] ?? '', SecurityAudit::MAX_CODE_LENGTH, true);
+        $name = $this->safeText($args['name'] ?? '', SecurityAudit::MAX_KEYWORD_LENGTH, true);
+        if ($code !== '') $code = $this->stockCode($code);
+        return $this->fromResult($this->announcement->list([
+            'scope' => $scope,
+            'code' => $code,
+            'name' => $name,
+            'market' => $this->enum($args['market'] ?? null, SecurityAudit::ALLOWED_ANNOUNCEMENT_MARKETS, 'all'),
+            'event_type' => $this->enum($args['event_type'] ?? null, SecurityAudit::ALLOWED_ANNOUNCEMENT_EVENT_TYPES, 'all'),
+            'importance' => $this->enum($args['importance'] ?? null, SecurityAudit::ALLOWED_ANNOUNCEMENT_IMPORTANCE, 'important'),
+            'date_from' => $this->date($args['date_from'] ?? null, true),
+            'date_to' => $this->date($args['date_to'] ?? null, true),
+            'page' => $this->int($args['page'] ?? null, 1, 100, 1),
+            'limit' => $this->int($args['limit'] ?? null, 1, 50, $scope === 'market' ? 30 : 20),
+        ]), $started);
+    }
+
+    private function executeStockAnnouncementDetail(array $args, float $started): array
+    {
+        $id = strtoupper(trim((string)($args['announcement_id'] ?? '')));
+        if (!preg_match(SecurityAudit::ANNOUNCEMENT_ID_PATTERN, $id)) {
+            throw new InvalidArgumentException('公告 ID 格式不正确');
+        }
+        return $this->fromResult($this->announcement->detail(
+            $id,
+            $this->int($args['content_limit'] ?? null, 1000, 20000, 12000)
         ), $started);
     }
 

@@ -88,6 +88,7 @@ return [
         'eastmoney_fast_news' => ['failure_threshold' => 3, 'cooldown' => 60], // ✅ 东方财富 7×24 快讯；与搜索接口独立熔断
         'google_news_rss' => ['failure_threshold' => 3, 'cooldown' => 120], // ✅ 海外基金媒体新闻 RSS；独立熔断
         'eastmoney_fund_announcements' => ['failure_threshold' => 3, 'cooldown' => 60], // ✅ 东方财富基金公告；独立熔断
+        'eastmoney_announcements' => ['failure_threshold' => 3, 'cooldown' => 60], // ✅ 东方财富股票公告列表/正文；独立熔断
     ],
 
     // ════════════════════════════════════════════════════════════
@@ -113,6 +114,8 @@ return [
         'news_asset'     => 60,     // ✅ 指定股票/基金新闻；默认 60s
         'news_market'    => 60,     // ✅ 市场关键词热点新闻；默认 60s
         'news_sentiment' => 90,     // ✅ 标题情绪快照；默认 90s
+        'announcement_list' => 180, // ✅ 股票公告列表与事件筛选；默认 180s
+        'announcement_detail' => 86400, // ✅ 单篇股票公告正文；默认 86400s
 
         // ── FundService（基金）──
         'estimate'       => 10,     // ✅ 基金实时估值（盘中短缓存）；默认 10s
@@ -180,6 +183,18 @@ return [
         'fund_google_news_rss' => true,
         'fund_announcements' => true,
         'fund_rss_max_queries' => 2,
+    ],
+
+    // ── 股票公告与公司事件 ──
+    // 读取位置：lib/AnnouncementService.php；首版 Provider 为东方财富公开网页接口。
+    'announcement' => [
+        'provider' => 'eastmoney',       // ✅ 可替换 Provider 标识；首版仅 eastmoney
+        'max_scan_pages' => 3,           // ✅ 单次筛选最多扫描上游页数；每页最多 100 条
+        'upstream_page_size' => 100,     // ✅ 上游每页数量；范围 20–100
+        'detail_content_limit' => 12000, // ✅ 正文默认返回字符数；最大 20000
+        'list_stale_ttl' => 1800,        // ✅ 列表过期后的陈旧兜底窗口（秒）
+        'detail_stale_ttl' => 604800,    // ✅ 正文过期后的陈旧兜底窗口（秒，7 日）
+        'negative_cache_ttl' => 10,      // ✅ 上游失败负缓存（秒）
     ],
 
     // ════════════════════════════════════════════════════════════

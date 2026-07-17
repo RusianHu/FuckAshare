@@ -38,6 +38,12 @@ class SecurityAudit
     /** 日期：YYYY-MM-DD */
     const DATE_PATTERN = '/^\d{4}-\d{2}-\d{2}$/';
 
+    /** 可空日期：空字符串或 YYYY-MM-DD */
+    const OPTIONAL_DATE_PATTERN = '/^(?:|\d{4}-\d{2}-\d{2})$/';
+
+    /** 东方财富公告 art_code */
+    const ANNOUNCEMENT_ID_PATTERN = '/^AN\d{18}$/';
+
     /** 0-100 的百分比小数，最多 4 位小数 */
     const PERCENT_PATTERN = '/^(?:\d{1,2}(?:\.\d{1,4})?|100(?:\.0{1,4})?)$/';
 
@@ -63,6 +69,13 @@ class SecurityAudit
     const ALLOWED_NEWS_ACTIONS = ['asset', 'market', 'sentiment'];
     const ALLOWED_NEWS_ASSET_TYPES = ['stock', 'fund'];
     const ALLOWED_NEWS_SCOPES = ['asset', 'market'];
+
+    /** 股票公告 action / 范围 / 市场 / 事件类型 / 重要性白名单 */
+    const ALLOWED_ANNOUNCEMENT_ACTIONS = ['list', 'detail'];
+    const ALLOWED_ANNOUNCEMENT_SCOPES = ['stock', 'market'];
+    const ALLOWED_ANNOUNCEMENT_MARKETS = ['all', 'sh', 'sz', 'bj'];
+    const ALLOWED_ANNOUNCEMENT_EVENT_TYPES = ['all', 'performance', 'capital_operation', 'ownership', 'operation', 'dividend', 'governance', 'risk_regulatory', 'other'];
+    const ALLOWED_ANNOUNCEMENT_IMPORTANCE = ['all', 'important', 'routine'];
 
     /** 雪球 K 线 period 白名单 */
     const ALLOWED_XUEQIU_PERIODS = ['1m', '5m', '15m', '30m', '60m', 'day', 'week', 'month'];

@@ -92,6 +92,7 @@ class AIToolRuntime
                 foreach ($missingKeys as $key) {
                     $args[$key] = null;
                 }
+                $args = $this->normalizeArgumentsForSchema($name, $args);
 
                 $this->stream->toolStatus($emit, $round, $name, $args, $origin);
                 $this->stream->agentEvent($emit, 'tool_call_started', [
@@ -198,6 +199,7 @@ class AIToolRuntime
                 foreach ($missingKeys as $key) {
                     $args[$key] = null;
                 }
+                $args = $this->normalizeArgumentsForSchema($name, $args);
                 $entry['args'] = $args;
                 $signature = $this->toolCallSignature($name, $args);
                 $entry['signature'] = $signature;
@@ -523,6 +525,54 @@ class AIToolRuntime
             return is_array($required) ? array_values(array_filter($required, 'is_string')) : [];
         }
         return [];
+    }
+
+    /**
+     * Normalize common provider deviations without changing tool intent.
+     * Some OpenAI-compatible models emit Python-style "None" for nullable
+     * fields or numeric values for identifiers declared as strings.
+     */
+    private function normalizeArgumentsForSchema(string $name, array $args): array
+    {
+        $definitions = AIToolRegistry::definitions();
+        $properties = $definitions[$name]['parameters']['properties'] ?? [];
+        if (!is_array($properties)) return $args;
+
+        foreach ($args as $key => $value) {
+            $schema = $properties[$key] ?? null;
+            if (!is_array($schema)) continue;
+
+            $types = $schema['type'] ?? [];
+            $types = is_array($types) ? $types : [$types];
+            $nullable = in_array('null', $types, true);
+            if ($nullable && is_string($value)) {
+                $nullToken = strtolower(trim($value));
+                if (in_array($nullToken, ['', 'none', 'null', 'nil', 'n/a'], true)) {
+                    $args[$key] = null;
+                    continue;
+                }
+            }
+
+            if (in_array('string', $types, true) && (is_int($value) || is_float($value))) {
+                $args[$key] = (string)$value;
+                continue;
+            }
+            if (in_array('integer', $types, true) && is_string($value) && preg_match('/^-?\d+$/', trim($value))) {
+                $args[$key] = (int)$value;
+                continue;
+            }
+            if (in_array('number', $types, true) && is_string($value) && is_numeric(trim($value))) {
+                $args[$key] = (float)$value;
+                continue;
+            }
+            if (in_array('boolean', $types, true) && is_string($value)) {
+                $boolToken = strtolower(trim($value));
+                if (in_array($boolToken, ['true', 'false'], true)) {
+                    $args[$key] = $boolToken === 'true';
+                }
+            }
+        }
+        return $args;
     }
 
     /**

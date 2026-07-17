@@ -404,6 +404,8 @@ class AIAgentStreamEmitter
             'fa_get_asset_news' => '查询标的新闻',
             'fa_get_market_hot_news' => '聚合市场热点新闻',
             'fa_get_sentiment_snapshot' => '计算新闻情绪快照',
+            'fa_get_stock_announcements' => '查询股票公告与公司事件',
+            'fa_get_stock_announcement_detail' => '读取股票公告正文',
             'fa_get_upcoming_dividends' => '扫描临近分红事件',
             'fa_get_stock_dividend_profile' => '获取个股分红历史',
             'fa_get_xueqiu_hot_stock' => '查询雪球热度',
