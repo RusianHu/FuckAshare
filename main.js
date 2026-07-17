@@ -693,6 +693,7 @@ const StockSearchModule = {
         this.input.dataset.selectedLabel = this.input.value;
         this.hide();
         this.input.focus();
+        this.input.form?.dispatchEvent(new Event('submit'));
     },
 
     syncResolved(stock) {
@@ -1199,10 +1200,11 @@ const QuoteModule = {
         if (!quote) { el.innerHTML = '<p class="placeholder-text">暂无行情数据</p>'; return; }
 
         const pctClass = colorClass(quote.change_pct);
+        const displayCode = normalizeCode(quote.symbol || quote.code || '');
         el.innerHTML = `
             <div class="quote-stock-name">
                 <span>${quote.name || '-'}</span>
-                <span style="font-size:0.8rem;color:var(--text-muted);font-family:var(--font-mono)">${quote.code}</span>
+                <span style="font-size:0.8rem;color:var(--text-muted);font-family:var(--font-mono)">${escapeHTML(displayCode)}</span>
             </div>
             <div class="quote-price-big ${pctClass}">${quote.price > 0 ? quote.price.toFixed(2) : '-'}</div>
             <div class="quote-change ${pctClass}">
@@ -1495,11 +1497,12 @@ const RealtimeModule = {
         let html = '';
         stocks.forEach(s => {
             const cls = colorClass(s.change_pct);
+            const symbol = normalizeCode(s.symbol || s.code || '');
             html += `
-                <div class="realtime-card" onclick="document.getElementById('code').value='${s.code}';switchTab('stock');document.getElementById('stockForm').dispatchEvent(new Event('submit'));">
-                    <button class="rc-remove" onclick="event.stopPropagation();RealtimeModule.removeCode('${s.code}')" title="删除" aria-label="删除">${Icons.close}</button>
+                <div class="realtime-card" onclick="document.getElementById('code').value='${symbol}';switchTab('stock');document.getElementById('stockForm').dispatchEvent(new Event('submit'));">
+                    <button class="rc-remove" onclick="event.stopPropagation();RealtimeModule.removeCode('${symbol}')" title="删除" aria-label="删除">${Icons.close}</button>
                     <div class="rc-name">${s.name}</div>
-                    <div class="rc-code">${s.code}</div>
+                    <div class="rc-code">${symbol}</div>
                     <div class="rc-price ${cls}">${s.price > 0 ? s.price.toFixed(2) : '-'}</div>
                     <div class="rc-change ${cls}">${formatPct(s.change_pct)}</div>
                     <div class="rc-details">
