@@ -2,6 +2,11 @@
 require_once __DIR__ . '/lib/AppConfig.php';
 $dividendAutoRefreshSeconds = max(300, min(1800, (int)AppConfig::get('dividend.auto_refresh_seconds', 600)));
 $fundDividendAutoRefreshSeconds = max(300, min(1800, (int)AppConfig::get('fund_dividend.auto_refresh_seconds', 900)));
+$assetVersions = [
+    'style' => @filemtime(__DIR__ . '/style.css') ?: 0,
+    'strategy' => @filemtime(__DIR__ . '/strategy_pool.js') ?: 0,
+    'main' => @filemtime(__DIR__ . '/main.js') ?: 0,
+];
 ?>
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -37,7 +42,7 @@ $fundDividendAutoRefreshSeconds = max(300, min(1800, (int)AppConfig::get('fund_d
             document.documentElement.classList.add('theme-loading');
         })();
     </script>
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="style.css?v=<?= rawurlencode((string)$assetVersions['style']) ?>">
     <!-- marked.js Markdown解析 -->
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <!-- DOMPurify XSS防护 -->
@@ -986,7 +991,7 @@ $fundDividendAutoRefreshSeconds = max(300, min(1800, (int)AppConfig::get('fund_d
             fundDividendAutoRefreshSeconds: <?= json_encode($fundDividendAutoRefreshSeconds) ?>
         });
     </script>
-    <script src="strategy_pool.js"></script>
-    <script src="main.js"></script>
+    <script src="strategy_pool.js?v=<?= rawurlencode((string)$assetVersions['strategy']) ?>"></script>
+    <script src="main.js?v=<?= rawurlencode((string)$assetVersions['main']) ?>"></script>
 </body>
 </html>

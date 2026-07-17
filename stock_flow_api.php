@@ -35,10 +35,15 @@ if ($result->hasData()) {
         'code'    => $code,
         'secid'   => $sc->isValid() ? $sc->toEastmoneySecid() : '',
         'data'    => $result->data,
+        'fallback' => $result->isFallback(),
+        'meta'    => $result->meta,
     ], JSON_UNESCAPED_UNICODE);
 } else {
     echo json_encode([
         'success' => false,
         'message' => $result->errorMessage ?? '请求失败',
+        'code'    => $result->errorCode ?? 'stock_flow_unavailable',
+        'status'  => $result->status,
+        'meta'    => $result->meta,
     ], JSON_UNESCAPED_UNICODE);
 }

@@ -1237,12 +1237,39 @@ const QuoteModule = {
 // ============================================================
 const FlowModule = {
     async fetch(code) {
+        this.renderLoading();
+        const resp = await fetch(`stock_flow_api.php?code=${encodeURIComponent(code)}`);
+        let data;
         try {
-            const resp = await fetch(`stock_flow_api.php?code=${encodeURIComponent(code)}`);
-            const data = await resp.json();
-            if (data.success) return data.data;
-            return [];
-        } catch (e) { console.error('获取资金流向失败:', e); return []; }
+            data = await resp.json();
+        } catch (error) {
+            throw new Error(`资金流向接口响应无法解析 (HTTP ${resp.status})`);
+        }
+        if (!resp.ok || !data.success) {
+            const error = new Error(data.message || `资金流向请求失败 (HTTP ${resp.status})`);
+            error.code = data.code || 'stock_flow_request_failed';
+            error.meta = data.meta || {};
+            throw error;
+        }
+        const rows = Array.isArray(data.data) ? data.data : [];
+        Object.defineProperty(rows, 'flowMeta', {
+            value: { ...(data.meta || {}), fallback: Boolean(data.fallback) },
+            enumerable: false,
+        });
+        return rows;
+    },
+
+    renderLoading() {
+        const el = document.getElementById('flow-content');
+        if (el) el.innerHTML = '<div class="loading-spinner"><div class="spinner"></div><span>获取资金流向...</span></div>';
+    },
+
+    renderError(error) {
+        const el = document.getElementById('flow-content');
+        if (!el) return;
+        const code = error?.code ? ` data-error-code="${escapeHTML(error.code)}"` : '';
+        el.innerHTML = `<div class="flow-error"${code}><p class="placeholder-text">资金流向暂不可用</p><small>上游数据链路异常，请稍后重试</small></div>`;
+        console.error('获取资金流向失败:', error);
     },
 
     render(flowData) {
@@ -1264,7 +1291,14 @@ const FlowModule = {
 
         const maxVal = Math.max(...items.map(i => Math.abs(i.value)), 1);
 
-        let html = `<div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:8px">日期: ${latest.time}</div><div class="flow-bars">`;
+        const meta = flowData.flowMeta || {};
+        const timeLabel = String(latest.time).includes(' ') ? '时间' : '日期';
+        const fallbackBadge = meta.partial
+            ? '<span class="flow-fallback-badge" title="历史资金接口暂不可用，当前展示盘中最新累计值">降级 · 盘中</span>'
+            : meta.latest_is_intraday
+                ? '<span class="flow-fallback-badge" title="历史序列已合并当日盘中最新累计值">盘中</span>'
+                : '';
+        let html = `<div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:8px">${timeLabel}: ${escapeHTML(latest.time)} ${fallbackBadge}</div><div class="flow-bars">`;
         items.forEach(item => {
             const isInflow = item.value >= 0;
             const pct = Math.abs(item.value) / maxVal * 100;
@@ -6072,6 +6106,7 @@ document.addEventListener('DOMContentLoaded', function() {
                             return flowData;
                         }).catch(e => {
                             console.warn('获取资金流向失败，AI分析将不含资金数据:', e);
+                            if (requestId === APP.stockQueryRequestId) FlowModule.renderError(e);
                             return null;
                         }).then(flowData => {
                             if (requestId !== APP.stockQueryRequestId) return;
@@ -6079,6 +6114,9 @@ document.addEventListener('DOMContentLoaded', function() {
                             if (flowData && flowData.length > 0) {
                                 const recentFlow = flowData.slice(-10);
                                 aiStr += "\n\n资金流向数据（近" + recentFlow.length + "日）：\n";
+                                if (flowData.flowMeta?.partial) {
+                                    aiStr += "注意：历史资金端点暂不可用，以下仅为当日盘中最新累计快照，不代表完整历史序列。\n";
+                                }
                                 aiStr += "日期,主力净流入,超大单净流入,大单净流入,中单净流入,小单净流入\n";
                                 recentFlow.forEach(f => {
                                     aiStr += `${f.time},${formatAmount(f.main_net_inflow)},${formatAmount(f.super_net_inflow)},${formatAmount(f.big_net_inflow)},${formatAmount(f.mid_net_inflow)},${formatAmount(f.small_net_inflow)}\n`;
@@ -6095,7 +6133,9 @@ document.addEventListener('DOMContentLoaded', function() {
                         // 非AI分析模式，直接获取资金流向渲染面板
                         FlowModule.fetch(code).then(f => {
                             if (requestId === APP.stockQueryRequestId) FlowModule.render(f);
-                        }).catch(e => console.warn('获取资金流向失败:', e));
+                        }).catch(e => {
+                            if (requestId === APP.stockQueryRequestId) FlowModule.renderError(e);
+                        });
                     }
                 } else {
                     errorDiv.textContent = '没有查询到数据';

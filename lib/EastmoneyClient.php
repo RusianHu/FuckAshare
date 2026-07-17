@@ -16,6 +16,7 @@ class EastmoneyClient
     const PUSH2_URL = 'https://push2.eastmoney.com';
     const PUSH2_DELAY_URL = 'https://push2delay.eastmoney.com';
     const PUSH2HIS_URL = 'https://push2his.eastmoney.com';
+    const STOCK_FLOW_DEFAULT_LIMIT = 120;
     const MARKET_BREADTH_SCAN_PAGE_SIZE = 100;
     const MARKET_BREADTH_SCAN_CONCURRENCY = 32;
 
@@ -25,10 +26,10 @@ class EastmoneyClient
     /** @var CircuitBreaker 熔断器 */
     private $breaker;
 
-    public function __construct()
+    public function __construct(?HttpClient $http = null, ?CircuitBreaker $breaker = null)
     {
-        $this->breaker = new CircuitBreaker('eastmoney');
-        $this->http = new HttpClient([
+        $this->breaker = $breaker ?: new CircuitBreaker('eastmoney');
+        $this->http = $http ?: new HttpClient([
             'timeout' => 10,
             'headers' => [
                 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -141,46 +142,151 @@ class EastmoneyClient
         }
 
         $secid = $sc->toEastmoneySecid();
-        $path = "/api/qt/stock/fflow/daykline/get?secid={$secid}&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65";
-        if ($lmt > 0) {
-            $path .= "&lmt={$lmt}";
-        }
+        $effectiveLimit = $lmt > 0 ? $lmt : self::STOCK_FLOW_DEFAULT_LIMIT;
+        $fields = 'f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65';
 
-        $resp = $this->getPush2($path, [self::PUSH2HIS_URL, self::PUSH2_DELAY_URL]);
+        // 历史端点只在 push2his 上提供有效日线数据。push2delay 对这个路径经常
+        // 返回 HTTP 200 + data:null，不能把这种业务空响应误判成成功。
+        $historyPath = "/api/qt/stock/fflow/daykline/get?secid={$secid}&fields1=f1,f2,f3,f7&fields2={$fields}&lmt={$effectiveLimit}";
+        $historyResp = $this->getPush2($historyPath, [self::PUSH2HIS_URL], [], function(array $response): bool {
+            return $this->hasFlowKlines($response);
+        });
+        $historyData = $this->parseFlowKlines($historyResp);
 
-        if ($resp['error'] || $resp['http_code'] !== 200) {
-            $this->breaker->failure('network_error');
-            return DataSourceResult::error(self::SOURCE_NAME, 'stock_flow', 'network_error', '请求失败: ' . ($resp['error'] ?: "HTTP {$resp['http_code']}"));
-        }
+        // 盘中端点由 push2delay 提供，lmt=1 即当日最新累计值。它既补齐历史
+        // 日线尚未落盘的今天，也在 push2his 网络不稳定时提供有意义的降级数据。
+        $intradayFields = 'f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63';
+        $intradayPath = "/api/qt/stock/fflow/kline/get?secid={$secid}&fields1=f1,f2,f3,f4,f5&fields2={$intradayFields}&klt=1&lmt=1";
+        $intradayResp = $this->getPush2($intradayPath, [self::PUSH2_DELAY_URL, self::PUSH2_URL], [], function(array $response): bool {
+            return $this->hasFlowKlines($response);
+        });
+        $intradayData = $this->parseFlowKlines($intradayResp);
 
-        $parsed = HttpClient::parseJson($resp['body']);
-        if (!$parsed['ok']) {
-            $this->breaker->failure('parse_error');
-            return DataSourceResult::error(self::SOURCE_NAME, 'stock_flow', 'parse_error', '解析数据失败');
-        }
-
-        $this->breaker->success();
-
-        $flowData = [];
-        if (isset($parsed['data']['data']['klines']) && is_array($parsed['data']['data']['klines'])) {
-            foreach ($parsed['data']['data']['klines'] as $line) {
-                $parts = explode(',', $line);
-                if (count($parts) >= 6) {
-                    $flowData[] = [
-                        'time'              => $parts[0],
-                        'main_net_inflow'   => floatval($parts[1]),
-                        'small_net_inflow'  => floatval($parts[2]),
-                        'mid_net_inflow'    => floatval($parts[3]),
-                        'big_net_inflow'    => floatval($parts[4]),
-                        'super_net_inflow'  => floatval($parts[5]),
-                    ];
+        if (!empty($historyData)) {
+            $latestIsIntraday = false;
+            if (!empty($intradayData)) {
+                $snapshot = $intradayData[count($intradayData) - 1];
+                $snapshotDate = substr((string)$snapshot['time'], 0, 10);
+                $replaced = false;
+                foreach ($historyData as $index => $row) {
+                    if (substr((string)$row['time'], 0, 10) === $snapshotDate) {
+                        $historyData[$index] = $snapshot;
+                        $replaced = true;
+                        break;
+                    }
                 }
+                if (!$replaced) {
+                    $historyData[] = $snapshot;
+                }
+                $latestIsIntraday = true;
             }
+
+            $historyData = array_slice($historyData, -$effectiveLimit);
+            $this->breaker->success();
+            return DataSourceResult::success(self::SOURCE_NAME, 'stock_flow', $historyData, [
+                'provider_status' => 200,
+                'coverage' => $latestIsIntraday ? 'history_plus_latest_intraday' : 'history_only',
+                'partial' => false,
+                'latest_is_intraday' => $latestIsIntraday,
+                'history_endpoint' => $this->responseDiagnostic($historyResp),
+                'intraday_endpoint' => $this->responseDiagnostic($intradayResp),
+            ]);
         }
 
-        return DataSourceResult::success(self::SOURCE_NAME, 'stock_flow', $flowData, [
-            'provider_status' => $resp['http_code'],
-        ]);
+        if (!empty($intradayData)) {
+            $this->breaker->success();
+            return DataSourceResult::fallback(
+                self::SOURCE_NAME,
+                'stock_flow',
+                array_slice($intradayData, -1),
+                'eastmoney_historical',
+                $this->responseFailureReason($historyResp),
+                [
+                    'provider_status' => 200,
+                    'coverage' => 'latest_intraday_only',
+                    'partial' => true,
+                    'latest_is_intraday' => true,
+                    'history_endpoint' => $this->responseDiagnostic($historyResp),
+                    'intraday_endpoint' => $this->responseDiagnostic($intradayResp),
+                ]
+            );
+        }
+
+        $reason = 'history=' . $this->responseFailureReason($historyResp)
+                . '; intraday=' . $this->responseFailureReason($intradayResp);
+        $this->breaker->failure('stock_flow_unavailable: ' . $reason);
+        return DataSourceResult::error(
+            self::SOURCE_NAME,
+            'stock_flow',
+            'upstream_unavailable',
+            '东方财富历史与盘中资金流向均不可用',
+            [
+                'history_endpoint' => $this->responseDiagnostic($historyResp),
+                'intraday_endpoint' => $this->responseDiagnostic($intradayResp),
+            ]
+        );
+    }
+
+    private function hasFlowKlines(array $response): bool
+    {
+        if (($response['error'] ?? null) || (int)($response['http_code'] ?? 0) !== 200) {
+            return false;
+        }
+        $parsed = HttpClient::parseJson((string)($response['body'] ?? ''));
+        return $parsed['ok']
+            && (int)($parsed['data']['rc'] ?? -1) === 0
+            && isset($parsed['data']['data']['klines'])
+            && is_array($parsed['data']['data']['klines'])
+            && count($parsed['data']['data']['klines']) > 0;
+    }
+
+    private function parseFlowKlines(array $response): array
+    {
+        if (!$this->hasFlowKlines($response)) {
+            return [];
+        }
+        $parsed = HttpClient::parseJson((string)$response['body']);
+        $flowData = [];
+        foreach ($parsed['data']['data']['klines'] as $line) {
+            $parts = explode(',', (string)$line);
+            if (count($parts) < 6) {
+                continue;
+            }
+            $flowData[] = [
+                'time' => $parts[0],
+                'main_net_inflow' => (float)$parts[1],
+                'small_net_inflow' => (float)$parts[2],
+                'mid_net_inflow' => (float)$parts[3],
+                'big_net_inflow' => (float)$parts[4],
+                'super_net_inflow' => (float)$parts[5],
+            ];
+        }
+        return $flowData;
+    }
+
+    private function responseFailureReason(array $response): string
+    {
+        if (!empty($response['error'])) {
+            return (string)$response['error'];
+        }
+        $httpCode = (int)($response['http_code'] ?? 0);
+        if ($httpCode !== 200) {
+            return 'HTTP ' . $httpCode;
+        }
+        $parsed = HttpClient::parseJson((string)($response['body'] ?? ''));
+        if (!$parsed['ok']) {
+            return 'invalid_json';
+        }
+        return 'empty_or_rejected_payload(rc=' . (string)($parsed['data']['rc'] ?? 'unknown') . ')';
+    }
+
+    private function responseDiagnostic(array $response): array
+    {
+        return [
+            'http_code' => (int)($response['http_code'] ?? 0),
+            'error' => $response['error'] ?? null,
+            'valid_payload' => $this->hasFlowKlines($response),
+        ];
     }
 
     /**
@@ -917,13 +1023,17 @@ class EastmoneyClient
         return 'UNKNOWN';
     }
 
-    private function getPush2(string $path, array $bases = [self::PUSH2_URL, self::PUSH2_DELAY_URL], array $headers = []): array
+    private function getPush2(string $path, array $bases = [self::PUSH2_URL, self::PUSH2_DELAY_URL], array $headers = [], ?callable $validator = null): array
     {
         $lastResp = null;
         foreach ($bases as $base) {
             $resp = $this->http->get($base . $path, $headers);
-            if (!$resp['error'] && $resp['http_code'] === 200) {
+            $transportOk = !$resp['error'] && $resp['http_code'] === 200;
+            if ($transportOk && ($validator === null || $validator($resp))) {
                 return $resp;
+            }
+            if ($transportOk && $validator !== null) {
+                $resp['error'] = 'semantic_empty_payload';
             }
             $lastResp = $resp;
         }

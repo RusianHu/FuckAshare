@@ -377,12 +377,16 @@ class MarketDataService
     private function hydrateCacheResult(array $data): DataSourceResult
     {
         if ($data['success'] ?? false) {
-            return DataSourceResult::success(
+            $result = DataSourceResult::success(
                 $data['source'] ?? 'unknown',
                 $data['result_action'] ?? $data['action'] ?? '',
                 $data['data'],
                 $data['meta'] ?? []
             );
+            // 缓存命中不能丢失 fallback_used 语义，否则 API 会把降级数据误报为
+            // 完整成功，前端和 AI 也无法判断数据覆盖范围。
+            $result->status = $data['status'] ?? DataSourceResult::STATUS_SUCCESS;
+            return $result;
         }
         return null;
     }
@@ -397,6 +401,7 @@ class MarketDataService
             'source'        => $result->source,
             'action'        => $result->action,
             'result_action' => $result->action,
+            'status'        => $result->status,
             'data'          => $result->data,
             'meta'          => $result->meta,
         ], $ttl);
