@@ -26,7 +26,7 @@
   const PAGE_RENDER_LIMIT = 50;
   const DRAWER_RENDER_LIMIT = 30;
 
-  // 内存价格快照：id -> { price, changePct, name, at, status, dataStatus, missing }
+  // 内存价格快照：id -> { price, changePct, name, at, status, dataStatus, valueKind }
   const snapshot = new Map();
 
   // 页面 UI 状态
@@ -221,7 +221,7 @@
   function rowHtml(it, groupName, isMobile) {
     const s = snapshot.get(it.id) || {};
     const priceVal = it.type === 'fund' ? s.price : s.price;
-    const priceLabel = it.type === 'fund' ? '估值' : '现价';
+    const priceLabel = it.type === 'fund' ? (s.valueKind === 'nav' ? '净值' : '估值') : '现价';
     const selected = ui.selection.has(it.id);
     const failed = s.status === 'error';
     const priceStr = failed ? '<span class="wc-cell-fail" title="' + esc(s.message || '获取失败') + '">失败</span>'
@@ -644,6 +644,7 @@
       snapshot.set(id, {
         price: f.gsz != null ? f.gsz : f.dwjz, changePct: f.gszzl, name: f.name,
         at: nowTimeStr(), status: 'ok', dataStatus: r.dataStatus,
+        valueKind: (f.estimate_available === false || f.quote_type === 'latest_nav') ? 'nav' : 'estimate',
       });
       resolvedNames.push({ type: 'fund', code, name: f.name });
     });
@@ -677,7 +678,7 @@
       const changeEl = $('.wc-change', row);
       const upd = $('.wc-updated', row);
       if (priceEl) {
-        const label = it.type === 'fund' ? '估值' : '现价';
+        const label = it.type === 'fund' ? (s.valueKind === 'nav' ? '净值' : '估值') : '现价';
         priceEl.innerHTML = '<span class="wc-price-label">' + label + '</span>' +
           (failed ? '<span class="wc-cell-fail">失败</span>' : (s.price == null ? '—' : fmtNum(s.price, it.type === 'fund' ? 4 : 2)));
       }

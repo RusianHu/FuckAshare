@@ -134,7 +134,10 @@ class FundService
             $resp = $this->http->get($url, $this->eastmoneyFundMobileHeaders());
 
             if ($resp['error'] || $resp['http_code'] !== 200) {
-                return DataSourceResult::error(self::SOURCE_NAME, 'estimate', 'network_error', '请求失败: ' . ($resp['error'] ?: "HTTP {$resp['http_code']}"));
+                return $this->estimateByLatestNetValue(
+                    $code,
+                    '实时估值请求失败: ' . ($resp['error'] ?: "HTTP {$resp['http_code']}")
+                );
             }
 
             if (preg_match('/jsonpgz\((.+)\);?/s', $resp['body'], $matches)) {
@@ -153,7 +156,10 @@ class FundService
                 }
             }
 
-            return DataSourceResult::error(self::SOURCE_NAME, 'estimate', 'parse_error', '解析基金估值数据失败，可能非交易时间或基金代码不存在');
+            // fundgz 对部分合法基金（以及部分非交易时段）会返回 jsonpgz();。
+            // 这不是数据源基础设施故障：降级到 FundMNFInfo 的最新官方净值，
+            // 避免单只无盘中估值的基金反复累计全局 fund 熔断次数。
+            return $this->estimateByLatestNetValue($code, '上游未提供该基金的盘中估值');
             });
         });
     }
@@ -178,10 +184,19 @@ class FundService
         $cachedCount = 0;
         $fetchedCount = 0;
         $missing = [];
+        $fallbackCodes = [];
+        $dataAtByCode = [];
         foreach ($validCodes as $code) {
             $result = $this->estimate($code);
             if ($result->hasData()) {
                 $results[$code] = $result->data;
+                $dataAt = $result->meta['data_at'] ?? $result->data['gztime'] ?? $result->data['jzrq'] ?? null;
+                if (is_string($dataAt) && $dataAt !== '') {
+                    $dataAtByCode[$code] = $dataAt;
+                }
+                if ($result->isFallback() || (($result->data['estimate_available'] ?? true) === false)) {
+                    $fallbackCodes[] = $code;
+                }
                 $cacheState = $result->meta['cache'] ?? '';
                 if (in_array($cacheState, ['hit', 'hit_after_wait', 'stale', 'stale_fallback'], true)) {
                     $cachedCount++;
@@ -194,17 +209,35 @@ class FundService
             }
         }
 
-        return DataSourceResult::success(self::SOURCE_NAME, 'batch_estimate', $results, [
+        $meta = [
             'total'    => count($validCodes),
             'cached'   => $cachedCount,
             'fetched'  => $fetchedCount,
+            'fallback_codes' => $fallbackCodes,
+            'data_at_by_code' => $dataAtByCode,
             // 批量必须声明请求数/返回数/缺失代码，不把"少返回几项"当作完整成功
             'counts'   => [
                 'expected' => count($validCodes),
                 'returned' => count($validCodes) - count($missing),
                 'missing'  => $missing,
             ],
-        ]);
+        ];
+        if (count($validCodes) === 1 && isset($dataAtByCode[$validCodes[0]])) {
+            $meta['data_at'] = $dataAtByCode[$validCodes[0]];
+        }
+
+        if (!empty($fallbackCodes)) {
+            return DataSourceResult::fallback(
+                self::SOURCE_NAME,
+                'batch_estimate',
+                $results,
+                self::SOURCE_NAME . '_realtime_estimate',
+                '部分基金无盘中估值，已使用最新官方净值: ' . implode(',', $fallbackCodes),
+                $meta
+            );
+        }
+
+        return DataSourceResult::success(self::SOURCE_NAME, 'batch_estimate', $results, $meta);
     }
 
     /**
@@ -2710,12 +2743,14 @@ class FundService
         if ($data === null) return null;
 
         if ($data['success'] ?? false) {
-            return DataSourceResult::success(
+            $result = DataSourceResult::success(
                 $data['source'] ?? self::SOURCE_NAME,
                 $data['result_action'] ?? $data['action'] ?? '',
                 $data['data'],
                 $data['meta'] ?? []
             );
+            $result->status = $data['status'] ?? DataSourceResult::STATUS_SUCCESS;
+            return $result;
         }
         return null;
     }
@@ -2726,12 +2761,14 @@ class FundService
         if ($data === null) return null;
 
         if ($data['success'] ?? false) {
-            return DataSourceResult::success(
+            $result = DataSourceResult::success(
                 $data['source'] ?? self::SOURCE_NAME,
                 $data['result_action'] ?? $data['action'] ?? '',
                 $data['data'],
                 $data['meta'] ?? []
             );
+            $result->status = $data['status'] ?? DataSourceResult::STATUS_SUCCESS;
+            return $result;
         }
         return null;
     }
@@ -2743,6 +2780,7 @@ class FundService
             'source'        => $result->source,
             'action'        => $result->action,
             'result_action' => $result->action,
+            'status'        => $result->status,
             'data'          => $result->data,
             'meta'          => $result->meta,
         ], $ttl);
@@ -2798,6 +2836,84 @@ class FundService
     private function cacheKey(string $action, string $params): string
     {
         return "fund:{$action}:{$params}";
+    }
+
+    /**
+     * 实时估值不可用时，使用 FundMNFInfo 的最新官方净值降级。
+     *
+     * 该请求刻意留在 estimate 的同一 breaker 调用内：只要净值降级成功，
+     * 本次业务请求就算可用，不应因 fundgz 对单只基金返回空数据而触发全局熔断。
+     */
+    private function estimateByLatestNetValue(string $code, string $reason): DataSourceResult
+    {
+        $url = "https://fundmobapi.eastmoney.com/FundMNewApi/FundMNFInfo?" . http_build_query(array_merge([
+            'Fcodes'   => $code,
+            'pageSize' => 1,
+        ], self::EASTMONEY_APP_PARAMS));
+
+        $resp = $this->http->get($url, $this->eastmoneyFundMobileHeaders());
+        if ($resp['error'] || $resp['http_code'] !== 200) {
+            return DataSourceResult::error(
+                self::SOURCE_NAME,
+                'estimate',
+                'network_error',
+                $reason . '；最新净值降级失败: ' . ($resp['error'] ?: "HTTP {$resp['http_code']}")
+            );
+        }
+
+        $parsed = HttpClient::parseJson($resp['body']);
+        $rows = $parsed['data']['Datas'] ?? null;
+        if (!$parsed['ok'] || !is_array($rows) || ($parsed['data']['Success'] ?? true) === false) {
+            return DataSourceResult::error(
+                self::SOURCE_NAME,
+                'estimate',
+                'parse_error',
+                $reason . '；最新净值降级解析失败'
+            );
+        }
+
+        foreach ($rows as $item) {
+            if (!is_array($item) || (string)($item['FCODE'] ?? '') !== $code) {
+                continue;
+            }
+            $nav = $item['NAV'] ?? $item['DWJZ'] ?? null;
+            if ($nav === null || $nav === '' || !is_numeric($nav)) {
+                continue;
+            }
+            $navDate = (string)($item['PDATE'] ?? $item['FSRQ'] ?? $item['SYRQ'] ?? '');
+            $navChange = $item['NAVCHGRT'] ?? $item['RZDF'] ?? null;
+            $data = [
+                'fundcode'           => $code,
+                'name'               => (string)($item['SHORTNAME'] ?? ''),
+                'jzrq'               => $navDate,
+                'dwjz'               => (string)$nav,
+                'gsz'                => null,
+                'gszzl'              => is_numeric($navChange) ? (string)$navChange : null,
+                'gztime'             => $navDate,
+                'quote_type'         => 'latest_nav',
+                'estimate_available' => false,
+            ];
+
+            return DataSourceResult::fallback(
+                self::SOURCE_NAME,
+                'estimate',
+                $data,
+                self::SOURCE_NAME . '_realtime_estimate',
+                $reason,
+                [
+                    'fallback_kind'     => 'latest_nav',
+                    'estimate_available'=> false,
+                    'data_at'           => $navDate !== '' ? $navDate : null,
+                ]
+            );
+        }
+
+        return DataSourceResult::error(
+            self::SOURCE_NAME,
+            'estimate',
+            'empty_data',
+            $reason . '；最新净值降级也未返回该基金'
+        );
     }
 
     private function infoByDetailFallback(array $codes, string $reason): DataSourceResult
