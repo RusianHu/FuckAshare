@@ -23,12 +23,16 @@ $codes = implode(',', $validCodes);
 $source   = SecurityAudit::getParam('source', 'auto', ['whitelist' => SecurityAudit::ALLOWED_DATA_SOURCES]);
 $fallback = SecurityAudit::getParam('fallback', 1, ['int' => true]) === 1;
 $raw      = SecurityAudit::getParam('raw', 0, ['int' => true]) === 1;
+$format   = SecurityAudit::getParam('format', '', ['maxLength' => 16]);
 
 require_once __DIR__ . '/lib/MarketDataService.php';
 $service = new MarketDataService();
 $result = $service->quote($codes, $source, $fallback, $raw);
 
-if ($result->hasData()) {
+if ($format === 'envelope') {
+    // 统一 envelope：成功与失败都输出 status + meta.data_status，批量含 counts
+    echo json_encode($result->toEnvelope(), JSON_UNESCAPED_UNICODE);
+} elseif ($result->hasData()) {
     // 保留旧响应格式：success + data 数组
     $stocks = $result->data;
     echo json_encode([

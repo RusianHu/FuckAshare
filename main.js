@@ -490,12 +490,22 @@ const APP = {
     currentStockData: [],
     stockQueryController: null,
     stockQueryRequestId: 0,
-    // 自选股
-    watchlist: JSON.parse(localStorage.getItem('fa_watchlist') || '[]'),
-    // 自选基金
-    fundWatchlist: JSON.parse(localStorage.getItem('fa_fund_watchlist') || '[]'),
-    // 实时看板
-    realtimeCodes: JSON.parse(localStorage.getItem('fa_realtime_codes') || '[]'),
+    // 自选状态已迁移至 WatchCenter；以下三项保留为兼容读取视图（派生自统一存储）。
+    get watchlist() {
+        return window.WatchCenter
+            ? window.WatchCenter.queryView('stock').map(it => ({ code: it.code, name: it.name }))
+            : [];
+    },
+    get fundWatchlist() {
+        return window.WatchCenter
+            ? window.WatchCenter.queryView('fund').map(it => ({ code: it.code, name: it.name }))
+            : [];
+    },
+    get realtimeCodes() {
+        return window.WatchCenter
+            ? window.WatchCenter.queryView('monitor').map(it => it.code)
+            : [];
+    },
     realtimeTimer: null,
     // 超级查询
     allStocksData: {},
@@ -1323,218 +1333,52 @@ const FlowModule = {
 };
 
 // ============================================================
-// 自选股模块
+// 自选股模块 — 兼容适配层（薄壳）
+// 存储与界面已迁移至 WatchCenter / WatchCenterUI；此处仅保留旧调用点所需 API。
 // ============================================================
 const WatchlistModule = {
-    _refreshing: false,
-    _abortController: null,
-
-    save() {
-        localStorage.setItem('fa_watchlist', JSON.stringify(APP.watchlist));
-        document.getElementById('watchlist-count').textContent = APP.watchlist.length;
-    },
-
     add(code, name) {
-        code = normalizeCode(code);
-        if (APP.watchlist.find(w => w.code === code)) return;
-        APP.watchlist.push({ code, name: name || code });
-        this.save();
-        this.render();
+        if (window.WatchCenter) window.WatchCenter.addItem('stock', code, name || code);
     },
-
     remove(code) {
-        APP.watchlist = APP.watchlist.filter(w => w.code !== code);
-        this.save();
-        this.render();
+        if (window.WatchCenter) {
+            const norm = window.AppUtil.normalizeStockCode(code);
+            window.WatchCenter.removeItem('stock:' + norm);
+        }
     },
-
     has(code) {
-        return APP.watchlist.some(w => w.code === normalizeCode(code));
+        return window.WatchCenter ? window.WatchCenter.has('stock', code) : false;
     },
-
-    render() {
-        const container = document.getElementById('watchlist-items');
-        if (APP.watchlist.length === 0) {
-            container.innerHTML = '<p class="placeholder-text">暂无自选股</p>';
-            return;
-        }
-        let html = '';
-        APP.watchlist.forEach(w => {
-            html += `
-                <div class="wl-item" data-code="${w.code}">
-                    <div class="wl-item-info" onclick="WatchlistModule.query('${w.code}')">
-                        <div class="wl-item-name">${w.name}</div>
-                        <div class="wl-item-code">${w.code}</div>
-                    </div>
-                    <div class="wl-item-price" id="wl-price-${w.code.replace('.', '')}">-</div>
-                    <button class="wl-item-remove" onclick="WatchlistModule.remove('${w.code}')" title="删除" aria-label="删除">${Icons.close}</button>
-                </div>
-            `;
-        });
-        container.innerHTML = html;
-
-        // 异步刷新价格
-        this.refreshPrices();
-    },
-
-    async refreshPrices() {
-        if (APP.watchlist.length === 0) return;
-        if (this._refreshing) {
-            this._abortController?.abort();
-        }
-
-        this._refreshing = true;
-        this._abortController = new AbortController();
-        const signal = this._abortController.signal;
-
-        // Phase 1.4: 批量化 — 一次请求所有自选股行情
-        const allCodes = APP.watchlist.map(w => w.code).join(',');
-        try {
-            const resp = await fetch(`stock_quote_api.php?codes=${encodeURIComponent(allCodes)}`, { signal });
-            const data = await resp.json();
-            if (data.success && data.data.length > 0) {
-                for (const q of data.data) {
-                    const code = q.code || '';
-                    const normalized = q.symbol || normalizeCode(code);
-                    const wItem = APP.watchlist.find(w => normalizeCode(w.code) === normalized || w.code === code);
-                    if (!wItem) continue;
-                    const el = document.getElementById('wl-price-' + wItem.code.replace('.', ''));
-                    if (el) {
-                        el.innerHTML = `
-                            <div class="wl-item-pct" style="${colorStyle(q.change_pct)}">${formatPct(q.change_pct)}</div>
-                            <div class="wl-item-val">${q.price > 0 ? q.price.toFixed(2) : '-'}</div>
-                        `;
-                    }
-                }
-            }
-        } catch(e) {
-            if (e.name !== 'AbortError') console.error('刷新自选股价格失败:', e);
-        } finally {
-            if (this._abortController?.signal === signal) {
-                this._abortController = null;
-                this._refreshing = false;
-            }
-        }
-    },
-
+    render() { /* 由自选中心接管 */ },
+    refreshPrices() { /* 由自选中心接管 */ },
     query(code) {
-        document.getElementById('code').value = code;
-        document.getElementById('frequency').value = '1d';
-        document.getElementById('count').value = '120';
-        // 切换到股票tab
-        switchTab('stock');
-        document.getElementById('stockForm').dispatchEvent(new Event('submit'));
-        // 关闭侧边栏并同步清理顾问面板避让状态
-        document.getElementById('watchlist-sidebar').classList.remove('open');
-        document.getElementById('watchlist-overlay').classList.remove('open');
-        if (typeof AdvisorModule !== 'undefined') AdvisorModule.notifyWatchlistOpen(false);
+        if (typeof submitStockQuery === 'function') submitStockQuery(code, { withAI: false });
     }
 };
 
 // ============================================================
-// 实时看板模块
+// 实时看板模块 — 兼容适配层（薄壳）
+// 功能已并入自选中心（monitor 属性 + 统一刷新协调）；保留 addCode 供旧入口调用。
 // ============================================================
 const RealtimeModule = {
-    _refreshing: false,   // Phase 1.4: 刷新锁，避免重复请求
-    _debounceTimer: null, // Phase 1.4: 添加代码的防抖定时器
-
-    init() {
-        this.render();
-        this.startAutoRefresh();
-    },
-
+    init() { /* 由 WatchCenterUI 接管 */ },
     addCode(code) {
-        code = normalizeCode(code);
-        if (!APP.realtimeCodes.includes(code)) {
-            APP.realtimeCodes.push(code);
-            localStorage.setItem('fa_realtime_codes', JSON.stringify(APP.realtimeCodes));
+        if (window.WatchCenter) {
+            window.WatchCenter.addItem('stock', code, '', { monitor: true });
         }
-        // Phase 1.4: 防抖 — 快速连续添加时只触发一次刷新
-        clearTimeout(this._debounceTimer);
-        this._debounceTimer = setTimeout(() => this.refresh(), 300);
     },
-
     removeCode(code) {
-        APP.realtimeCodes = APP.realtimeCodes.filter(c => c !== code);
-        localStorage.setItem('fa_realtime_codes', JSON.stringify(APP.realtimeCodes));
-        this.render();
-    },
-
-    async refresh() {
-        if (APP.realtimeCodes.length === 0) {
-            this.renderPlaceholder();
-            return;
+        if (window.WatchCenter) {
+            const norm = window.AppUtil.normalizeStockCode(code);
+            const it = window.WatchCenter.getItem('stock:' + norm);
+            if (it) window.WatchCenter.updateItem(it.id, { monitor: false });
         }
-        // Phase 1.4: 刷新锁 — 避免并发刷新
-        if (this._refreshing) return;
-        this._refreshing = true;
-        const codesStr = APP.realtimeCodes.join(',');
-        try {
-            const resp = await fetch(`stock_quote_api.php?codes=${encodeURIComponent(codesStr)}`);
-            const data = await resp.json();
-            if (data.success) {
-                this.renderCards(data.data);
-            }
-        } catch(e) { console.error('刷新实时行情失败:', e); }
-        finally { this._refreshing = false; }
     },
-
-    renderPlaceholder() {
-        const grid = document.getElementById('realtime-grid');
-        grid.innerHTML = '<p class="placeholder-text">点击"添加"按钮输入股票代码，或从自选股添加</p>';
-    },
-
-    render() {
-        if (APP.realtimeCodes.length === 0) {
-            this.renderPlaceholder();
-            return;
-        }
-        this.refresh();
-    },
-
-    renderCards(stocks) {
-        const grid = document.getElementById('realtime-grid');
-        let html = '';
-        stocks.forEach(s => {
-            const cls = colorClass(s.change_pct);
-            const symbol = normalizeCode(s.symbol || s.code || '');
-            html += `
-                <div class="realtime-card" onclick="document.getElementById('code').value='${symbol}';switchTab('stock');document.getElementById('stockForm').dispatchEvent(new Event('submit'));">
-                    <button class="rc-remove" onclick="event.stopPropagation();RealtimeModule.removeCode('${symbol}')" title="删除" aria-label="删除">${Icons.close}</button>
-                    <div class="rc-name">${s.name}</div>
-                    <div class="rc-code">${symbol}</div>
-                    <div class="rc-price ${cls}">${s.price > 0 ? s.price.toFixed(2) : '-'}</div>
-                    <div class="rc-change ${cls}">${formatPct(s.change_pct)}</div>
-                    <div class="rc-details">
-                        <span>开盘</span><span>${s.open > 0 ? s.open.toFixed(2) : '-'}</span>
-                        <span>最高</span><span style="${colorStyle(s.high - s.prev_close)}">${s.high > 0 ? s.high.toFixed(2) : '-'}</span>
-                        <span>最低</span><span style="${colorStyle(s.low - s.prev_close)}">${s.low > 0 ? s.low.toFixed(2) : '-'}</span>
-                        <span>成交额</span><span>${formatAmount(s.amount)}</span>
-                        <span>换手率</span><span>${s.turnover_rate > 0 ? s.turnover_rate.toFixed(2) + '%' : '-'}</span>
-                        <span>PE</span><span>${s.pe_ttm > 0 ? s.pe_ttm.toFixed(1) : '-'}</span>
-                    </div>
-                </div>
-            `;
-        });
-        grid.innerHTML = html || '<p class="placeholder-text">暂无数据</p>';
-
-        // 入场动画
-        AnimationManager.animateRealtimeCards();
-    },
-
-    startAutoRefresh() {
-        let countdown = APP.config.autoRefreshInterval;
-        const timerEl = document.getElementById('auto-refresh-timer');
-        if (APP.realtimeTimer) clearInterval(APP.realtimeTimer);
-        APP.realtimeTimer = setInterval(() => {
-            countdown--;
-            if (timerEl) timerEl.textContent = `自动刷新: ${countdown}s`;
-            if (countdown <= 0) {
-                countdown = APP.config.autoRefreshInterval;
-                this.refresh();
-            }
-        }, 1000);
-    }
+    refresh() { if (window.WatchCenterUI) window.WatchCenterUI.refreshCurrentScope(); },
+    render() {},
+    renderPlaceholder() {},
+    renderCards() {},
+    startAutoRefresh() {}
 };
 
 // ============================================================
@@ -2653,77 +2497,18 @@ const FundModule = {
 
     addToWatchlist(code, name) {
         if (!/^\d{6}$/.test(code)) return;
-        if (APP.fundWatchlist.some(w => w.code === code)) return;
-        APP.fundWatchlist.push({ code, name });
-        localStorage.setItem('fa_fund_watchlist', JSON.stringify(APP.fundWatchlist));
-        this.renderWatchlist();
+        if (window.WatchCenter) window.WatchCenter.addItem('fund', code, name);
         // 刷新搜索结果按钮
         const keyword = document.getElementById('fund-search-input')?.value.trim();
         if (keyword) this.search();
     },
 
     removeFromWatchlist(code) {
-        APP.fundWatchlist = APP.fundWatchlist.filter(w => w.code !== code);
-        localStorage.setItem('fa_fund_watchlist', JSON.stringify(APP.fundWatchlist));
-        this.renderWatchlist();
+        if (window.WatchCenter) window.WatchCenter.removeItem('fund:' + code);
     },
 
     async renderWatchlist() {
-        const container = document.getElementById('fund-watchlist');
-        if (APP.fundWatchlist.length === 0) {
-            container.innerHTML = '<p class="placeholder-text">搜索基金后可添加到自选</p>';
-            return;
-        }
-
-        // Phase 1.4: 批量获取估值 — 一次请求替代逐个循环
-        let estimates = {};
-        try {
-            const allCodes = APP.fundWatchlist.map(f => f.code).join(',');
-            const resp = await fetch(`fund_estimate_api.php?codes=${encodeURIComponent(allCodes)}`);
-            const data = await resp.json();
-            if (data.success && Array.isArray(data.data)) {
-                for (const item of data.data) {
-                    if (item && item.fundcode) estimates[item.fundcode] = item;
-                }
-            }
-        } catch(e) {}
-
-        const estimateList = APP.fundWatchlist.map(f => estimates[f.code]).filter(Boolean);
-        const avg = estimateList.length ? estimateList.reduce((sum, item) => sum + (parseFloat(item.gszzl) || 0), 0) / estimateList.length : NaN;
-        const upCount = estimateList.filter(item => parseFloat(item.gszzl) > 0).length;
-        const downCount = estimateList.filter(item => parseFloat(item.gszzl) < 0).length;
-
-        let html = `
-            <div class="fund-watchlist-summary">
-                <span><b>${APP.fundWatchlist.length}</b><small>自选</small></span>
-                <span><b class="${colorClass(avg)}">${formatPct(avg)}</b><small>平均估值</small></span>
-                <span><b class="up">${upCount}</b><small>上涨</small></span>
-                <span><b class="down">${downCount}</b><small>下跌</small></span>
-            </div>
-        `;
-        for (const f of APP.fundWatchlist) {
-            const estimate = estimates[f.code] || null;
-            const pctClass = estimate ? colorClass(parseFloat(estimate.gszzl)) : '';
-            const code = escapeAttr(f.code || '');
-            const name = escapeAttr(f.name || estimate?.name || '');
-            html += `
-                <div class="fund-wl-item">
-                    <div class="fund-wl-info" data-fund-action="detail" data-code="${code}" data-name="${name}">
-                        <div class="fund-wl-name">${escapeHTML(f.name || estimate?.name || '-')}</div>
-                        <div class="fund-wl-code">${escapeHTML(f.code || '')}</div>
-                    </div>
-                    <div class="fund-wl-estimate">
-                        ${estimate ? `
-                            <div class="fund-wl-gsz">${escapeHTML(estimate.gsz || '-')}</div>
-                            <div class="fund-wl-gszzl ${pctClass}">${formatPct(parseFloat(estimate.gszzl))}</div>
-                            <div class="fund-wl-time">${escapeHTML(estimate.gztime || '')}</div>
-                        ` : '<span style="color:var(--text-muted)">暂无估值</span>'}
-                    </div>
-                    <button class="fund-wl-remove" data-fund-action="remove" data-code="${code}" title="删除" aria-label="删除">${Icons.close}</button>
-                </div>
-            `;
-        }
-        container.innerHTML = html;
+        // 自选基金列表已由统一自选中心接管，此处为兼容旧调用点的空实现。
     },
 
     async loadRank() {
@@ -6130,6 +5915,11 @@ function switchTab(tabName) {
     if (typeof AdvisorModule !== 'undefined' && AdvisorModule._els?.panel) {
         AdvisorModule.updateContext();
     }
+
+    // 通知核心层：页面切换（数据状态条按页聚合、自选中心感知激活）
+    if (window.AppBus) {
+        window.AppBus.emit('tab:changed', { tab: tabName });
+    }
 }
 
 // ============================================================
@@ -6194,42 +5984,15 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     });
 
-    // 自选股侧边栏
-    document.getElementById('watchlist-toggle')?.addEventListener('click', () => {
-        const sidebar = document.getElementById('watchlist-sidebar');
-        const isOpen = !sidebar.classList.contains('open');
-        sidebar.classList.toggle('open');
-        document.getElementById('watchlist-overlay').classList.toggle('open');
-        WatchlistModule.render();
-        AnimationManager.animateSidebarOpen();
-        // 通知顾问面板避让
-        AdvisorModule.notifyWatchlistOpen(isOpen);
-    });
-    document.getElementById('watchlist-close')?.addEventListener('click', () => {
-        document.getElementById('watchlist-sidebar').classList.remove('open');
-        document.getElementById('watchlist-overlay').classList.remove('open');
-        AdvisorModule.notifyWatchlistOpen(false);
-    });
-    document.getElementById('watchlist-overlay')?.addEventListener('click', () => {
-        document.getElementById('watchlist-sidebar').classList.remove('open');
-        document.getElementById('watchlist-overlay').classList.remove('open');
-        AdvisorModule.notifyWatchlistOpen(false);
-    });
+    // 自选星标按钮 → 统一快捷抽屉（绑定由 WatchCenterUI.wireDrawerControls 完成）
+    // 旧自选股侧栏、旧添加输入、旧计数逻辑已由自选中心接管。
 
-    // 自选股添加
-    document.getElementById('watchlist-add-btn')?.addEventListener('click', () => {
-        const input = document.getElementById('watchlist-add-input');
-        const code = input.value.trim();
-        if (code) { WatchlistModule.add(code); input.value = ''; }
-    });
-
-    // 更新自选股计数
-    document.getElementById('watchlist-count').textContent = APP.watchlist.length;
-
-    // 加自选按钮
+    // 加自选按钮（股票工作台）→ 写入统一自选存储
     document.getElementById('add-watchlist-btn')?.addEventListener('click', () => {
         const code = APP.currentStockCode || StockSearchModule.resolvedQuery();
-        if (code) WatchlistModule.add(code, APP.currentStockName || code);
+        if (code && window.WatchCenter) {
+            window.WatchCenter.addItem('stock', code, APP.currentStockName || code);
+        }
     });
 
     // 指标切换
@@ -6642,14 +6405,35 @@ document.addEventListener('DOMContentLoaded', function() {
         return result;
     }
 
-    // === 实时看板 ===
-    RealtimeModule.init();
-    document.getElementById('realtime-add-btn')?.addEventListener('click', () => {
-        const input = document.getElementById('realtime-code-input');
-        const code = input.value.trim();
-        if (code) { RealtimeModule.addCode(code); input.value = ''; }
-    });
-    document.getElementById('realtime-refresh-btn')?.addEventListener('click', () => RealtimeModule.refresh());
+    // === 自选中心（替代旧实时看板 + 旧自选侧栏 + 旧基金自选卡） ===
+    if (window.WatchCenterUI && typeof window.WatchCenterUI.init === 'function') {
+        window.WatchCenterUI.init();
+    }
+    if (window.DataStatus && typeof window.DataStatus.init === 'function') {
+        window.DataStatus.init();
+    }
+    // 自选中心导航：点击项目跳转对应工作台并自动查询
+    if (window.AppBus) {
+        window.AppBus.on('watch-center:navigate', function (ev) {
+            if (!ev || !ev.code) return;
+            if (ev.type === 'fund') {
+                switchTab('fund');
+                if (typeof FundModule !== 'undefined' && FundModule.openDetail) {
+                    FundModule.openDetail(ev.code, ev.name || ev.code);
+                }
+            } else {
+                submitStockQuery(ev.code, { withAI: false });
+            }
+        });
+        window.AppBus.on('watch-center:goto-page', function () { switchTab('realtime'); });
+        // 自选变更时同步股票工作台星标状态
+        window.AppBus.on('watch-center:changed', function () {
+            const starBtn = document.getElementById('add-watchlist-btn');
+            if (starBtn && APP.currentStockCode) {
+                starBtn.innerHTML = WatchlistModule.has(APP.currentStockCode) ? `${Icons.star} 已自选` : `${Icons.star} 加自选`;
+            }
+        });
+    }
 
     // === 板块资金 ===
     document.getElementById('sector-query-btn')?.addEventListener('click', () => SectorModule.query());
@@ -6684,11 +6468,10 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('fund-search-input')?.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') { e.preventDefault(); FundModule.search(); }
     });
-    document.getElementById('fund-refresh-btn')?.addEventListener('click', () => FundModule.renderWatchlist());
+    document.getElementById('fund-goto-center')?.addEventListener('click', () => switchTab('realtime'));
     document.getElementById('fund-rank-btn')?.addEventListener('click', () => FundModule.loadRank());
     document.getElementById('fund-rank-type')?.addEventListener('change', () => FundModule.loadRank());
     document.getElementById('fund-rank-period')?.addEventListener('change', () => FundModule.loadRank());
-    FundModule.renderWatchlist();
     FundModule.loadRank();
 
     // === AI聊天 ===

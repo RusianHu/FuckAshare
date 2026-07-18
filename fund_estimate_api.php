@@ -11,6 +11,7 @@ SecurityAudit::init(['endpoint' => 'fund_estimate']);
 
 // 支持批量参数 codes（优先）或单只 code
 $codesParam = SecurityAudit::getParam('codes', '', ['maxLength' => 500]);
+$format = SecurityAudit::getParam('format', '', ['maxLength' => 16]);
 
 if (!empty($codesParam)) {
     // 批量估值
@@ -31,11 +32,17 @@ if (!empty($codesParam)) {
     $service = new FundService();
     $result = $service->batchEstimate($codeList);
 
-    if ($result->hasData()) {
+    if ($format === 'envelope') {
+        // 统一 envelope：data 保持 code=>item|null 映射，counts 声明缺失代码
+        echo json_encode($result->toEnvelope(), JSON_UNESCAPED_UNICODE);
+    } elseif ($result->hasData()) {
         // 转换为数组格式，兼容前端
         $items = [];
         foreach ($result->data as $code => $item) {
-            $items[] = $item;
+            // 跳过缺失项，避免把 null 混入 data 数组污染旧前端
+            if ($item !== null) {
+                $items[] = $item;
+            }
         }
         echo json_encode([
             'success' => true,
@@ -57,7 +64,9 @@ if (!empty($codesParam)) {
     $service = new FundService();
     $result = $service->estimate($code);
 
-    if ($result->hasData()) {
+    if ($format === 'envelope') {
+        echo json_encode($result->toEnvelope(), JSON_UNESCAPED_UNICODE);
+    } elseif ($result->hasData()) {
         echo json_encode([
             'success' => true,
             'data'    => $result->data,

@@ -177,6 +177,7 @@ class FundService
         $results = [];
         $cachedCount = 0;
         $fetchedCount = 0;
+        $missing = [];
         foreach ($validCodes as $code) {
             $result = $this->estimate($code);
             if ($result->hasData()) {
@@ -189,6 +190,7 @@ class FundService
                 }
             } else {
                 $results[$code] = null;
+                $missing[] = $code;
             }
         }
 
@@ -196,6 +198,12 @@ class FundService
             'total'    => count($validCodes),
             'cached'   => $cachedCount,
             'fetched'  => $fetchedCount,
+            // 批量必须声明请求数/返回数/缺失代码，不把"少返回几项"当作完整成功
+            'counts'   => [
+                'expected' => count($validCodes),
+                'returned' => count($validCodes) - count($missing),
+                'missing'  => $missing,
+            ],
         ]);
     }
 

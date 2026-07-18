@@ -18,7 +18,20 @@ require_once __DIR__ . '/lib/FundService.php';
 $service = new FundService();
 $result = $service->info($validCodes);
 
-if ($result->hasData()) {
+$format = SecurityAudit::getParam('format', '', ['maxLength' => 16]);
+if ($format === 'envelope') {
+    // 批量：声明期望/返回/缺失
+    if ($result->hasData() && is_array($result->data)) {
+        $returned = [];
+        foreach ($result->data as $item) {
+            if (is_array($item)) {
+                $returned[] = (string)($item['code'] ?? $item['fundcode'] ?? '');
+            }
+        }
+        $result->setBatchCounts($validCodes, $returned);
+    }
+    echo json_encode($result->toEnvelope(), JSON_UNESCAPED_UNICODE);
+} elseif ($result->hasData()) {
     echo json_encode([
         'success' => true,
         'total'   => count($result->data),

@@ -15,12 +15,15 @@ $sortField = SecurityAudit::getParam('sort', 'f62', ['whitelist' => SecurityAudi
 $sortOrder = SecurityAudit::getParam('order', 1, ['int' => true]);
 
 $sortOrder = ($sortOrder === 0) ? 0 : 1;
+$format    = SecurityAudit::getParam('format', '', ['maxLength' => 16]);
 
 require_once __DIR__ . '/lib/MarketDataService.php';
 $service = new MarketDataService();
 $result = $service->hotStocks($page, $pageSize, $sortField, $sortOrder);
 
-if ($result->hasData()) {
+if ($format === 'envelope') {
+    echo json_encode($result->toEnvelope(), JSON_UNESCAPED_UNICODE);
+} elseif ($result->hasData()) {
     // 保留旧响应格式：纯数组
     echo json_encode($result->data, JSON_UNESCAPED_UNICODE);
 } else {

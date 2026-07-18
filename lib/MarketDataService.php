@@ -111,27 +111,50 @@ class MarketDataService
                 if ($result->hasData() && !$raw) {
                     $result->data = [$result->data];
                 }
+                $this->annotateQuoteCounts($result, $codeList, $raw);
                 return $result;
             }
 
             if ($source === self::SOURCE_EASTMONEY) {
-                return $this->eastmoney()->quote($codeList);
+                $result = $this->eastmoney()->quote($codeList);
+                $this->annotateQuoteCounts($result, $codeList, $raw);
+                return $result;
             }
 
             $emResult = $this->eastmoney()->quote($codeList);
             if ($emResult->hasData()) {
+                $this->annotateQuoteCounts($emResult, $codeList, $raw);
                 return $emResult;
             }
 
             if ($fallback && count($codeList) === 1) {
                 $xqResult = $this->xueqiu()->quote($codeList[0], $raw);
                 if ($xqResult->hasData()) {
-                    return DataSourceResult::fallback('xueqiu', 'quote', [$xqResult->data], 'eastmoney', $emResult->errorMessage ?? '东方财富请求失败');
+                    $fallbackResult = DataSourceResult::fallback('xueqiu', 'quote', [$xqResult->data], 'eastmoney', $emResult->errorMessage ?? '东方财富请求失败');
+                    $this->annotateQuoteCounts($fallbackResult, $codeList, $raw);
+                    return $fallbackResult;
                 }
             }
 
             return $emResult;
         });
+    }
+
+    /**
+     * 为批量报价结果补充 counts（期望/返回/缺失代码），用于 partial 判定
+     */
+    private function annotateQuoteCounts(DataSourceResult $result, array $codeList, bool $raw): void
+    {
+        if ($raw || !$result->hasData() || !is_array($result->data)) {
+            return;
+        }
+        $returnedCodes = [];
+        foreach ($result->data as $item) {
+            if (is_array($item)) {
+                $returnedCodes[] = (string)($item['symbol'] ?? $item['code'] ?? '');
+            }
+        }
+        $result->setBatchCounts($codeList, $returnedCodes);
     }
 
     /**
@@ -374,7 +397,7 @@ class MarketDataService
     /**
      * 将缓存数据数组还原为 DataSourceResult
      */
-    private function hydrateCacheResult(array $data): DataSourceResult
+    private function hydrateCacheResult(array $data): ?DataSourceResult
     {
         if ($data['success'] ?? false) {
             $result = DataSourceResult::success(
@@ -386,6 +409,10 @@ class MarketDataService
             // 缓存命中不能丢失 fallback_used 语义，否则 API 会把降级数据误报为
             // 完整成功，前端和 AI 也无法判断数据覆盖范围。
             $result->status = $data['status'] ?? DataSourceResult::STATUS_SUCCESS;
+            // 缓存写入时间可推导数据年龄；写入时的 updated_at 保留为数据生成时间。
+            if (isset($data['cached_at']) && is_numeric($data['cached_at'])) {
+                $result->meta['cache_age_seconds'] = max(0, time() - (int)$data['cached_at']);
+            }
             return $result;
         }
         return null;

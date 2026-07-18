@@ -152,6 +152,169 @@ class DataSourceResult
         ];
     }
 
+    // ── Phase 1: 统一 envelope 契约 ──
+
+    /**
+     * 规范化 meta.data_status
+     *
+     * severity:     ok | info | warning | error
+     * freshness:    fresh | cached | stale | unknown
+     * completeness: complete | partial | empty | unknown
+     * route:        primary | fallback | failed
+     */
+    public function computeDataStatus(): array
+    {
+        $warnings = [];
+        $cacheState = (string)($this->meta['cache'] ?? 'miss');
+
+        // freshness：由缓存状态推导
+        if (in_array($cacheState, ['stale', 'stale_fallback'], true)) {
+            $freshness = 'stale';
+            $warnings[] = ['code' => 'stale_cache', 'message' => '数据来自过期缓存降级'];
+        } elseif (in_array($cacheState, ['hit', 'hit_after_wait'], true)) {
+            $freshness = 'cached';
+        } elseif (in_array($cacheState, ['miss', 'miss_after_wait'], true)) {
+            $freshness = $this->success ? 'fresh' : 'unknown';
+        } else {
+            $freshness = 'unknown';
+        }
+
+        // route
+        if (!$this->success || !$this->hasData()) {
+            $route = 'failed';
+        } elseif ($this->isFallback()) {
+            $route = 'fallback';
+            $warnings[] = ['code' => 'fallback_source', 'message' => '主数据源失败，使用备用数据源'];
+        } else {
+            $route = 'primary';
+        }
+
+        // counts / completeness
+        $counts = null;
+        if (isset($this->meta['counts']) && is_array($this->meta['counts'])) {
+            $counts = [
+                'expected' => (int)($this->meta['counts']['expected'] ?? 0),
+                'returned' => (int)($this->meta['counts']['returned'] ?? 0),
+                'missing'  => array_values((array)($this->meta['counts']['missing'] ?? [])),
+            ];
+        } elseif (is_array($this->data)) {
+            $n = count($this->data);
+            $counts = ['expected' => $n, 'returned' => $n, 'missing' => []];
+        }
+
+        if (!$this->success || $this->data === null) {
+            $completeness = $this->success ? 'empty' : 'unknown';
+        } elseif (is_array($this->data) && count($this->data) === 0) {
+            $completeness = 'empty';
+        } elseif ($counts !== null && ($counts['returned'] < $counts['expected'] || !empty($counts['missing']))) {
+            $completeness = 'partial';
+            $warnings[] = ['code' => 'partial_data', 'message' => '部分请求项未返回数据'];
+        } elseif (!empty($this->meta['partial'])) {
+            $completeness = 'partial';
+            $warnings[] = ['code' => 'partial_data', 'message' => '数据覆盖不完整'];
+        } else {
+            $completeness = 'complete';
+        }
+
+        // severity：error > warning > info > ok
+        if ($route === 'failed') {
+            $severity = 'error';
+        } elseif ($freshness === 'stale' || $completeness === 'partial') {
+            $severity = 'warning';
+        } elseif ($route === 'fallback' || $freshness === 'cached') {
+            $severity = 'info';
+        } else {
+            $severity = 'ok';
+        }
+
+        $status = [
+            'severity'     => $severity,
+            'freshness'    => $freshness,
+            'completeness' => $completeness,
+            'route'        => $route,
+            'warnings'     => $warnings,
+        ];
+        if ($counts !== null) {
+            $status['counts'] = $counts;
+        }
+        return $status;
+    }
+
+    /**
+     * 转为统一 envelope 响应（format=envelope）
+     *
+     * 兼容字段（success/data/message/total 等）保留；新增 meta.data_status、
+     * request_id、observed_at、data_at、cache_age_seconds。
+     */
+    public function toEnvelope(array $extra = []): array
+    {
+        $meta = $this->meta;
+        $meta['request_id']  = $meta['request_id'] ?? substr(bin2hex(random_bytes(6)), 0, 8);
+        $meta['observed_at'] = date('c');
+        // 未取得真实上游数据时间时必须为 null，不得用服务器时间冒充行情时间。
+        $meta['data_at'] = $meta['data_at'] ?? null;
+        if (!isset($meta['cache_age_seconds'])) {
+            $meta['cache_age_seconds'] = in_array((string)($meta['cache'] ?? ''), ['miss', 'miss_after_wait'], true) ? 0 : null;
+        }
+        $meta['fallback_trace'] = $meta['fallback_trace'] ?? [];
+        $meta['data_status'] = $this->computeDataStatus();
+
+        if ($this->success) {
+            $resp = [
+                'success' => true,
+                'source'  => $this->source,
+                'action'  => $this->action,
+                'status'  => $this->status,
+                'data'    => $this->data,
+                'meta'    => $meta,
+            ];
+            if (is_array($this->data)) {
+                $resp['total'] = count($this->data);
+            }
+            if ($this->isFallback()) {
+                $resp['fallback'] = true;
+            }
+            return array_merge($resp, $extra);
+        }
+
+        return array_merge([
+            'success' => false,
+            'source'  => $this->source,
+            'action'  => $this->action,
+            'status'  => $this->status,
+            'code'    => $this->errorCode,
+            'message' => $this->errorMessage,
+            'data'    => null,
+            'meta'    => $meta,
+        ], $extra);
+    }
+
+    /**
+     * 声明批量请求的期望/返回/缺失计数（写入 meta.counts）
+     *
+     * @param string[] $expectedCodes 请求的代码列表
+     * @param string[] $returnedCodes 实际返回的代码列表
+     */
+    public function setBatchCounts(array $expectedCodes, array $returnedCodes): void
+    {
+        $normalize = static function (string $c): string {
+            return strtolower(preg_replace('/^(sh|sz|bj)/i', '', trim($c)));
+        };
+        $expectedNorm = array_map($normalize, $expectedCodes);
+        $returnedNorm = array_map($normalize, $returnedCodes);
+        $missing = [];
+        foreach ($expectedCodes as $i => $orig) {
+            if (!in_array($expectedNorm[$i], $returnedNorm, true)) {
+                $missing[] = $orig;
+            }
+        }
+        $this->meta['counts'] = [
+            'expected' => count($expectedCodes),
+            'returned' => count($returnedCodes),
+            'missing'  => $missing,
+        ];
+    }
+
     /**
      * 转为 JSON 字符串
      */

@@ -4,6 +4,10 @@ $dividendAutoRefreshSeconds = max(300, min(1800, (int)AppConfig::get('dividend.a
 $fundDividendAutoRefreshSeconds = max(300, min(1800, (int)AppConfig::get('fund_dividend.auto_refresh_seconds', 900)));
 $assetVersions = [
     'style' => @filemtime(__DIR__ . '/style.css') ?: 0,
+    'app_core' => @filemtime(__DIR__ . '/app_core.js') ?: 0,
+    'watch_center' => @filemtime(__DIR__ . '/watch_center.js') ?: 0,
+    'data_status' => @filemtime(__DIR__ . '/data_status.js') ?: 0,
+    'watch_center_ui' => @filemtime(__DIR__ . '/watch_center_ui.js') ?: 0,
     'strategy' => @filemtime(__DIR__ . '/strategy_pool.js') ?: 0,
     'main' => @filemtime(__DIR__ . '/main.js') ?: 0,
 ];
@@ -101,7 +105,7 @@ $assetVersions = [
         </div>
         <div class="nav-tabs">
             <button class="nav-tab active" data-tab="stock">行情工作台</button>
-            <button class="nav-tab" data-tab="realtime">实时看板</button>
+            <button class="nav-tab" data-tab="realtime">自选中心</button>
             <button class="nav-tab" data-tab="strategy">策略池</button>
             <button class="nav-tab" data-tab="sector">资金与板块</button>
             <button class="nav-tab" data-tab="dividend">分红日历</button>
@@ -278,24 +282,63 @@ $assetVersions = [
         </div>
 
         <!-- 实时看板页 -->
+        <!-- 自选中心页（原实时看板，data-tab/panel id 保留以复用 switchTab 映射） -->
         <div class="tab-panel" id="panel-realtime">
-            <div class="realtime-layout">
-                <div class="card">
-                    <div class="card-header">
-                        <h3><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-chart"></use></svg></span> 实时行情看板</h3>
-                        <div class="realtime-controls">
-                            <input type="text" id="realtime-code-input" placeholder="输入代码添加 如: sh600519" aria-label="添加监控股票代码" enterkeyhint="done" autocapitalize="off" spellcheck="false">
-                            <button id="realtime-add-btn" class="btn-sm btn-accent">添加</button>
-                            <button id="realtime-refresh-btn" class="btn-sm"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-refresh"></use></svg></span> 刷新</button>
-                            <span class="auto-refresh-hint" id="auto-refresh-timer">自动刷新: 30s</span>
-                        </div>
+            <div class="watch-center" id="watch-center">
+                <div class="wc-header">
+                    <div class="wc-stats">
+                        <div class="wc-stat"><span class="wc-stat-num" id="wc-stat-total">0</span><span class="wc-stat-label">自选项</span></div>
+                        <div class="wc-stat"><span class="wc-stat-num" id="wc-stat-monitor">0</span><span class="wc-stat-label">监控中</span></div>
+                        <div class="wc-stat"><span class="wc-stat-num" id="wc-stat-refresh">—</span><span class="wc-stat-label">最近刷新</span></div>
                     </div>
-                    <div class="realtime-grid" id="realtime-grid">
-                        <p class="placeholder-text">点击"添加"按钮输入股票代码，或从自选股添加</p>
+                    <div class="wc-actions">
+                        <button class="btn-sm btn-accent" id="wc-add-btn"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-star"></use></svg></span> 添加资产</button>
+                        <button class="btn-sm" id="wc-refresh-btn"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-refresh"></use></svg></span> 刷新</button>
+                        <button class="btn-sm" id="wc-import-btn">导入</button>
+                        <button class="btn-sm" id="wc-export-btn">导出</button>
+                    </div>
+                </div>
+
+                <div class="wc-toolbar">
+                    <input type="search" id="wc-search" class="wc-search" placeholder="搜索名称 / 代码 / 标签 / 备注" aria-label="搜索自选" autocapitalize="off" spellcheck="false">
+                    <div class="wc-views" id="wc-views" role="tablist" aria-label="系统视图">
+                        <button class="wc-view active" data-view="all" role="tab">全部</button>
+                        <button class="wc-view" data-view="stock" role="tab">股票</button>
+                        <button class="wc-view" data-view="fund" role="tab">基金</button>
+                        <button class="wc-view" data-view="monitor" role="tab">监控中</button>
+                        <button class="wc-view" data-view="ungrouped" role="tab">未分组</button>
+                    </div>
+                    <select id="wc-sort" class="wc-sort" aria-label="排序方式">
+                        <option value="manual">置顶+手动</option>
+                        <option value="name">名称</option>
+                        <option value="change">涨跌幅</option>
+                        <option value="recent">最近加入</option>
+                    </select>
+                </div>
+
+                <div class="wc-body">
+                    <aside class="wc-groups" id="wc-groups" aria-label="分组">
+                        <!-- 分组栏由 JS 渲染 -->
+                    </aside>
+                    <div class="wc-main">
+                        <div class="wc-bulkbar" id="wc-bulkbar" hidden>
+                            <span class="wc-bulk-count" id="wc-bulk-count">已选 0</span>
+                            <button class="btn-sm" data-bulk="group">移动分组</button>
+                            <button class="btn-sm" data-bulk="tag">添加标签</button>
+                            <button class="btn-sm" data-bulk="monitor-on">开启监控</button>
+                            <button class="btn-sm" data-bulk="monitor-off">关闭监控</button>
+                            <button class="btn-sm btn-danger" data-bulk="remove">删除</button>
+                            <button class="btn-sm" data-bulk="clear">取消选择</button>
+                        </div>
+                        <div class="wc-list" id="wc-list" aria-live="polite">
+                            <p class="placeholder-text">加载中…</p>
+                        </div>
                     </div>
                 </div>
             </div>
         </div>
+        <!-- 自选中心 添加/编辑/导入 对话框由 JS 惰性注入 body -->
+        <input type="file" id="wc-import-file" accept="application/json,.json" hidden>
 
         <!-- 策略池页 -->
         <div class="tab-panel" id="panel-strategy">
@@ -794,14 +837,14 @@ $assetVersions = [
                             </div>
                         </div>
 
-                        <!-- 自选基金 -->
+                        <!-- 自选基金已并入统一自选中心 -->
                         <div class="card fund-watch-card">
                             <div class="card-header">
                                 <h3><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-star"></use></svg></span> 自选基金</h3>
-                                <button id="fund-refresh-btn" class="btn-sm"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-refresh"></use></svg></span> 刷新估值</button>
+                                <button id="fund-goto-center" class="btn-sm btn-accent">前往自选中心</button>
                             </div>
                             <div class="fund-watchlist" id="fund-watchlist">
-                                <p class="placeholder-text">搜索基金后可添加到自选</p>
+                                <p class="placeholder-text">基金自选与股票已统一管理，点击"前往自选中心"查看与刷新估值。搜索/排行/详情中可直接加入自选。</p>
                             </div>
                         </div>
                     </div>
@@ -903,21 +946,30 @@ $assetVersions = [
         </div>
     </div>
 
-    <!-- 自选股侧边栏 -->
-    <div class="watchlist-sidebar" id="watchlist-sidebar">
-        <div class="watchlist-header">
-            <h3><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-star"></use></svg></span> 自选股</h3>
-            <button id="watchlist-close" class="btn-icon-sm" aria-label="关闭自选股"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-close"></use></svg></span></button>
+    <!-- 统一自选快捷抽屉 -->
+    <div class="watch-drawer" id="watch-drawer" role="dialog" aria-label="自选快捷面板" aria-hidden="true">
+        <div class="wd-header">
+            <h3><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-star"></use></svg></span> 自选</h3>
+            <button id="watch-drawer-close" class="btn-icon-sm" aria-label="关闭自选面板"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-close"></use></svg></span></button>
         </div>
-        <div class="watchlist-add">
-            <input type="text" id="watchlist-add-input" placeholder="输入代码添加 如: sh600519" aria-label="添加自选股代码" enterkeyhint="done" autocapitalize="off" spellcheck="false">
-            <button id="watchlist-add-btn" class="btn-sm btn-accent">添加</button>
+        <div class="wd-tools">
+            <input type="search" id="wd-search" class="wd-search" placeholder="搜索名称 / 代码" aria-label="搜索自选" autocapitalize="off" spellcheck="false">
+            <div class="wd-views" id="wd-views">
+                <button class="wd-view active" data-view="all">全部</button>
+                <button class="wd-view" data-view="stock">股票</button>
+                <button class="wd-view" data-view="fund">基金</button>
+                <button class="wd-view" data-view="monitor">监控</button>
+            </div>
         </div>
-        <div class="watchlist-items" id="watchlist-items">
-            <p class="placeholder-text">暂无自选股</p>
+        <div class="wd-items" id="wd-items" aria-live="polite">
+            <p class="placeholder-text">暂无自选</p>
+        </div>
+        <div class="wd-footer">
+            <button class="btn-sm" id="wd-refresh-btn"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-refresh"></use></svg></span> 刷新</button>
+            <button class="btn-sm btn-accent" id="wd-open-center">进入自选中心</button>
         </div>
     </div>
-    <div class="watchlist-overlay" id="watchlist-overlay"></div>
+    <div class="watch-drawer-overlay" id="watch-drawer-overlay"></div>
 
     <!-- AI 顾问 FAB 悬浮按钮 -->
     <button class="ai-advisor-fab" id="ai-advisor-fab" aria-label="打开 AI 顾问" aria-controls="ai-advisor-panel" aria-expanded="false" title="AI 顾问">
@@ -1046,6 +1098,10 @@ $assetVersions = [
             fundDividendAutoRefreshSeconds: <?= json_encode($fundDividendAutoRefreshSeconds) ?>
         });
     </script>
+    <script src="app_core.js?v=<?= rawurlencode((string)$assetVersions['app_core']) ?>"></script>
+    <script src="watch_center.js?v=<?= rawurlencode((string)$assetVersions['watch_center']) ?>"></script>
+    <script src="data_status.js?v=<?= rawurlencode((string)$assetVersions['data_status']) ?>"></script>
+    <script src="watch_center_ui.js?v=<?= rawurlencode((string)$assetVersions['watch_center_ui']) ?>"></script>
     <script src="strategy_pool.js?v=<?= rawurlencode((string)$assetVersions['strategy']) ?>"></script>
     <script src="main.js?v=<?= rawurlencode((string)$assetVersions['main']) ?>"></script>
 </body>

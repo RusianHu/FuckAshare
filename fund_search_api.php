@@ -18,7 +18,10 @@ require_once __DIR__ . '/lib/FundService.php';
 $service = new FundService();
 $result = $service->search($keyword);
 
-if ($result->hasData()) {
+$format = SecurityAudit::getParam('format', '', ['maxLength' => 16]);
+if ($format === 'envelope') {
+    echo json_encode($result->toEnvelope(['keyword' => $keyword]), JSON_UNESCAPED_UNICODE);
+} elseif ($result->hasData()) {
     echo json_encode([
         'success' => true,
         'keyword' => $keyword,

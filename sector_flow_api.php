@@ -10,12 +10,15 @@ SecurityAudit::init(['endpoint' => 'sector_flow']);
 
 $key  = SecurityAudit::getParam('key', 'f62', ['whitelist' => SecurityAudit::ALLOWED_SECTOR_KEYS]);
 $type = SecurityAudit::getParam('type', 'industry', ['whitelist' => SecurityAudit::ALLOWED_SECTOR_TYPES]);
+$format = SecurityAudit::getParam('format', '', ['maxLength' => 16]);
 
 require_once __DIR__ . '/lib/MarketDataService.php';
 $service = new MarketDataService();
 $result = $service->sectorFlow($key, $type);
 
-if ($result->hasData()) {
+if ($format === 'envelope') {
+    echo json_encode($result->toEnvelope(['key' => $key, 'type' => $type]), JSON_UNESCAPED_UNICODE);
+} elseif ($result->hasData()) {
     // 保留旧响应格式
     echo json_encode([
         'success' => true,
