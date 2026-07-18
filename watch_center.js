@@ -66,6 +66,22 @@
 
   function nowIso() { return new Date().toISOString(); }
 
+  /** 空名称或纯代码名称只是占位符，可由搜索/行情返回的正式名称安全回填。 */
+  function isPlaceholderName(type, code, name) {
+    const clean = String(name == null ? '' : name).trim();
+    if (!clean) return true;
+    if (type === 'stock') {
+      if (!/^(?:sh|sz|bj)?\s*\d{6}$/i.test(clean)) return false;
+      return Util.normalizeStockCode(clean) === Util.normalizeStockCode(code);
+    }
+    return /^\d{6}$/.test(clean) && Util.normalizeFundCode(clean) === Util.normalizeFundCode(code);
+  }
+
+  function usableResolvedName(type, code, name) {
+    const clean = String(name == null ? '' : name).trim();
+    return clean && !isPlaceholderName(type, code, clean) ? clean : '';
+  }
+
   function emptyState() {
     return {
       schemaVersion: 2,
@@ -117,8 +133,12 @@
       const id = 'stock:' + norm;
       if (byId.has(id)) {
         const it = byId.get(id);
-        if (monitor) it.monitor = true; // 监控属性取逻辑或
-        if (!it.name && name) it.name = name;
+        if (monitor && !it.monitor) { it.monitor = true; changed = true; } // 监控属性取逻辑或
+        const resolvedName = usableResolvedName('stock', norm, name);
+        if (isPlaceholderName('stock', norm, it.name) && resolvedName) {
+          it.name = resolvedName;
+          changed = true;
+        }
         return;
       }
       const it = makeItem('stock', norm, name || norm, { monitor: !!monitor });
@@ -133,7 +153,11 @@
       const id = 'fund:' + norm;
       if (byId.has(id)) {
         const it = byId.get(id);
-        if (!it.name && name) it.name = name;
+        const resolvedName = usableResolvedName('fund', norm, name);
+        if (isPlaceholderName('fund', norm, it.name) && resolvedName) {
+          it.name = resolvedName;
+          changed = true;
+        }
         return;
       }
       const it = makeItem('fund', norm, name || norm, { monitor: false });
@@ -335,7 +359,8 @@
       const it = getItem(id);
       let touched = false;
       if (extra && extra.monitor && type === 'stock' && !it.monitor) { it.monitor = true; touched = true; }
-      if (name && !it.name) { it.name = name; touched = true; }
+      const resolvedName = usableResolvedName(type, norm, name);
+      if (isPlaceholderName(type, norm, it.name) && resolvedName) { it.name = resolvedName; touched = true; }
       if (touched) { it.updatedAt = nowIso(); persist('update', [id]); }
       return { ok: true, existed: true, id };
     }
@@ -347,6 +372,33 @@
     state.items.push(it);
     persist('add', [id]);
     return { ok: true, existed: false, id };
+  }
+
+  /**
+   * 用行情/估值返回的正式名称批量修复历史占位名称。
+   * 只覆盖空值或纯代码，保留用户编辑过的自定义名称。
+   */
+  function resolveNames(entries) {
+    if (!state || !Array.isArray(entries)) return 0;
+    const changedIds = [];
+    const seen = new Set();
+    entries.forEach((entry) => {
+      if (!entry || (entry.type !== 'stock' && entry.type !== 'fund')) return;
+      const type = entry.type;
+      const code = type === 'stock' ? Util.normalizeStockCode(entry.code) : Util.normalizeFundCode(entry.code);
+      if (!code) return;
+      const id = type + ':' + code;
+      if (seen.has(id)) return;
+      seen.add(id);
+      const it = getItem(id);
+      const resolvedName = usableResolvedName(type, code, entry.name);
+      if (!it || !resolvedName || !isPlaceholderName(type, code, it.name)) return;
+      it.name = resolvedName;
+      it.updatedAt = nowIso();
+      changedIds.push(id);
+    });
+    if (changedIds.length) persist('resolve-names', changedIds);
+    return changedIds.length;
   }
 
   function removeItem(id) {
@@ -648,7 +700,7 @@
     DEFAULT_GROUP_ID,
     init,
     getState, getItems, getGroups, getSettings, getItem, count, monitorCount, has, queryView,
-    addItem, removeItem, updateItem, togglePin, toggleMonitor,
+    addItem, resolveNames, removeItem, updateItem, togglePin, toggleMonitor,
     bulkUpdate, bulkRemove, reorder,
     createGroup, renameGroup, deleteGroup, reorderGroups, updateSettings,
     exportJson, exportCsv, validateImport, importMerge, importReplace,

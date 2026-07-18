@@ -129,6 +129,23 @@ check(WC.deleteGroup(g.id) === true, '删除分组');
 check(WC.getItem('stock:sh600036').groupId === 'default', '删组后项目回默认组');
 check(WC.deleteGroup('default') === false, '默认分组不可删除');
 
+// ── 8.1 代码占位名称可由后续搜索/行情回填，自定义名称不被覆盖 ──
+reset();
+WC.init();
+WC.addItem('stock', '600036', '', { monitor: true });
+check(WC.getItem('stock:sh600036').name === 'sh600036', '仅代码添加时先保存规范代码占位');
+const upgraded = WC.addItem('stock', '600036', '招商银行');
+check(upgraded.existed === true && WC.getItem('stock:sh600036').name === '招商银行', '重复添加可用正式名称替换代码占位');
+WC.addItem('stock', '000001', '我的银行');
+const resolvedCount = WC.resolveNames([
+  { type: 'stock', code: '600036', name: '招商银行' },
+  { type: 'stock', code: '000001', name: '平安银行' },
+]);
+check(resolvedCount === 0 && WC.getItem('stock:sz000001').name === '我的银行', '行情回填保留已有正式或自定义名称');
+WC.addItem('fund', '161725', '');
+check(WC.resolveNames([{ type: 'fund', code: '161725', name: '招商中证白酒指数A' }]) === 1, '基金代码占位也可由估值名称回填');
+check(WC.getItem('fund:161725').name === '招商中证白酒指数A', '基金正式名称已持久化');
+
 // ── 9. 批量操作 ──
 reset();
 WC.init();

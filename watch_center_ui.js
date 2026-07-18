@@ -124,7 +124,7 @@
   // ─────────────────────────────────────────────
   // 页面渲染
   // ─────────────────────────────────────────────
-  function renderPage() {
+  function renderPage(refreshQuotes) {
     const root = $('#watch-center');
     if (!root) return;
 
@@ -133,7 +133,7 @@
     $('#wc-stat-monitor').textContent = WC.monitorCount();
 
     renderGroups();
-    renderList();
+    renderList(refreshQuotes);
     updateWatchCounts();
   }
 
@@ -186,7 +186,7 @@
     }
   }
 
-  function renderList() {
+  function renderList(refreshQuotes) {
     const el = $('#wc-list');
     if (!el) return;
     const all = WC.getItems();
@@ -215,7 +215,7 @@
 
     wireRows(el);
     // 触发可见项刷新
-    refreshVisible(limited);
+    if (refreshQuotes !== false) refreshVisible(limited);
   }
 
   function rowHtml(it, groupName, isMobile) {
@@ -473,7 +473,7 @@
   }
   function toggleDrawer() { drawerUi.open ? closeDrawer() : openDrawer(); }
 
-  function renderDrawer() {
+  function renderDrawer(refreshQuotes) {
     const el = $('#wd-items');
     if (!el) return;
     let list = applyFilters(WC.getItems(), drawerUi.view, null, drawerUi.search);
@@ -515,7 +515,7 @@
       main.addEventListener('keydown', (e) => { if (e.key === 'Enter') nav(); });
       $('.wd-item-remove', row).addEventListener('click', (e) => { e.stopPropagation(); WC.removeItem(id); });
     });
-    refreshVisible(limited);
+    if (refreshQuotes !== false) refreshVisible(limited);
   }
 
   // ─────────────────────────────────────────────
@@ -569,6 +569,7 @@
 
   function applyStockResult(codes, r) {
     const returned = new Set();
+    const resolvedNames = [];
     if (r.ok && Array.isArray(r.data)) {
       r.data.forEach((q) => {
         const code = Util.normalizeStockCode(q.symbol || q.code || '');
@@ -579,6 +580,7 @@
           price: q.price, changePct: q.change_pct, name: q.name,
           at: nowTimeStr(), status: 'ok', dataStatus: r.dataStatus,
         });
+        resolvedNames.push({ type: 'stock', code, name: q.name });
       });
     }
     // 未返回的标失败（保留旧价，仅置状态）
@@ -594,6 +596,7 @@
         }));
       }
     });
+    WC.resolveNames(resolvedNames);
     refreshRenderThrottled();
   }
 
@@ -626,6 +629,7 @@
 
   function applyFundResult(codes, r) {
     const returned = new Set();
+    const resolvedNames = [];
     // envelope 下 data 为 code=>item 映射；旧格式为数组
     const rows = [];
     if (r.ok && r.data) {
@@ -641,6 +645,7 @@
         price: f.gsz != null ? f.gsz : f.dwjz, changePct: f.gszzl, name: f.name,
         at: nowTimeStr(), status: 'ok', dataStatus: r.dataStatus,
       });
+      resolvedNames.push({ type: 'fund', code, name: f.name });
     });
     codes.forEach((c) => {
       const code = Util.normalizeFundCode(c);
@@ -650,6 +655,7 @@
         snapshot.set(id, Object.assign({}, prev, { status: 'error', message: r.message || '未返回', at: prev.at || null }));
       }
     });
+    WC.resolveNames(resolvedNames);
     refreshRenderThrottled();
   }
 
@@ -833,7 +839,13 @@
     wirePageControls();
     wireDrawerControls();
 
-    Bus.on('watch-center:changed', () => { renderPage(); if (drawerUi.open) renderDrawer(); updateWatchCounts(); });
+    Bus.on('watch-center:changed', (ev) => {
+      // 名称回填不需要再次请求同一批行情，避免首轮修复时产生重复请求。
+      const refreshQuotes = !ev || ev.reason !== 'resolve-names';
+      renderPage(refreshQuotes);
+      if (drawerUi.open) renderDrawer(refreshQuotes);
+      updateWatchCounts();
+    });
     Bus.on('watch-center:ready', () => { renderPage(); updateWatchCounts(); });
     Bus.on('watch-center:add-request', openAddDialog);
     Bus.on('watch-center:storage-unavailable', () => {
