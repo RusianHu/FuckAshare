@@ -37,6 +37,7 @@
     sort: 'manual',
     selection: new Set(),
   };
+  let renderedIds = [];
   const drawerUi = { view: 'all', search: '', open: false, lastFocus: null };
 
   let stockTimer = null;
@@ -44,6 +45,7 @@
   let lastStockRefreshAt = 0;
   let lastFundRefreshAt = 0;
   let activeTab = 'stock';
+  let toastTimer = null;
 
   // ─────────────────────────────────────────────
   // 工具
@@ -72,6 +74,49 @@
     const d = new Date();
     const p = (n) => (n < 10 ? '0' + n : '' + n);
     return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+  }
+
+  function showToast(message, kind) {
+    const host = $('#wc-feedback');
+    if (!host) return;
+    if (toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
+    host.className = 'wc-feedback show ' + (kind || 'success');
+    host.innerHTML = '<span class="wc-feedback-mark" aria-hidden="true">'
+      + (kind === 'warning' ? '!' : (kind === 'error' ? '×' : '✓'))
+      + '</span><span>' + esc(message) + '</span>';
+    toastTimer = setTimeout(() => {
+      host.classList.remove('show');
+      toastTimer = null;
+    }, 2600);
+  }
+
+  function clearSelection() {
+    ui.selection.clear();
+    $all('#wc-list .wc-row').forEach((row) => {
+      row.classList.remove('selected');
+      const input = $('.wc-row-check input', row);
+      if (input) input.checked = false;
+    });
+    updateBulkBar();
+  }
+
+  function setView(view) {
+    const allowed = ['all', 'stock', 'fund', 'monitor', 'ungrouped'];
+    ui.view = allowed.indexOf(view) !== -1 ? view : 'all';
+    if (ui.view !== 'all') ui.groupId = null;
+    clearSelection();
+    $all('.wc-view').forEach((b) => {
+      const active = b.getAttribute('data-view') === ui.view;
+      b.classList.toggle('active', active);
+      b.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    $all('[data-quick-view]').forEach((b) => {
+      const active = b.getAttribute('data-quick-view') === ui.view;
+      b.classList.toggle('active', active);
+      b.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+    renderGroups();
+    renderList();
   }
 
   // ─────────────────────────────────────────────
@@ -129,8 +174,27 @@
     if (!root) return;
 
     // 统计
-    $('#wc-stat-total').textContent = WC.count();
-    $('#wc-stat-monitor').textContent = WC.monitorCount();
+    const items = WC.getItems();
+    const counts = {
+      all: items.length,
+      stock: items.filter((it) => it.type === 'stock').length,
+      fund: items.filter((it) => it.type === 'fund').length,
+      monitor: items.filter((it) => it.type === 'stock' && it.monitor).length,
+      ungrouped: items.filter((it) => it.groupId === WC.DEFAULT_GROUP_ID).length,
+    };
+    $('#wc-stat-total').textContent = counts.all;
+    $('#wc-stat-stock').textContent = counts.stock;
+    $('#wc-stat-fund').textContent = counts.fund;
+    $('#wc-stat-monitor').textContent = counts.monitor;
+    Object.keys(counts).forEach((key) => {
+      const el = $('[data-view-count="' + key + '"]');
+      if (el) el.textContent = counts[key];
+    });
+    $all('[data-quick-view]').forEach((b) => {
+      const active = b.getAttribute('data-quick-view') === ui.view;
+      b.classList.toggle('active', active);
+      b.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
 
     renderGroups();
     renderList(refreshQuotes);
@@ -143,10 +207,13 @@
     const groups = WC.getGroups();
     const items = WC.getItems();
     const countIn = (gid) => items.filter((it) => it.groupId === gid).length;
-    let html = '<button class="wc-group-item' + (ui.groupId === null ? ' active' : '') + '" data-group="">'
+    const groupFiltering = ui.view === 'all';
+    let html = '<div class="wc-groups-title"><span>我的分组</span>'
+      + (groupFiltering ? '<small>按分组筛选</small>' : '<small>切回“全部”后可用</small>') + '</div>';
+    html += '<button class="wc-group-item' + (ui.groupId === null && groupFiltering ? ' active' : '') + '" data-group=""' + (groupFiltering ? '' : ' disabled') + '>'
       + '全部分组<span class="wc-group-count">' + items.length + '</span></button>';
     groups.forEach((g) => {
-      html += '<button class="wc-group-item' + (ui.groupId === g.id ? ' active' : '') + '" data-group="' + esc(g.id) + '">'
+      html += '<button class="wc-group-item' + (ui.groupId === g.id && groupFiltering ? ' active' : '') + '" data-group="' + esc(g.id) + '"' + (groupFiltering ? '' : ' disabled') + '>'
         + esc(g.name) + '<span class="wc-group-count">' + countIn(g.id) + '</span></button>';
     });
     html += '<button class="wc-group-add" id="wc-group-add">+ 新建分组</button>';
@@ -155,6 +222,7 @@
     $all('.wc-group-item', el).forEach((btn) => {
       btn.addEventListener('click', () => {
         ui.groupId = btn.getAttribute('data-group') || null;
+        clearSelection();
         renderGroups(); renderList();
       });
       btn.addEventListener('contextmenu', (e) => {
@@ -192,23 +260,30 @@
     const all = WC.getItems();
     let list = applyFilters(all, ui.view, ui.groupId, ui.search);
     list = sortItems(list, ui.sort);
+    const summary = $('#wc-result-summary');
+    if (summary) summary.textContent = list.length + ' 项资产' + (ui.search ? ' · 搜索结果' : '');
 
     if (all.length === 0) {
+      renderedIds = [];
+      updateBulkBar();
       el.innerHTML = emptyState('empty-all');
       wireEmptyState(el);
       return;
     }
     if (list.length === 0) {
-      el.innerHTML = emptyState('empty-filter');
+      renderedIds = [];
+      updateBulkBar();
+      el.innerHTML = emptyState(ui.view === 'monitor' ? 'empty-monitor' : 'empty-filter');
       wireEmptyState(el);
       return;
     }
 
     const limited = list.slice(0, PAGE_RENDER_LIMIT);
+    renderedIds = limited.map((it) => it.id);
+    updateBulkBar();
     const groupName = new Map(WC.getGroups().map((g) => [g.id, g.name]));
-    const isMobile = window.matchMedia('(max-width: 768px)').matches;
-
-    el.innerHTML = limited.map((it) => rowHtml(it, groupName, isMobile)).join('')
+    el.innerHTML = '<div class="wc-column-head" aria-hidden="true"><span></span><span>资产</span><span>最新数据</span><span>涨跌</span><span>分组与标签</span><span>监控状态</span><span>更新时间</span><span>操作</span></div>'
+      + limited.map((it) => rowHtml(it, groupName)).join('')
       + (list.length > PAGE_RENDER_LIMIT
           ? '<div class="wc-truncated">仅显示前 ' + PAGE_RENDER_LIMIT + ' 项（共 ' + list.length + '），请用搜索或分组缩小范围</div>'
           : '');
@@ -218,7 +293,7 @@
     if (refreshQuotes !== false) refreshVisible(limited);
   }
 
-  function rowHtml(it, groupName, isMobile) {
+  function rowHtml(it, groupName) {
     const s = snapshot.get(it.id) || {};
     const priceVal = it.type === 'fund' ? s.price : s.price;
     const priceLabel = it.type === 'fund' ? (s.valueKind === 'nav' ? '净值' : '估值') : '现价';
@@ -231,7 +306,7 @@
     const tags = (it.tags || []).map((t) => '<span class="wc-tag">' + esc(t) + '</span>').join('');
     return (
       '<div class="wc-row' + (selected ? ' selected' : '') + '" data-id="' + esc(it.id) + '" data-type="' + it.type + '">' +
-        '<label class="wc-row-check"><input type="checkbox" ' + (selected ? 'checked' : '') + ' aria-label="选择"></label>' +
+        '<label class="wc-row-check"><input type="checkbox" ' + (selected ? 'checked' : '') + ' aria-label="选择' + esc(it.name || it.code) + '"></label>' +
         '<button class="wc-pin' + (it.pinned ? ' on' : '') + '" title="置顶" aria-label="置顶">★</button>' +
         '<div class="wc-asset" role="button" tabindex="0">' +
           '<span class="wc-name">' + esc(it.name || it.code) + '</span>' +
@@ -241,8 +316,8 @@
         '<div class="wc-change ' + pcls + '">' + pctStr + '</div>' +
         '<div class="wc-group-tag">' + esc(groupName.get(it.groupId) || '默认分组') + tags + '</div>' +
         (it.type === 'stock'
-          ? '<button class="wc-monitor' + (it.monitor ? ' on' : '') + '" title="实时监控" aria-label="监控">' + (it.monitor ? '监控中' : '监控') + '</button>'
-          : '<span class="wc-monitor-na">—</span>') +
+          ? '<button class="wc-monitor' + (it.monitor ? ' on' : '') + '" type="button" aria-pressed="' + (it.monitor ? 'true' : 'false') + '" title="' + (it.monitor ? '关闭自动刷新' : '开启每30秒自动刷新') + '" aria-label="' + (it.monitor ? '关闭' : '开启') + esc(it.name || it.code) + '自动刷新"><span class="wc-monitor-dot" aria-hidden="true"></span>' + (it.monitor ? '自动刷新中' : '开启监控') + '</button>'
+          : '<span class="wc-monitor-na" title="基金在页面可见时每60秒刷新">普通刷新</span>') +
         '<div class="wc-updated">' + (s.at ? s.at : '—') + '</div>' +
         '<div class="wc-ops">' +
           '<button class="wc-op wc-op-edit" title="编辑">编辑</button>' +
@@ -269,11 +344,18 @@
       asset.addEventListener('click', nav);
       asset.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); nav(); } });
       const mon = $('.wc-monitor', row);
-      if (mon) mon.addEventListener('click', (e) => { e.stopPropagation(); WC.toggleMonitor(id); });
+      if (mon) mon.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const enabled = WC.toggleMonitor(id);
+        showToast('已' + (enabled ? '开启' : '关闭') + '「' + (it.name || it.code) + '」自动刷新', 'success');
+      });
       $('.wc-op-edit', row).addEventListener('click', (e) => { e.stopPropagation(); openEditDialog(id); });
       $('.wc-op-remove', row).addEventListener('click', (e) => {
         e.stopPropagation();
-        if (window.confirm('移除「' + (it.name || it.code) + '」？')) WC.removeItem(id);
+        if (window.confirm('移除「' + (it.name || it.code) + '」？')) {
+          WC.removeItem(id);
+          showToast('已从自选中移除「' + (it.name || it.code) + '」', 'success');
+        }
       });
     });
   }
@@ -284,6 +366,9 @@
     }
     if (kind === 'empty-filter') {
       return '<div class="wc-empty"><p>没有匹配的自选项</p><button class="btn-sm" data-empty-clear>清除筛选</button></div>';
+    }
+    if (kind === 'empty-monitor') {
+      return '<div class="wc-empty wc-empty-monitor"><span class="wc-empty-icon" aria-hidden="true">◉</span><div><b>还没有自动刷新的股票</b><p>在“全部”或“股票”视图中点击“开启监控”，行情会在页面可见时每 30 秒刷新。</p></div><button class="btn-sm" data-empty-stock>查看股票</button></div>';
     }
     if (kind === 'all-failed') {
       return '<div class="wc-empty wc-empty-error"><p>全部行情请求失败</p><button class="btn-sm" data-empty-retry>重试</button></div>';
@@ -302,16 +387,38 @@
     });
     const retry = $('[data-empty-retry]', el);
     if (retry) retry.addEventListener('click', () => renderList());
+    const stock = $('[data-empty-stock]', el);
+    if (stock) stock.addEventListener('click', () => setView('stock'));
   }
 
   // ── 批量条 ──
   function updateBulkBar() {
     const bar = $('#wc-bulkbar');
     if (!bar) return;
+    Array.from(ui.selection).forEach((id) => { if (!WC.getItem(id)) ui.selection.delete(id); });
     const n = ui.selection.size;
     bar.hidden = n === 0;
     const c = $('#wc-bulk-count');
-    if (c) c.textContent = '已选 ' + n;
+    if (c) c.textContent = '已选 ' + n + ' 项';
+    const selectedItems = Array.from(ui.selection).map((id) => WC.getItem(id)).filter(Boolean);
+    const stocks = selectedItems.filter((it) => it.type === 'stock');
+    const funds = selectedItems.filter((it) => it.type === 'fund');
+    const eligible = $('#wc-bulk-eligible');
+    if (eligible) eligible.textContent = stocks.length
+      ? ('其中 ' + stocks.length + ' 只股票可设置监控' + (funds.length ? '，' + funds.length + ' 只基金将忽略' : ''))
+      : (n ? '所选均为基金，不支持股票监控' : '');
+    const onBtn = $('[data-bulk="monitor-on"]', bar);
+    const offBtn = $('[data-bulk="monitor-off"]', bar);
+    if (onBtn) onBtn.disabled = !stocks.some((it) => !it.monitor);
+    if (offBtn) offBtn.disabled = !stocks.some((it) => it.monitor);
+
+    const selectAll = $('#wc-select-all');
+    if (selectAll) {
+      const selectedVisible = renderedIds.filter((id) => ui.selection.has(id)).length;
+      selectAll.checked = renderedIds.length > 0 && selectedVisible === renderedIds.length;
+      selectAll.indeterminate = selectedVisible > 0 && selectedVisible < renderedIds.length;
+      selectAll.disabled = renderedIds.length === 0;
+    }
   }
 
   function wireBulkBar() {
@@ -322,7 +429,10 @@
       if (!btn) return;
       const ids = Array.from(ui.selection);
       const action = btn.getAttribute('data-bulk');
-      if (!ids.length && action !== 'clear') return;
+      if (!ids.length && action !== 'clear') {
+        showToast('请先勾选要操作的资产', 'warning');
+        return;
+      }
       if (action === 'group') {
         const groups = WC.getGroups();
         const name = window.prompt('移动到分组（输入名称，留空=默认分组）：\n' + groups.map((g) => g.name).join(' / '), '');
@@ -330,18 +440,34 @@
         const g = groups.find((x) => x.name === name.trim());
         const gid = g ? g.id : (name.trim() ? (WC.createGroup(name.trim()) || {}).id : WC.DEFAULT_GROUP_ID);
         WC.bulkUpdate(ids, { groupId: gid });
+        showToast('已移动 ' + ids.length + ' 项资产', 'success');
       } else if (action === 'tag') {
         const tag = window.prompt('添加标签（最多20字）');
-        if (tag && tag.trim()) WC.bulkUpdate(ids, { addTag: tag.trim() });
+        if (tag && tag.trim()) {
+          WC.bulkUpdate(ids, { addTag: tag.trim() });
+          showToast('已为 ' + ids.length + ' 项资产添加标签', 'success');
+        } else {
+          return;
+        }
       } else if (action === 'monitor-on') {
-        WC.bulkUpdate(ids, { monitor: true });
+        const targets = ids.filter((id) => { const it = WC.getItem(id); return it && it.type === 'stock' && !it.monitor; });
+        if (!targets.length) { showToast('所选资产中没有可开启监控的股票', 'warning'); return; }
+        WC.bulkUpdate(targets, { monitor: true });
+        showToast('已为 ' + targets.length + ' 只股票开启自动刷新', 'success');
       } else if (action === 'monitor-off') {
-        WC.bulkUpdate(ids, { monitor: false });
+        const targets = ids.filter((id) => { const it = WC.getItem(id); return it && it.type === 'stock' && it.monitor; });
+        if (!targets.length) { showToast('所选资产中没有正在监控的股票', 'warning'); return; }
+        WC.bulkUpdate(targets, { monitor: false });
+        showToast('已关闭 ' + targets.length + ' 只股票的自动刷新', 'success');
       } else if (action === 'remove') {
-        if (window.confirm('删除选中 ' + ids.length + ' 项？')) WC.bulkRemove(ids);
+        if (!window.confirm('删除选中 ' + ids.length + ' 项？')) return;
+        const removed = WC.bulkRemove(ids);
+        showToast('已移除 ' + removed + ' 项资产', 'success');
+      } else if (action === 'clear') {
+        clearSelection();
+        return;
       }
-      ui.selection.clear();
-      updateBulkBar();
+      clearSelection();
     });
   }
 
@@ -375,7 +501,7 @@
           '</select></label>' +
           '<label>标签（逗号分隔，最多10个）<input type="text" id="wcd-tags" value="' + esc((it.tags || []).join(',')) + '"></label>' +
           '<label>备注<textarea id="wcd-note" maxlength="500">' + esc(it.note || '') + '</textarea></label>' +
-          (it.type === 'stock' ? '<label class="wc-check-label"><input type="checkbox" id="wcd-monitor"' + (it.monitor ? ' checked' : '') + '> 实时监控</label>' : '') +
+          (it.type === 'stock' ? '<label class="wc-check-label"><input type="checkbox" id="wcd-monitor"' + (it.monitor ? ' checked' : '') + '> 开启每 30 秒自动刷新</label>' : '') +
         '</div>' +
         '<div class="wc-dialog-foot"><button class="btn-sm" id="wcd-cancel">取消</button><button class="btn-sm btn-accent" id="wcd-save">保存</button></div>' +
       '</div>';
@@ -393,6 +519,7 @@
       if (mon) patch.monitor = mon.checked;
       WC.updateItem(id, patch);
       closeDialog();
+      showToast('已保存「' + (patch.name || it.code) + '」的设置', 'success');
     });
   }
 
@@ -434,8 +561,12 @@
               + '<span>' + esc(name) + '</span><span class="wc-add-code">' + esc(code) + '</span></button>';
           }).join('');
           $all('.wc-add-result', el).forEach((btn) => btn.addEventListener('click', () => {
-            const res = WC.addItem(addType, btn.getAttribute('data-code'), btn.getAttribute('data-name'));
-            if (res.ok) closeDialog();
+            const assetName = btn.getAttribute('data-name');
+            const res = WC.addItem(addType, btn.getAttribute('data-code'), assetName);
+            if (res.ok) {
+              closeDialog();
+              showToast(res.existed ? ('「' + assetName + '」已在自选中') : ('已添加「' + assetName + '」'), res.existed ? 'warning' : 'success');
+            }
             else if (res.message) window.alert(res.message);
           }));
         });
@@ -699,6 +830,9 @@
 
   function startTimers() {
     stopTimers();
+    const settings = WC.getSettings();
+    const stockMs = Math.max(10, Number(settings.stockRefreshSeconds) || 30) * 1000;
+    const fundMs = Math.max(30, Number(settings.fundRefreshSeconds) || 60) * 1000;
     stockTimer = setInterval(() => {
       if (!Util.isPageVisible()) return;
       if (!isPageActive() && !drawerUi.open) {
@@ -708,13 +842,13 @@
         return;
       }
       refreshCurrentScope();
-    }, 30000);
+    }, stockMs);
     fundTimer = setInterval(() => {
       if (!Util.isPageVisible()) return;
       if (!isPageActive() && !drawerUi.open) return;
       const funds = currentScopeItems().filter((it) => it.type === 'fund');
       if (funds.length) refreshFundBatches(funds);
-    }, 60000);
+    }, fundMs);
   }
   function stopTimers() {
     if (stockTimer) { clearInterval(stockTimer); stockTimer = null; }
@@ -741,18 +875,31 @@
   // ─────────────────────────────────────────────
   function wirePageControls() {
     const search = $('#wc-search');
-    if (search) search.addEventListener('input', Util.debounce((e) => { ui.search = e.target.value; renderList(); }, 200));
-    $all('.wc-view').forEach((btn) => btn.addEventListener('click', () => {
-      ui.view = btn.getAttribute('data-view');
-      $all('.wc-view').forEach((b) => b.classList.toggle('active', b === btn));
+    if (search) search.addEventListener('input', Util.debounce((e) => {
+      ui.search = e.target.value;
+      clearSelection();
       renderList();
-    }));
+    }, 200));
+    $all('.wc-view').forEach((btn) => btn.addEventListener('click', () => setView(btn.getAttribute('data-view'))));
+    $all('[data-quick-view]').forEach((btn) => btn.addEventListener('click', () => setView(btn.getAttribute('data-quick-view'))));
     const sort = $('#wc-sort');
-    if (sort) sort.addEventListener('change', (e) => { ui.sort = e.target.value; renderList(); });
+    if (sort) sort.addEventListener('change', (e) => { ui.sort = e.target.value; clearSelection(); renderList(); });
+    const selectAll = $('#wc-select-all');
+    if (selectAll) selectAll.addEventListener('change', () => {
+      renderedIds.forEach((id) => {
+        if (selectAll.checked) ui.selection.add(id); else ui.selection.delete(id);
+      });
+      renderList(false);
+    });
     const addBtn = $('#wc-add-btn');
     if (addBtn) addBtn.addEventListener('click', openAddDialog);
     const refreshBtn = $('#wc-refresh-btn');
-    if (refreshBtn) refreshBtn.addEventListener('click', () => { refreshCurrentScope(); });
+    if (refreshBtn) refreshBtn.addEventListener('click', () => {
+      const items = currentScopeItems();
+      if (!items.length) { showToast('当前结果中没有可刷新的资产', 'warning'); return; }
+      refreshItems(items);
+      showToast('正在刷新当前 ' + items.length + ' 项资产', 'success');
+    });
     const exportBtn = $('#wc-export-btn');
     if (exportBtn) exportBtn.addEventListener('click', openExportMenu);
     const importBtn = $('#wc-import-btn');
@@ -760,6 +907,18 @@
     const importFile = $('#wc-import-file');
     if (importFile) importFile.addEventListener('change', onImportFile);
     wireBulkBar();
+    document.addEventListener('visibilitychange', () => {
+      if (!Util.isPageVisible()) return;
+      const now = Date.now();
+      const settings = WC.getSettings();
+      const stockMs = Math.max(10, Number(settings.stockRefreshSeconds) || 30) * 1000;
+      const fundMs = Math.max(30, Number(settings.fundRefreshSeconds) || 60) * 1000;
+      const scope = currentScopeItems();
+      const stocks = scope.filter((it) => it.type === 'stock');
+      const funds = scope.filter((it) => it.type === 'fund');
+      if (stocks.length && now - lastStockRefreshAt >= stockMs) refreshStockBatches(stocks);
+      if (funds.length && now - lastFundRefreshAt >= fundMs) refreshFundBatches(funds);
+    });
   }
 
   function openExportMenu() {

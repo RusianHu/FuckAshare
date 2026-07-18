@@ -286,10 +286,10 @@ $assetVersions = [
         <div class="tab-panel" id="panel-realtime">
             <div class="watch-center" id="watch-center">
                 <div class="wc-header">
-                    <div class="wc-stats">
-                        <div class="wc-stat"><span class="wc-stat-num" id="wc-stat-total">0</span><span class="wc-stat-label">自选项</span></div>
-                        <div class="wc-stat"><span class="wc-stat-num" id="wc-stat-monitor">0</span><span class="wc-stat-label">监控中</span></div>
-                        <div class="wc-stat"><span class="wc-stat-num" id="wc-stat-refresh">—</span><span class="wc-stat-label">最近刷新</span></div>
+                    <div class="wc-header-copy">
+                        <span class="wc-eyebrow"><span class="wc-live-dot" aria-hidden="true"></span>个人资产雷达</span>
+                        <h2>自选中心</h2>
+                        <p>集中查看股票与基金；股票开启监控后，页面可见时每 30 秒自动刷新。</p>
                     </div>
                     <div class="wc-actions">
                         <button class="btn-sm btn-accent" id="wc-add-btn"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-star"></use></svg></span> 添加资产</button>
@@ -299,14 +299,39 @@ $assetVersions = [
                     </div>
                 </div>
 
+                <div class="wc-overview" aria-label="自选概览">
+                    <button class="wc-stat" type="button" data-quick-view="all">
+                        <span class="wc-stat-num" id="wc-stat-total">0</span><span class="wc-stat-label">全部资产</span>
+                    </button>
+                    <button class="wc-stat" type="button" data-quick-view="stock">
+                        <span class="wc-stat-num" id="wc-stat-stock">0</span><span class="wc-stat-label">股票</span>
+                    </button>
+                    <button class="wc-stat" type="button" data-quick-view="fund">
+                        <span class="wc-stat-num" id="wc-stat-fund">0</span><span class="wc-stat-label">基金</span>
+                    </button>
+                    <button class="wc-stat wc-stat-monitor" type="button" data-quick-view="monitor">
+                        <span class="wc-stat-num" id="wc-stat-monitor">0</span><span class="wc-stat-label">自动刷新中</span>
+                    </button>
+                    <div class="wc-stat wc-stat-refresh">
+                        <span class="wc-stat-num" id="wc-stat-refresh">—</span><span class="wc-stat-label">最近刷新</span>
+                    </div>
+                    <div class="wc-monitor-guide">
+                        <span class="wc-monitor-guide-icon" aria-hidden="true">◉</span>
+                        <span><b>监控 = 自动刷新</b><small>仅支持股票，不包含价格预警或消息推送</small></span>
+                    </div>
+                </div>
+
                 <div class="wc-toolbar">
-                    <input type="search" id="wc-search" class="wc-search" placeholder="搜索名称 / 代码 / 标签 / 备注" aria-label="搜索自选" autocapitalize="off" spellcheck="false">
+                    <div class="wc-search-wrap">
+                        <span aria-hidden="true">⌕</span>
+                        <input type="search" id="wc-search" class="wc-search" placeholder="搜索名称、代码、标签或备注" aria-label="搜索自选" autocapitalize="off" spellcheck="false">
+                    </div>
                     <div class="wc-views" id="wc-views" role="tablist" aria-label="系统视图">
-                        <button class="wc-view active" data-view="all" role="tab">全部</button>
-                        <button class="wc-view" data-view="stock" role="tab">股票</button>
-                        <button class="wc-view" data-view="fund" role="tab">基金</button>
-                        <button class="wc-view" data-view="monitor" role="tab">监控中</button>
-                        <button class="wc-view" data-view="ungrouped" role="tab">未分组</button>
+                        <button class="wc-view active" data-view="all" role="tab" aria-selected="true">全部 <span data-view-count="all">0</span></button>
+                        <button class="wc-view" data-view="stock" role="tab" aria-selected="false">股票 <span data-view-count="stock">0</span></button>
+                        <button class="wc-view" data-view="fund" role="tab" aria-selected="false">基金 <span data-view-count="fund">0</span></button>
+                        <button class="wc-view" data-view="monitor" role="tab" aria-selected="false">监控中 <span data-view-count="monitor">0</span></button>
+                        <button class="wc-view" data-view="ungrouped" role="tab" aria-selected="false">未分组 <span data-view-count="ungrouped">0</span></button>
                     </div>
                     <select id="wc-sort" class="wc-sort" aria-label="排序方式">
                         <option value="manual">置顶+手动</option>
@@ -321,14 +346,22 @@ $assetVersions = [
                         <!-- 分组栏由 JS 渲染 -->
                     </aside>
                     <div class="wc-main">
+                        <div class="wc-list-head">
+                            <label class="wc-select-all"><input type="checkbox" id="wc-select-all"> <span>选择当前结果</span></label>
+                            <span class="wc-result-summary" id="wc-result-summary">0 项资产</span>
+                            <span class="wc-selection-hint">勾选后可批量分组、加标签或设置监控</span>
+                        </div>
                         <div class="wc-bulkbar" id="wc-bulkbar" hidden>
-                            <span class="wc-bulk-count" id="wc-bulk-count">已选 0</span>
-                            <button class="btn-sm" data-bulk="group">移动分组</button>
-                            <button class="btn-sm" data-bulk="tag">添加标签</button>
-                            <button class="btn-sm" data-bulk="monitor-on">开启监控</button>
-                            <button class="btn-sm" data-bulk="monitor-off">关闭监控</button>
-                            <button class="btn-sm btn-danger" data-bulk="remove">删除</button>
-                            <button class="btn-sm" data-bulk="clear">取消选择</button>
+                            <strong class="wc-bulk-count" id="wc-bulk-count">已选 0 项</strong>
+                            <span class="wc-bulk-eligible" id="wc-bulk-eligible"></span>
+                            <div class="wc-bulk-actions">
+                                <button class="btn-sm" data-bulk="group">移动分组</button>
+                                <button class="btn-sm" data-bulk="tag">添加标签</button>
+                                <button class="btn-sm" data-bulk="monitor-on">开启自动刷新</button>
+                                <button class="btn-sm" data-bulk="monitor-off">关闭自动刷新</button>
+                                <button class="btn-sm btn-danger" data-bulk="remove">删除</button>
+                                <button class="btn-sm wc-bulk-clear" data-bulk="clear">取消选择</button>
+                            </div>
                         </div>
                         <div class="wc-list" id="wc-list" aria-live="polite">
                             <p class="placeholder-text">加载中…</p>
@@ -339,6 +372,7 @@ $assetVersions = [
         </div>
         <!-- 自选中心 添加/编辑/导入 对话框由 JS 惰性注入 body -->
         <input type="file" id="wc-import-file" accept="application/json,.json" hidden>
+        <div class="wc-feedback" id="wc-feedback" role="status" aria-live="polite" aria-atomic="true"></div>
 
         <!-- 策略池页 -->
         <div class="tab-panel" id="panel-strategy">
