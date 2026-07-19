@@ -4658,3 +4658,219 @@ button.wc-stat.active { border-color: var(--accent-blue); box-shadow: inset 0 0 
     .wc-row { grid-template-columns: 26px minmax(0, 1fr) 68px; grid-template-areas: "check asset change" "check price price" "check meta ops"; }
     .wc-price { align-items: flex-start; flex-direction: row; gap: 6px; }
 }
+
+/* ═══════════════════════════════════════════
+   大盘指数概览条 (market_overview.js)
+   位于导航/数据状态细条下方的全局横条
+   ═══════════════════════════════════════════ */
+.market-overview {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: 40px;
+    padding: 5px 18px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-light);
+}
+.mo-scroll {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+}
+.mo-scroll::-webkit-scrollbar { display: none; }
+/* chips 溢出时右缘渐隐，提示可横向滚动 */
+.mo-scroll.has-overflow {
+    -webkit-mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 26px), transparent 100%);
+    mask-image: linear-gradient(90deg, #000 0, #000 calc(100% - 26px), transparent 100%);
+}
+
+/* 指数 chips */
+.mo-indices {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 0 0 auto;
+    scroll-snap-type: x proximity;
+}
+.mo-chip {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 7px;
+    padding: 4px 10px;
+    border-radius: var(--radius-full);
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--text-secondary);
+    font-size: var(--fs-xs);
+    font-family: var(--font-sans);
+    white-space: nowrap;
+    cursor: pointer;
+    scroll-snap-align: start;
+    transition: var(--transition-fast);
+}
+.mo-chip:hover {
+    background: var(--bg-hover);
+    border-color: var(--border-color);
+    transform: translateY(-1px);
+}
+.mo-chip:active { transform: translateY(0); }
+.mo-chip:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.mo-chip-name { color: var(--text-primary); font-weight: 600; }
+.mo-chip-price,
+.mo-chip-chg {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+}
+.mo-chip-chg {
+    font-size: var(--fs-2xs);
+    padding: 1px 7px;
+    border-radius: var(--radius-full);
+}
+.market-overview .up { color: var(--price-up); }
+.market-overview .down { color: var(--price-down); }
+.market-overview .flat { color: var(--price-flat); }
+.mo-chip-chg.up { background: var(--accent-red-bg); }
+.mo-chip-chg.down { background: var(--accent-green-bg); }
+
+/* 涨跌家数 + 涨停统计 */
+.mo-breadth {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex: 0 0 auto;
+    padding-left: 14px;
+    border-left: 1px solid var(--border-light);
+    font-size: var(--fs-2xs);
+    color: var(--text-secondary);
+    white-space: nowrap;
+    cursor: help;
+}
+.mo-counts {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+.mo-counts b,
+.mo-limits b {
+    font-weight: 600;
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+}
+.mo-meter {
+    display: flex;
+    width: 86px;
+    height: 4px;
+    border-radius: 2px;
+    overflow: hidden;
+    background: var(--bg-hover);
+}
+.mo-meter i { display: block; height: 100%; }
+.mo-meter i.up { background: var(--price-up); }
+.mo-meter i.flat { background: var(--price-flat); opacity: .45; }
+.mo-meter i.down { background: var(--price-down); }
+.mo-limits { display: inline-flex; align-items: center; gap: 8px; }
+.mo-badge {
+    padding: 1px 8px;
+    border-radius: var(--radius-full);
+    font-size: var(--fs-2xs);
+    background: var(--bg-hover);
+    color: var(--text-secondary);
+}
+.mo-badge[data-tone="up"] { background: var(--accent-red-bg); color: var(--price-up); }
+.mo-badge[data-tone="down"] { background: var(--accent-green-bg); color: var(--price-down); }
+
+/* 右侧：时间戳 + 刷新 */
+.mo-side {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 0 0 auto;
+    margin-left: auto;
+}
+.mo-updated {
+    color: var(--text-muted);
+    font-size: var(--fs-2xs);
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+}
+.mo-updated.stale { color: var(--accent-yellow); }
+.mo-updated.stale::before { content: "▲ "; font-size: 9px; }
+.mo-refresh {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 5px;
+    border: none;
+    border-radius: var(--radius-xs);
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: var(--transition-fast);
+}
+.mo-refresh:hover { color: var(--accent-blue); background: var(--bg-hover); }
+.mo-refresh:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.mo-refresh:disabled { cursor: default; }
+.mo-refresh .ui-icon { width: 13px; height: 13px; display: inline-flex; }
+.mo-refresh .ui-icon svg { width: 100%; height: 100%; }
+.mo-refresh.loading .ui-icon { animation: mo-spin 1s linear infinite; }
+@keyframes mo-spin { to { transform: rotate(360deg); } }
+
+/* 骨架屏 */
+.mo-skel {
+    display: inline-block;
+    border-radius: var(--radius-full);
+    background: linear-gradient(90deg, var(--bg-hover) 25%, var(--bg-card-hover) 50%, var(--bg-hover) 75%);
+    background-size: 200% 100%;
+    animation: mo-shimmer 1.4s ease-in-out infinite;
+}
+.mo-skel-chip { width: 130px; height: 22px; }
+.mo-skel-breadth { width: 220px; height: 16px; }
+@keyframes mo-shimmer { to { background-position: -200% 0; } }
+
+/* 错误态 */
+.mo-error {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: var(--fs-xs);
+    color: var(--text-secondary);
+}
+.mo-error-text { color: var(--accent-yellow); }
+
+@media (prefers-reduced-motion: reduce) {
+    .mo-skel { animation: none; }
+    .mo-refresh.loading .ui-icon { animation: none; }
+    .mo-chip:hover { transform: none; }
+}
+
+@media (max-width: 1600px) {
+    .mo-chip { padding: 4px 8px; gap: 5px; }
+    .mo-indices { gap: 4px; }
+    .mo-breadth { gap: 10px; padding-left: 12px; }
+}
+
+@media (max-width: 768px) {
+    .market-overview { padding: 4px 10px; gap: 8px; min-height: 36px; }
+    .mo-breadth { gap: 8px; padding-left: 10px; }
+    .mo-meter { width: 64px; }
+}
+
+@media (max-width: 560px) {
+    .mo-updated { display: none; }
+    .mo-chip { padding: 3px 8px; gap: 5px; }
+    .mo-limits { display: none; }
+}
+
+@media (max-width: 480px) {
+    .mo-meter { display: none; }
+    .mo-breadth { gap: 6px; padding-left: 8px; }
+}
+
+@media print {
+    .market-overview { display: none; }
+}

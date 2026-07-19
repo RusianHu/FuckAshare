@@ -6412,6 +6412,10 @@ document.addEventListener('DOMContentLoaded', function() {
     if (window.DataStatus && typeof window.DataStatus.init === 'function') {
         window.DataStatus.init();
     }
+    // 大盘指数概览条（在 DataStatus 之后初始化，保证首个请求被状态条捕获）
+    if (window.MarketOverview && typeof window.MarketOverview.init === 'function') {
+        window.MarketOverview.init();
+    }
     // 自选中心导航：点击项目跳转对应工作台并自动查询
     if (window.AppBus) {
         window.AppBus.on('watch-center:navigate', function (ev) {
@@ -6426,6 +6430,10 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         });
         window.AppBus.on('watch-center:goto-page', function () { switchTab('realtime'); });
+        // 大盘概览条：点击指数 → 行情工作台自动查询
+        window.AppBus.on('market-overview:navigate', function (ev) {
+            if (ev && ev.code) submitStockQuery(ev.code, { withAI: false });
+        });
         // 自选变更时同步股票工作台星标状态
         window.AppBus.on('watch-center:changed', function () {
             const starBtn = document.getElementById('add-watchlist-btn');

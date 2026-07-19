@@ -8,6 +8,7 @@
  * source: auto / eastmoney / ashare / xueqiu
  * fallback: 1 / 0
  * raw: 1 / 0
+ * format: envelope（可选）输出统一 status + meta.data_status，默认保持旧格式
  */
 header('Content-Type: application/json; charset=utf-8');
 
@@ -23,6 +24,7 @@ SecurityAudit::init(['endpoint' => 'market_api', 'rate_limit' => 40]);
 $source   = SecurityAudit::getParam('source', 'auto', ['whitelist' => SecurityAudit::ALLOWED_DATA_SOURCES]);
 $fallback = SecurityAudit::getParam('fallback', 1, ['int' => true]) === 1;
 $raw      = SecurityAudit::getParam('raw', 0, ['int' => true]) === 1;
+$format   = SecurityAudit::getParam('format', '', ['maxLength' => 16]);
 $action   = SecurityAudit::getParam('action', '', ['required' => true]);
 
 $service = new MarketDataService();
@@ -223,4 +225,9 @@ switch ($action) {
         exit;
 }
 
-echo $result->toJson($raw);
+if ($format === 'envelope') {
+    // 统一 envelope：status + meta.data_status（默认旧格式不变，与 stock_quote_api 一致）
+    echo json_encode($result->toEnvelope(), JSON_UNESCAPED_UNICODE);
+} else {
+    echo $result->toJson($raw);
+}

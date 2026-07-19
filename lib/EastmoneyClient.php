@@ -17,7 +17,7 @@ class EastmoneyClient
     const PUSH2_DELAY_URL = 'https://push2delay.eastmoney.com';
     const PUSH2HIS_URL = 'https://push2his.eastmoney.com';
     const STOCK_FLOW_DEFAULT_LIMIT = 120;
-    const MARKET_BREADTH_SCAN_PAGE_SIZE = 100;
+    const MARKET_BREADTH_SCAN_PAGE_SIZE = 100; // clist 文档写最大 200，但实测上游忽略 pz>100 固定返回 100 行；靠 effective_page_size 自适应
     const MARKET_BREADTH_SCAN_CONCURRENCY = 32;
 
     /** @var HttpClient */

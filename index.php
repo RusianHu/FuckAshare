@@ -7,6 +7,7 @@ $assetVersions = [
     'app_core' => @filemtime(__DIR__ . '/app_core.js') ?: 0,
     'watch_center' => @filemtime(__DIR__ . '/watch_center.js') ?: 0,
     'data_status' => @filemtime(__DIR__ . '/data_status.js') ?: 0,
+    'market_overview' => @filemtime(__DIR__ . '/market_overview.js') ?: 0,
     'watch_center_ui' => @filemtime(__DIR__ . '/watch_center_ui.js') ?: 0,
     'strategy' => @filemtime(__DIR__ . '/strategy_pool.js') ?: 0,
     'main' => @filemtime(__DIR__ . '/main.js') ?: 0,
@@ -127,6 +128,9 @@ $assetVersions = [
             </button>
         </div>
     </nav>
+
+    <!-- 大盘指数概览条（market_overview.js 渲染；数据状态细条由 data_status.js 注入在导航与本条之间） -->
+    <section class="market-overview" id="market-overview" role="region" aria-label="大盘指数与市场宽度概览"></section>
 
     <!-- 主内容区域 -->
     <div class="main-wrapper" id="main">
@@ -1135,6 +1139,7 @@ $assetVersions = [
     <script src="app_core.js?v=<?= rawurlencode((string)$assetVersions['app_core']) ?>"></script>
     <script src="watch_center.js?v=<?= rawurlencode((string)$assetVersions['watch_center']) ?>"></script>
     <script src="data_status.js?v=<?= rawurlencode((string)$assetVersions['data_status']) ?>"></script>
+    <script src="market_overview.js?v=<?= rawurlencode((string)$assetVersions['market_overview']) ?>"></script>
     <script src="watch_center_ui.js?v=<?= rawurlencode((string)$assetVersions['watch_center_ui']) ?>"></script>
     <script src="strategy_pool.js?v=<?= rawurlencode((string)$assetVersions['strategy']) ?>"></script>
     <script src="main.js?v=<?= rawurlencode((string)$assetVersions['main']) ?>"></script>
