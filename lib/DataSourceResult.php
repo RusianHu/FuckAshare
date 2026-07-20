@@ -216,10 +216,23 @@ class DataSourceResult
             $completeness = 'complete';
         }
 
+        // 数据内容时效与缓存时效是两回事：刚请求到的上一交易日净值不能标成盘中实时。
+        $dataRecency = (string)($this->meta['data_recency'] ?? 'unknown');
+        $nonRealtimeCount = max(0, (int)($this->meta['non_realtime_count'] ?? 0));
+        $nonRealtimeLabel = trim((string)($this->meta['non_realtime_label'] ?? '带日期数据')) ?: '带日期数据';
+        if ($nonRealtimeCount > 0 || in_array($dataRecency, ['dated', 'mixed'], true)) {
+            $warnings[] = [
+                'code' => 'non_realtime_data',
+                'message' => $nonRealtimeCount > 0
+                    ? "{$nonRealtimeCount} 项为{$nonRealtimeLabel}，不是盘中实时值"
+                    : '响应包含非盘中实时数据',
+            ];
+        }
+
         // severity：error > warning > info > ok
         if ($route === 'failed') {
             $severity = 'error';
-        } elseif ($freshness === 'stale' || $completeness === 'partial') {
+        } elseif ($freshness === 'stale' || $completeness === 'partial' || $nonRealtimeCount > 0 || in_array($dataRecency, ['dated', 'mixed'], true)) {
             $severity = 'warning';
         } elseif ($route === 'fallback' || $freshness === 'cached') {
             $severity = 'info';
@@ -232,6 +245,8 @@ class DataSourceResult
             'freshness'    => $freshness,
             'completeness' => $completeness,
             'route'        => $route,
+            'data_recency' => $dataRecency,
+            'non_realtime_count' => $nonRealtimeCount,
             'warnings'     => $warnings,
         ];
         if ($counts !== null) {

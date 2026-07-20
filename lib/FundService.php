@@ -151,8 +151,42 @@ class FundService
                         'gsz'      => $data['gsz'] ?? '',
                         'gszzl'    => $data['gszzl'] ?? '',
                         'gztime'   => $data['gztime'] ?? '',
+                        'quote_type' => 'intraday_estimate',
+                        'estimate_available' => true,
                     ];
-                    return DataSourceResult::success(self::SOURCE_NAME, 'estimate', $result);
+                    if (!$this->isCurrentShanghaiDataTime((string)$result['gztime'])) {
+                        // fundgz 偶尔会成功返回上一交易日的估值。成功响应不等于实时数据：
+                        // 此时只保留响应内自带的官方净值，绝不把历史估值冒充盘中估值。
+                        if ($result['dwjz'] === '' || !is_numeric($result['dwjz'])) {
+                            return $this->estimateByLatestNetValue($code, '盘中估值时间缺失或不是当日');
+                        }
+                        $result['gsz'] = null;
+                        $result['gszzl'] = null;
+                        $result['gztime'] = $result['jzrq'];
+                        $result['quote_type'] = 'latest_nav';
+                        $result['estimate_available'] = false;
+                        return DataSourceResult::fallback(
+                            self::SOURCE_NAME,
+                            'estimate',
+                            $result,
+                            self::SOURCE_NAME . '_realtime_estimate',
+                            '盘中估值时间缺失或不是当日，已改用响应内官方净值',
+                            [
+                                'fallback_kind' => 'latest_nav',
+                                'estimate_available' => false,
+                                'data_at' => $result['jzrq'] !== '' ? $result['jzrq'] : null,
+                                'data_kind' => 'official_nav',
+                                'data_recency' => 'dated',
+                                'non_realtime_count' => 1,
+                                'non_realtime_label' => '官方净值',
+                            ]
+                        );
+                    }
+                    return DataSourceResult::success(self::SOURCE_NAME, 'estimate', $result, [
+                        'data_at' => $result['gztime'] !== '' ? $result['gztime'] : null,
+                        'data_kind' => 'intraday_estimate',
+                        'data_recency' => 'intraday',
+                    ]);
                 }
             }
 
@@ -186,6 +220,7 @@ class FundService
         $missing = [];
         $fallbackCodes = [];
         $dataAtByCode = [];
+        $quoteTypeByCode = [];
         foreach ($validCodes as $code) {
             $result = $this->estimate($code);
             if ($result->hasData()) {
@@ -194,6 +229,7 @@ class FundService
                 if (is_string($dataAt) && $dataAt !== '') {
                     $dataAtByCode[$code] = $dataAt;
                 }
+                $quoteTypeByCode[$code] = (string)($result->data['quote_type'] ?? 'intraday_estimate');
                 if ($result->isFallback() || (($result->data['estimate_available'] ?? true) === false)) {
                     $fallbackCodes[] = $code;
                 }
@@ -215,6 +251,13 @@ class FundService
             'fetched'  => $fetchedCount,
             'fallback_codes' => $fallbackCodes,
             'data_at_by_code' => $dataAtByCode,
+            'quote_type_by_code' => $quoteTypeByCode,
+            'non_realtime_codes' => $fallbackCodes,
+            'non_realtime_count' => count($fallbackCodes),
+            'non_realtime_label' => '官方净值',
+            'data_recency' => empty($fallbackCodes)
+                ? 'intraday'
+                : (count($fallbackCodes) === count($validCodes) ? 'dated' : 'mixed'),
             // 批量必须声明请求数/返回数/缺失代码，不把"少返回几项"当作完整成功
             'counts'   => [
                 'expected' => count($validCodes),
@@ -2750,6 +2793,9 @@ class FundService
                 $data['meta'] ?? []
             );
             $result->status = $data['status'] ?? DataSourceResult::STATUS_SUCCESS;
+            if (isset($data['cached_at']) && is_numeric($data['cached_at'])) {
+                $result->meta['cache_age_seconds'] = max(0, time() - (int)$data['cached_at']);
+            }
             return $result;
         }
         return null;
@@ -2768,6 +2814,9 @@ class FundService
                 $data['meta'] ?? []
             );
             $result->status = $data['status'] ?? DataSourceResult::STATUS_SUCCESS;
+            if (isset($data['cached_at']) && is_numeric($data['cached_at'])) {
+                $result->meta['cache_age_seconds'] = max(0, time() - (int)$data['cached_at']);
+            }
             return $result;
         }
         return null;
@@ -2904,6 +2953,10 @@ class FundService
                     'fallback_kind'     => 'latest_nav',
                     'estimate_available'=> false,
                     'data_at'           => $navDate !== '' ? $navDate : null,
+                    'data_kind'         => 'official_nav',
+                    'data_recency'      => 'dated',
+                    'non_realtime_count'=> 1,
+                    'non_realtime_label'=> '官方净值',
                 ]
             );
         }
@@ -3055,12 +3108,18 @@ class FundService
         }
         $results = [];
         foreach ($parsed['data']['Datas'] as $item) {
+            $code = (string)($item['CODE'] ?? '');
+            $name = (string)($item['NAME'] ?? '');
+            $fundType = (string)($item['FTYPE'] ?? '');
+            $instrumentType = $this->classifyFundInstrument($code, $name, $fundType);
             $results[] = [
-                'code'         => $item['CODE'] ?? '',
-                'name'         => $item['NAME'] ?? '',
+                'code'         => $code,
+                'name'         => $name,
                 'pinyin'       => $item['JP'] ?? '',
                 'category'     => $item['CATEGORY'] ?? '',
-                'type'         => $item['FTYPE'] ?? '',
+                'type'         => $fundType,
+                'instrument_type' => $instrumentType,
+                'quote_code'   => $instrumentType === 'exchange_etf' ? $this->exchangeQuoteCode($code) : '',
                 'nav'          => $item['DWJZ'] ?? '',
                 'nav_date'     => $item['FSRQ'] ?? '',
                 'min_purchase' => $item['MINSG'] ?? '',
@@ -3070,6 +3129,34 @@ class FundService
             ];
         }
         return ['items' => $results, 'meta' => ['total' => count($results)]];
+    }
+
+    /**
+     * 基金搜索结果同时包含场外基金和场内 ETF。二者的最新价格口径不同，
+     * 必须在进入自选中心前显式分类，不能把场内 ETF 送往净值/估值接口。
+     */
+    private function classifyFundInstrument(string $code, string $name, string $fundType = ''): string
+    {
+        $label = strtoupper($name . ' ' . $fundType);
+        $looksLikeEtf = strpos($label, 'ETF') !== false && preg_match('/ETF\s*联接/u', $label) !== 1;
+        $isExchangeCode = preg_match('/^(?:15\d{4}|5\d{5})$/', $code) === 1;
+        return $looksLikeEtf && $isExchangeCode ? 'exchange_etf' : 'otc_fund';
+    }
+
+    private function isCurrentShanghaiDataTime(string $dataTime): bool
+    {
+        if (!preg_match('/^(\d{4}-\d{2}-\d{2})/', trim($dataTime), $matches)) {
+            return false;
+        }
+        $today = (new DateTimeImmutable('now', new DateTimeZone('Asia/Shanghai')))->format('Y-m-d');
+        return $matches[1] === $today;
+    }
+
+    private function exchangeQuoteCode(string $code): string
+    {
+        if (preg_match('/^15\d{4}$/', $code)) return 'sz' . $code;
+        if (preg_match('/^5\d{5}$/', $code)) return 'sh' . $code;
+        return '';
     }
 
     /**

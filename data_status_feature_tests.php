@@ -107,5 +107,27 @@ $hitAge->meta['cache'] = 'hit';
 $hitAge->meta['cache_age_seconds'] = 42;
 check($hitAge->toEnvelope()['meta']['cache_age_seconds'] === 42, '已有 cache_age_seconds 被保留');
 
+// ── 10. 新请求拿到旧日期内容时，缓存可为 fresh，但内容时效必须单独告警 ──
+$dated = DataSourceResult::fallback(
+    'eastmoney_fund',
+    'estimate',
+    ['fundcode' => '008163', 'quote_type' => 'latest_nav'],
+    'eastmoney_fund_realtime_estimate',
+    '盘中估值不可用',
+    [
+        'cache' => 'miss',
+        'data_at' => '2026-07-17',
+        'data_recency' => 'dated',
+        'non_realtime_count' => 1,
+        'non_realtime_label' => '官方净值',
+    ]
+);
+$dsDated = $dated->toEnvelope()['meta']['data_status'];
+check($dsDated['freshness'] === 'fresh', '新请求与缓存时效仍可标 fresh');
+check($dsDated['data_recency'] === 'dated', '内容时效必须标 dated');
+check($dsDated['non_realtime_count'] === 1, '必须暴露非实时项数量');
+check($dsDated['severity'] === 'warning', '非实时净值必须提升为 warning');
+check(count(array_filter($dsDated['warnings'], function ($w) { return ($w['code'] ?? '') === 'non_realtime_data'; })) === 1, '必须生成非实时数据警告');
+
 echo "\n数据状态功能测试: {$passed} 通过, {$failed} 失败\n";
 exit($failed > 0 ? 1 : 0);

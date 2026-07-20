@@ -293,7 +293,7 @@ $assetVersions = [
                     <div class="wc-header-copy">
                         <span class="wc-eyebrow"><span class="wc-live-dot" aria-hidden="true"></span>个人资产雷达</span>
                         <h2>自选中心</h2>
-                        <p>集中查看股票与基金；股票开启监控后，页面可见时每 30 秒自动刷新。</p>
+                        <p>股票与场内 ETF 展示交易行情；场外基金展示盘中估值，无估值时明确回退到带日期的官方净值。</p>
                     </div>
                     <div class="wc-actions">
                         <button class="btn-sm btn-accent" id="wc-add-btn"><span class="ui-icon" aria-hidden="true"><svg><use href="#icon-star"></use></svg></span> 添加资产</button>

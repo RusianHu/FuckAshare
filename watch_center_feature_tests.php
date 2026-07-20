@@ -85,6 +85,22 @@ WC.init();
 check(WC.count() === 1 && WC.has('fund', '161725'), '基金自选迁移');
 check(WC.getItem('fund:161725').monitor === false, '基金不可 monitor');
 
+// ── 4.1 场内 ETF 与场外联接基金必须使用不同报价路由 ──
+reset();
+localStorage.setItem('fa_fund_watchlist', JSON.stringify([
+  { code: '159819', name: '人工智能ETF易方达' },
+  { code: '515450', name: '红利低波50ETF南方' },
+  { code: '008163', name: '南方标普红利低波50ETF联接A' },
+]));
+WC.init();
+check(WC.getItem('fund:159819').instrumentType === 'exchange_etf', '深市场内 ETF 识别为 exchange_etf');
+check(WC.getItem('fund:515450').instrumentType === 'exchange_etf', '沪市场内 ETF 识别为 exchange_etf');
+check(WC.getItem('fund:008163').instrumentType === 'otc_fund', 'ETF 联接基金不得误判为场内 ETF');
+check(WC.exchangeQuoteCode('159819') === 'sz159819', '深市 ETF 行情代码正确');
+check(WC.exchangeQuoteCode('515450') === 'sh515450', '沪市 ETF 行情代码正确');
+check(WC.isMarketQuoted(WC.getItem('fund:515450')) === true, '场内 ETF 必须走交易所行情');
+check(WC.isMarketQuoted(WC.getItem('fund:008163')) === false, '场外联接基金必须走估值/净值');
+
 // ── 5. 三键同时存在 + 重复股票合并（监控取逻辑或） ──
 reset();
 localStorage.setItem('fa_watchlist', JSON.stringify([{ code: 'sh600519', name: '贵州茅台' }]));

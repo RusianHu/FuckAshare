@@ -119,9 +119,22 @@ class XueqiuClient
         $xqSymbol = $sc->toXueqiu();
         $url = self::BASE_URL . "/v5/stock/quote.json?symbol={$xqSymbol}&extend=detail";
 
-        return $this->call('quote', $url, $raw, function($data) use ($xqSymbol) {
+        $result = $this->call('quote', $url, $raw, function($data) use ($xqSymbol) {
             return $this->normalizeQuote($data, $xqSymbol);
         });
+        if (!$raw && $result->hasData()) {
+            $quoteTime = (string)($result->data['quote_time'] ?? '');
+            $result->meta['data_at'] = $quoteTime !== '' ? $quoteTime : null;
+            $result->meta['data_kind'] = 'exchange_quote';
+            $result->meta['data_recency'] = $quoteTime !== '' && substr($quoteTime, 0, 10) === $this->shanghaiToday()
+                ? 'intraday'
+                : 'dated';
+            $result->meta['non_realtime_count'] = $result->meta['data_recency'] === 'intraday' ? 0 : 1;
+            if ($result->meta['non_realtime_count'] > 0) {
+                $result->meta['non_realtime_label'] = '非当日场内行情';
+            }
+        }
+        return $result;
     }
 
     /**
@@ -338,9 +351,21 @@ class XueqiuClient
             'pb'            => $q['pb'] ?? 0,
             'total_mv'      => $q['market_capital'] ?? 0,
             'circ_mv'       => $q['float_market_capital'] ?? 0,
-            'quote_time'    => isset($q['timestamp']) ? date('c', (int)floor($q['timestamp'] / 1000)) : '',
+            'quote_time'    => isset($q['timestamp']) ? $this->formatShanghaiTimestamp((int)floor($q['timestamp'] / 1000)) : '',
             'source'        => self::SOURCE_NAME,
         ];
+    }
+
+    private function formatShanghaiTimestamp(int $timestamp): string
+    {
+        return (new DateTimeImmutable('@' . $timestamp))
+            ->setTimezone(new DateTimeZone('Asia/Shanghai'))
+            ->format('Y-m-d H:i:s');
+    }
+
+    private function shanghaiToday(): string
+    {
+        return (new DateTimeImmutable('now', new DateTimeZone('Asia/Shanghai')))->format('Y-m-d');
     }
 
     /**

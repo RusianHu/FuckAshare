@@ -2637,6 +2637,13 @@ const FundModule = {
         const latest = history?.[0] || {};
         const scale = parseFloat(fund.scale);
         const scaleText = isNaN(scale) ? '-' : (scale / 1e8).toFixed(2) + '亿';
+        const estimateAvailable = !!estimate
+            && estimate.estimate_available !== false
+            && estimate.quote_type !== 'latest_nav'
+            && estimate.gsz !== null && estimate.gsz !== undefined && estimate.gsz !== '';
+        const estimateUnavailableText = estimate?.jzrq
+            ? `暂无盘中估值；最新官方净值日期 ${estimate.jzrq}`
+            : '暂无盘中估值';
         const spark = this.renderHistorySparkline(history || []);
         const rows = (history || []).slice(0, 12).map(item => `
             <tr>
@@ -2662,8 +2669,8 @@ const FundModule = {
             </div>
             <div class="fund-metric-grid">
                 <div><span>单位净值</span><b>${escapeHTML(latest.nav || fund.nav || estimate?.dwjz || '-')}</b><small>${escapeHTML(latest.date || fund.nav_date || estimate?.jzrq || '')}</small></div>
-                <div><span>估算净值</span><b>${escapeHTML(estimate?.gsz || '-')}</b><small>${escapeHTML(estimate?.gztime || '盘中估值')}</small></div>
-                <div><span>估算涨幅</span><b class="${colorClass(estimate?.gszzl)}">${formatPct(estimate?.gszzl)}</b><small>实时</small></div>
+                <div><span>估算净值</span><b>${escapeHTML(estimateAvailable ? estimate.gsz : '-')}</b><small>${escapeHTML(estimateAvailable ? (estimate.gztime || '盘中估值') : estimateUnavailableText)}</small></div>
+                <div><span>估算涨幅</span><b class="${estimateAvailable ? colorClass(estimate.gszzl) : ''}">${estimateAvailable ? formatPct(estimate.gszzl) : '-'}</b><small>${estimateAvailable ? '盘中估算' : '不可用，不以净值冒充'}</small></div>
                 <div><span>最新日涨幅</span><b class="${colorClass(latest.growth_rate || fund.nav_chg_rate)}">${formatPct(latest.growth_rate || fund.nav_chg_rate)}</b><small>净值</small></div>
                 <div><span>基金类型</span><b>${escapeHTML(fund.type || '-')}</b><small>风险 ${escapeHTML(fund.risk_level || '-')}</small></div>
                 <div><span>基金规模</span><b>${scaleText}</b><small>${escapeHTML(fund.scale_date || '')}</small></div>
@@ -2904,6 +2911,9 @@ const FundModule = {
         const cap = Math.min(this.aiContextLimit || 255000, APP.aiContextLimit || AI_CONTEXT_LIMIT);
         const fund = payload.fund || {};
         const estimate = payload.estimate || {};
+        const estimateAvailable = estimate.estimate_available !== false
+            && estimate.quote_type !== 'latest_nav'
+            && estimate.gsz !== null && estimate.gsz !== undefined && estimate.gsz !== '';
         const stats = payload.stats || {};
         const scale = parseFloat(fund.scale);
         const scaleText = isNaN(scale) ? (fund.scale || '-') : `${(scale / 1e8).toFixed(2)}亿元`;
@@ -2960,9 +2970,11 @@ const FundModule = {
             line('单位净值', fund.nav || estimate.dwjz),
             line('累计净值', fund.acc_nav),
             line('最新日涨幅', pct(fund.nav_chg_rate)),
-            line('估算净值', estimate.gsz),
-            line('估算涨幅', pct(estimate.gszzl)),
-            line('估值时间', estimate.gztime),
+            line('盘中估值是否可用', estimateAvailable ? '是' : '否；返回值仅含带日期的官方净值，不得当作实时估值'),
+            line('估算净值', estimateAvailable ? estimate.gsz : null),
+            line('估算涨幅', estimateAvailable ? pct(estimate.gszzl) : null),
+            line('估值时间', estimateAvailable ? estimate.gztime : null),
+            line('返回口径', estimate.quote_type || (estimateAvailable ? 'intraday_estimate' : 'unknown')),
             line('估值基金名', estimate.name)
         ].join('\n'));
 
@@ -3053,14 +3065,15 @@ const FundModule = {
         ].join('\n'));
 
         add('自选基金估值横向对照', [
-            '代码,名称,净值日期,单位净值,估算净值,估算涨幅,估值时间',
+            '代码,名称,返回口径,净值日期,单位净值,估算净值,估算涨幅,数据时间',
             ...watchEstimates.filter(Boolean).map(item => [
                 item.fundcode || '',
                 item.name || '',
+                item.quote_type || 'intraday_estimate',
                 item.jzrq || '',
                 item.dwjz || '',
-                item.gsz || '',
-                pct(item.gszzl),
+                item.estimate_available === false ? '' : (item.gsz || ''),
+                item.estimate_available === false ? '' : pct(item.gszzl),
                 item.gztime || ''
             ].join(','))
         ].join('\n'));
@@ -6420,13 +6433,16 @@ document.addEventListener('DOMContentLoaded', function() {
     if (window.AppBus) {
         window.AppBus.on('watch-center:navigate', function (ev) {
             if (!ev || !ev.code) return;
-            if (ev.type === 'fund') {
+            if (ev.type === 'fund' && ev.instrumentType !== 'exchange_etf') {
                 switchTab('fund');
                 if (typeof FundModule !== 'undefined' && FundModule.openDetail) {
                     FundModule.openDetail(ev.code, ev.name || ev.code);
                 }
             } else {
-                submitStockQuery(ev.code, { withAI: false });
+                const quoteCode = ev.instrumentType === 'exchange_etf' && window.WatchCenter
+                    ? window.WatchCenter.exchangeQuoteCode(ev.code)
+                    : ev.code;
+                submitStockQuery(quoteCode || ev.code, { withAI: false });
             }
         });
         window.AppBus.on('watch-center:goto-page', function () { switchTab('realtime'); });

@@ -2,7 +2,8 @@
  * watch_center.js — 统一自选中心存储 + 迁移 + 查询 + 管理
  *
  * 存储键 fa_watch_center_v2：schemaVersion / revision / updatedAt / settings / groups / items。
- * 主键 stock:<规范代码> / fund:<6位代码>。
+ * 主键 stock:<规范代码> / fund:<6位代码>。基金项额外记录 instrumentType：
+ * exchange_etf（场内 ETF，走交易所行情）/ otc_fund（场外基金，走估值/净值）。
  *
  * 无损迁移旧三套：
  *   fa_watchlist        -> 股票自选
@@ -65,6 +66,39 @@
   }
 
   function nowIso() { return new Date().toISOString(); }
+
+  function inferInstrumentType(type, code, name, explicit) {
+    if (type === 'stock') return 'stock';
+    if (explicit === 'exchange_etf' || explicit === 'otc_fund') return explicit;
+    const digits = Util.normalizeFundCode(code);
+    const label = String(name || '').toUpperCase().replace(/\s+/g, '');
+    const looksLikeEtf = label.indexOf('ETF') !== -1 && label.indexOf('ETF联接') === -1;
+    const exchangeCode = /^(?:15\d{4}|5\d{5})$/.test(digits);
+    return looksLikeEtf && exchangeCode ? 'exchange_etf' : 'otc_fund';
+  }
+
+  function exchangeQuoteCode(code) {
+    const digits = Util.normalizeFundCode(code);
+    if (/^15\d{4}$/.test(digits)) return 'sz' + digits;
+    if (/^5\d{5}$/.test(digits)) return 'sh' + digits;
+    return '';
+  }
+
+  function isMarketQuoted(item) {
+    return !!item && (item.type === 'stock' || inferInstrumentType(item.type, item.code, item.name, item.instrumentType) === 'exchange_etf');
+  }
+
+  function normalizeInstrumentTypes(target) {
+    let changed = false;
+    (target.items || []).forEach((it) => {
+      const next = inferInstrumentType(it.type, it.code, it.name, it.instrumentType);
+      if (it.instrumentType !== next) {
+        it.instrumentType = next;
+        changed = true;
+      }
+    });
+    return changed;
+  }
 
   /** 空名称或纯代码名称只是占位符，可由搜索/行情返回的正式名称安全回填。 */
   function isPlaceholderName(type, code, name) {
@@ -201,6 +235,7 @@
     return {
       id: type + ':' + code,
       type: type,
+      instrumentType: inferInstrumentType(type, code, name, extra.instrumentType),
       code: code,
       name: name || code,
       groupId: DEFAULT_GROUP_ID,
@@ -241,12 +276,14 @@
 
     if (validState(parsed)) {
       state = parsed;
+      let normalized = normalizeInstrumentTypes(state);
       // 二次补迁移：若旧键存在新项（用户在旧版本又添加过），幂等合并
       if (readRaw(MIGRATED_FLAG) !== '1') {
         const merged = migrateFromLegacy(state);
-        if (merged.changed) persist('migrate-merge');
+        normalized = merged.changed || normalized;
         writeRaw(MIGRATED_FLAG, '1');
       }
+      if (normalized) persist('instrument-normalize');
       return state;
     }
 
@@ -394,6 +431,7 @@
       const resolvedName = usableResolvedName(type, code, entry.name);
       if (!it || !resolvedName || !isPlaceholderName(type, code, it.name)) return;
       it.name = resolvedName;
+      it.instrumentType = inferInstrumentType(type, code, resolvedName);
       it.updatedAt = nowIso();
       changedIds.push(id);
     });
@@ -544,11 +582,11 @@
   }
 
   function exportCsv() {
-    const rows = [['type', 'code', 'name', 'group', 'tags', 'note', 'pinned', 'monitor']];
+    const rows = [['type', 'instrument_type', 'code', 'name', 'group', 'tags', 'note', 'pinned', 'monitor']];
     const groupName = new Map(state.groups.map((g) => [g.id, g.name]));
     state.items.forEach((it) => {
       rows.push([
-        it.type, it.code, it.name, groupName.get(it.groupId) || '',
+        it.type, it.instrumentType || inferInstrumentType(it.type, it.code, it.name), it.code, it.name, groupName.get(it.groupId) || '',
         (it.tags || []).join('|'), (it.note || '').replace(/[\r\n]+/g, ' '),
         it.pinned ? '1' : '0', it.monitor ? '1' : '0',
       ]);
@@ -602,6 +640,7 @@
       const existing = getItem(id);
       if (existing) {
         existing.name = raw.name || existing.name;
+        existing.instrumentType = inferInstrumentType(type, code, existing.name, raw.instrumentType);
         existing.note = String(raw.note || existing.note || '').slice(0, LIMITS.maxNoteLen);
         existing.tags = sanitizeTags((existing.tags || []).concat(raw.tags || []));
         if (raw.monitor && type === 'stock') existing.monitor = true;
@@ -610,7 +649,7 @@
         stats.updated++;
       } else {
         if (state.items.length >= LIMITS.maxItems) { stats.skipped++; stats.reasons.push('超出上限: ' + id); return; }
-        const it = makeItem(type, code, raw.name, { monitor: raw.monitor });
+        const it = makeItem(type, code, raw.name, { monitor: raw.monitor, instrumentType: raw.instrumentType });
         it.note = String(raw.note || '').slice(0, LIMITS.maxNoteLen);
         it.tags = sanitizeTags(raw.tags || []);
         it.pinned = !!raw.pinned;
@@ -660,7 +699,7 @@
       const id = type + ':' + code;
       if (seen.has(id)) return;
       seen.add(id);
-      const it = makeItem(type, code, raw.name, { monitor: raw.monitor });
+      const it = makeItem(type, code, raw.name, { monitor: raw.monitor, instrumentType: raw.instrumentType });
       it.note = String(raw.note || '').slice(0, LIMITS.maxNoteLen);
       it.tags = sanitizeTags(raw.tags || []);
       it.pinned = !!raw.pinned;
@@ -698,6 +737,7 @@
   window.WatchCenter = {
     LIMITS,
     DEFAULT_GROUP_ID,
+    inferInstrumentType, exchangeQuoteCode, isMarketQuoted,
     init,
     getState, getItems, getGroups, getSettings, getItem, count, monitorCount, has, queryView,
     addItem, resolveNames, removeItem, updateItem, togglePin, toggleMonitor,

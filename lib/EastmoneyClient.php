@@ -68,7 +68,7 @@ class EastmoneyClient
         }
 
         $secidStr = implode(',', $secids);
-        $fields = 'f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,f20,f21,f23,f24,f25,f26,f115';
+        $fields = 'f2,f3,f4,f5,f6,f7,f8,f9,f10,f12,f13,f14,f15,f16,f17,f18,f20,f21,f23,f24,f25,f26,f115,f124';
         $path = "/api/qt/ulist.np/get?fltt=2&fields={$fields}&secids={$secidStr}&_=" . (time() * 1000);
 
         $resp = $this->getPush2($path);
@@ -87,11 +87,14 @@ class EastmoneyClient
         $this->breaker->success();
 
         $stocks = [];
+        $latestQuoteTimestamp = 0;
         if (isset($parsed['data']['data']['diff']) && is_array($parsed['data']['data']['diff'])) {
             foreach ($parsed['data']['data']['diff'] as $item) {
                 $market = $item['f13'] ?? 1;
                 $itemCode = (string)($item['f12'] ?? '');
                 $parsedCode = StockCode::parse($itemCode);
+                $quoteTimestamp = is_numeric($item['f124'] ?? null) ? (int)$item['f124'] : 0;
+                if ($quoteTimestamp > $latestQuoteTimestamp) $latestQuoteTimestamp = $quoteTimestamp;
                 $stocks[] = [
                     'code'          => $itemCode,
                     'symbol'        => $parsedCode->isValid() ? $parsedCode->toDisplay() : $itemCode,
@@ -116,15 +119,33 @@ class EastmoneyClient
                     'total_shares'  => $item['f25'] ?? 0,
                     'circ_shares'   => $item['f26'] ?? 0,
                     'pe_ttm'        => $item['f115'] ?? 0,
+                    'quote_time'    => $quoteTimestamp > 0 ? $this->formatShanghaiTimestamp($quoteTimestamp) : '',
                     'source'        => self::SOURCE_NAME,
                 ];
             }
         }
 
+        $latestQuoteAt = $latestQuoteTimestamp > 0 ? $this->formatShanghaiTimestamp($latestQuoteTimestamp) : null;
+        $shanghaiNow = new DateTimeImmutable('now', new DateTimeZone('Asia/Shanghai'));
+        $quoteHasTimestamp = $latestQuoteAt !== null;
+        $quoteIsDated = $quoteHasTimestamp && substr($latestQuoteAt, 0, 10) !== $shanghaiNow->format('Y-m-d');
+        $quoteNeedsWarning = !$quoteHasTimestamp || $quoteIsDated;
         return DataSourceResult::success(self::SOURCE_NAME, 'quote', $stocks, [
             'provider_status' => $resp['http_code'],
             'duration' => $this->http->lastDuration,
+            'data_at' => $latestQuoteAt,
+            'data_kind' => 'exchange_quote',
+            'data_recency' => !$quoteHasTimestamp ? 'unknown' : ($quoteIsDated ? 'dated' : 'intraday'),
+            'non_realtime_count' => $quoteNeedsWarning ? count($stocks) : 0,
+            'non_realtime_label' => $quoteHasTimestamp ? '最近交易所行情' : '时间未知的场内行情',
         ]);
+    }
+
+    private function formatShanghaiTimestamp(int $timestamp): string
+    {
+        return (new DateTimeImmutable('@' . $timestamp))
+            ->setTimezone(new DateTimeZone('Asia/Shanghai'))
+            ->format('Y-m-d H:i:s');
     }
 
     /**

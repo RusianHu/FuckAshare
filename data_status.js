@@ -97,6 +97,7 @@
       staleCount: 0,
       partialCount: 0,
       fallbackCount: 0,
+      nonRealtimeCount: 0,
       errorCount: 0,
       lastUpdatedAt: 0,
       itemCount: 0,
@@ -111,6 +112,7 @@
       else if (ds.freshness === 'cached') agg.cachedCount++;
       if (ds.completeness === 'partial') agg.partialCount++;
       if (ds.route === 'fallback') agg.fallbackCount++;
+      if (typeof ds.non_realtime_count === 'number') agg.nonRealtimeCount += ds.non_realtime_count;
       if (ds.counts && typeof ds.counts.returned === 'number') agg.itemCount += ds.counts.returned;
       if (rec.updatedAt && rec.updatedAt > agg.lastUpdatedAt) agg.lastUpdatedAt = rec.updatedAt;
     });
@@ -120,7 +122,7 @@
     else if (agg.errorCount > 0 && agg.okCount === 0 && agg.cachedCount === 0) agg.severity = 'error';
     else if (agg.errorCount > 0) agg.severity = 'error';
     else if (agg.staleCount > 0) agg.severity = 'warning';
-    else if (agg.partialCount > 0 || agg.fallbackCount > 0) agg.severity = 'warning';
+    else if (agg.partialCount > 0 || agg.fallbackCount > 0 || agg.nonRealtimeCount > 0) agg.severity = 'warning';
     else if (agg.loading > 0) agg.severity = 'loading';
     else if (agg.cachedCount > 0) agg.severity = 'info';
     else agg.severity = 'ok';
@@ -201,8 +203,18 @@
     const parts = [];
     if (agg.staleCount) parts.push('陈旧 ' + agg.staleCount);
     if (agg.partialCount) parts.push('部分缺失 ' + agg.partialCount);
-    if (agg.fallbackCount) parts.push('备用源 ' + agg.fallbackCount);
+    if (agg.nonRealtimeCount) parts.push('非实时数据 ' + agg.nonRealtimeCount + ' 项');
+    if (agg.fallbackCount && !agg.nonRealtimeCount) parts.push('备用源 ' + agg.fallbackCount);
     return parts.length ? parts.join(' · ') : '数据需要注意';
+  }
+
+  function dataAtSummary(meta) {
+    if (meta && meta.data_at) return String(meta.data_at);
+    const byCode = meta && meta.data_at_by_code;
+    if (!byCode || typeof byCode !== 'object') return '—';
+    const rows = Object.keys(byCode).slice(0, 6).map(function (code) { return code + ': ' + byCode[code]; });
+    if (Object.keys(byCode).length > 6) rows.push('…');
+    return rows.length ? rows.join('；') : '—';
   }
 
   function isDrawerOpen() {
@@ -244,7 +256,9 @@
       const counts = ds.counts || {};
       const missing = (counts.missing || []).join('、');
       const cacheAge = rec.meta && rec.meta.cache_age_seconds != null ? (rec.meta.cache_age_seconds + 's') : '—';
-      const dataAt = rec.meta && rec.meta.data_at ? rec.meta.data_at : '—';
+      const dataAt = dataAtSummary(rec.meta);
+      const nonRealtimeCodes = rec.meta && Array.isArray(rec.meta.non_realtime_codes)
+        ? rec.meta.non_realtime_codes.join('、') : '';
       return (
         '<div class="dsd-row" data-severity="' + (ds.severity || (rec.phase === 'error' ? 'error' : 'ok')) + '">' +
           '<div class="dsd-row-head">' +
@@ -256,7 +270,9 @@
             '<span>完成: ' + fmtTime(rec.updatedAt) + '</span>' +
             '<span>数据时间: ' + escapeHtml(dataAt) + '</span>' +
             '<span>缓存: ' + escapeHtml(ds.freshness || '—') + ' (' + cacheAge + ')</span>' +
+            '<span>内容时效: ' + escapeHtml(ds.data_recency || 'unknown') + '</span>' +
             '<span>完整度: ' + escapeHtml(ds.completeness || '—') + '</span>' +
+            (nonRealtimeCodes ? '<span>非实时代码: ' + escapeHtml(nonRealtimeCodes) + '</span>' : '') +
             (missing ? '<span>缺失: ' + escapeHtml(missing) + '</span>' : '') +
           '</div>' +
           (rec.message ? '<div class="dsd-msg">' + escapeHtml(rec.message) + '</div>' : '') +

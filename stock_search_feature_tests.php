@@ -106,7 +106,12 @@ checkStockSearch(strpos($js, 'resolvedStock.name || selectedStockName') !== fals
 checkStockSearch(strpos($js, "this.input.form?.dispatchEvent(new Event('submit'))") !== false, '点击或键盘选中股票候选后立即触发行情查询');
 checkStockSearch(strpos($js, "normalizeCode(quote.symbol || quote.code || '')") !== false, '实时行情卡片优先展示带市场前缀的完整股票代码');
 $wcui = file_get_contents(__DIR__ . '/watch_center_ui.js');
-checkStockSearch(strpos($wcui, "normalizeStockCode(q.symbol || q.code || '')") !== false, '自选中心统一按带市场前缀的完整股票代码回填快照');
+checkStockSearch(
+    strpos($wcui, 'itemByDigits') !== false
+    && strpos($wcui, 'normalizeFundCode(q.code || q.symbol || \'\')') !== false
+    && strpos($wcui, 'quoteCodeForItem(it)') !== false,
+    '自选中心按请求资产映射回填股票/场内 ETF 快照，不依赖上游是否返回市场前缀'
+);
 checkStockSearch(strpos($css, '.stock-search-results[hidden]') !== false && strpos($css, 'max-height: 46vh') !== false, '候选层具备显隐优先级与移动端高度约束');
 
 if (in_array('--live', $argv, true)) {

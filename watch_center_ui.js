@@ -26,7 +26,7 @@
   const PAGE_RENDER_LIMIT = 50;
   const DRAWER_RENDER_LIMIT = 30;
 
-  // 内存价格快照：id -> { price, changePct, name, at, status, dataStatus, valueKind }
+  // 内存价格快照：id -> { price, changePct, name, dataAt, receivedAt, status, dataStatus, valueKind }
   const snapshot = new Map();
 
   // 页面 UI 状态
@@ -74,6 +74,52 @@
     const d = new Date();
     const p = (n) => (n < 10 ? '0' + n : '' + n);
     return p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+  }
+
+  function isMarketItem(it) {
+    return WC.isMarketQuoted ? WC.isMarketQuoted(it) : it && it.type === 'stock';
+  }
+  function isOtcFund(it) { return !!it && it.type === 'fund' && !isMarketItem(it); }
+  function quoteCodeForItem(it) {
+    if (!it) return '';
+    if (it.type === 'stock') return Util.normalizeStockCode(it.code);
+    return WC.exchangeQuoteCode ? WC.exchangeQuoteCode(it.code) : '';
+  }
+  function valueLabel(s, it) {
+    if (s && s.valueKind === 'nav') return '净值';
+    if (s && s.valueKind === 'estimate') return '估值';
+    if (it && it.type === 'fund' && !isMarketItem(it)) return '估值/净值';
+    return '现价';
+  }
+  function dataTimeText(s) {
+    const raw = String((s && s.dataAt) || '').trim();
+    if (!raw) return '时间未知';
+    const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T\s]+(\d{2}):(\d{2})(?::(\d{2}))?)?/);
+    if (!m) return raw;
+    const d = new Date();
+    const p = (n) => (n < 10 ? '0' + n : '' + n);
+    const today = d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+    const date = m[1] + '-' + m[2] + '-' + m[3];
+    return date === today && m[4] ? (m[4] + ':' + m[5]) : (m[2] + '-' + m[3]);
+  }
+  function dataTimeDisplay(s) {
+    if (!s || !s.dataAt) return '时间未知';
+    return dataTimeText(s) + ' ' + valueLabel(s);
+  }
+  function dataTimeTitle(s) {
+    if (!s) return '';
+    const parts = [];
+    if (s.dataAt) parts.push('真实数据时间：' + s.dataAt);
+    else parts.push('上游未提供真实数据时间');
+    if (s.receivedAt) parts.push('本页接收时间：' + s.receivedAt);
+    return parts.join('；');
+  }
+  function changeHtml(s, failed) {
+    if (failed) return '—';
+    const pct = fmtPct(s && s.changePct);
+    return s && s.valueKind === 'nav'
+      ? '<span class="wc-change-label">日涨幅</span><span>' + pct + '</span>'
+      : '<span>' + pct + '</span>';
   }
 
   function showToast(message, kind) {
@@ -282,7 +328,7 @@
     renderedIds = limited.map((it) => it.id);
     updateBulkBar();
     const groupName = new Map(WC.getGroups().map((g) => [g.id, g.name]));
-    el.innerHTML = '<div class="wc-column-head" aria-hidden="true"><span></span><span>资产</span><span>最新数据</span><span>涨跌</span><span>分组与标签</span><span>监控状态</span><span>更新时间</span><span>操作</span></div>'
+    el.innerHTML = '<div class="wc-column-head" aria-hidden="true"><span></span><span>资产</span><span>最新数据</span><span>涨跌</span><span>分组与标签</span><span>刷新方式</span><span>数据时间</span><span>操作</span></div>'
       + limited.map((it) => rowHtml(it, groupName)).join('')
       + (list.length > PAGE_RENDER_LIMIT
           ? '<div class="wc-truncated">仅显示前 ' + PAGE_RENDER_LIMIT + ' 项（共 ' + list.length + '），请用搜索或分组缩小范围</div>'
@@ -296,12 +342,12 @@
   function rowHtml(it, groupName) {
     const s = snapshot.get(it.id) || {};
     const priceVal = it.type === 'fund' ? s.price : s.price;
-    const priceLabel = it.type === 'fund' ? (s.valueKind === 'nav' ? '净值' : '估值') : '现价';
+    const priceLabel = valueLabel(s, it);
     const selected = ui.selection.has(it.id);
     const failed = s.status === 'error';
     const priceStr = failed ? '<span class="wc-cell-fail" title="' + esc(s.message || '获取失败') + '">失败</span>'
       : (priceVal == null ? '—' : fmtNum(priceVal, it.type === 'fund' ? 4 : 2));
-    const pctStr = failed ? '—' : fmtPct(s.changePct);
+    const pctStr = changeHtml(s, failed);
     const pcls = pctClass(s.changePct);
     const tags = (it.tags || []).map((t) => '<span class="wc-tag">' + esc(t) + '</span>').join('');
     return (
@@ -310,15 +356,17 @@
         '<button class="wc-pin' + (it.pinned ? ' on' : '') + '" title="置顶" aria-label="置顶">★</button>' +
         '<div class="wc-asset" role="button" tabindex="0">' +
           '<span class="wc-name">' + esc(it.name || it.code) + '</span>' +
-          '<span class="wc-code">' + esc(it.type === 'stock' ? it.code : it.code) + '</span>' +
+          '<span class="wc-code">' + esc(it.code) + (it.instrumentType === 'exchange_etf' ? ' · 场内ETF' : '') + '</span>' +
         '</div>' +
         '<div class="wc-price"><span class="wc-price-label">' + priceLabel + '</span>' + priceStr + '</div>' +
         '<div class="wc-change ' + pcls + '">' + pctStr + '</div>' +
         '<div class="wc-group-tag">' + esc(groupName.get(it.groupId) || '默认分组') + tags + '</div>' +
         (it.type === 'stock'
           ? '<button class="wc-monitor' + (it.monitor ? ' on' : '') + '" type="button" aria-pressed="' + (it.monitor ? 'true' : 'false') + '" title="' + (it.monitor ? '关闭自动刷新' : '开启每30秒自动刷新') + '" aria-label="' + (it.monitor ? '关闭' : '开启') + esc(it.name || it.code) + '自动刷新"><span class="wc-monitor-dot" aria-hidden="true"></span>' + (it.monitor ? '自动刷新中' : '开启监控') + '</button>'
-          : '<span class="wc-monitor-na" title="基金在页面可见时每60秒刷新">普通刷新</span>') +
-        '<div class="wc-updated">' + (s.at ? s.at : '—') + '</div>' +
+          : (isMarketItem(it)
+            ? '<span class="wc-monitor-na" title="场内 ETF 使用交易所行情，页面可见时每30秒刷新">场内行情</span>'
+            : '<span class="wc-monitor-na" title="场外基金在页面可见时每60秒刷新估值；无估值时展示带日期的官方净值">估值/净值</span>')) +
+        '<div class="wc-updated" title="' + esc(dataTimeTitle(s)) + '">' + esc(dataTimeDisplay(s)) + '</div>' +
         '<div class="wc-ops">' +
           '<button class="wc-op wc-op-edit" title="编辑">编辑</button>' +
           '<button class="wc-op wc-op-remove" title="移除">移除</button>' +
@@ -340,7 +388,7 @@
       });
       $('.wc-pin', row).addEventListener('click', (e) => { e.stopPropagation(); WC.togglePin(id); });
       const asset = $('.wc-asset', row);
-      const nav = () => Bus.emit('watch-center:navigate', { type: it.type, code: it.code, name: it.name });
+      const nav = () => Bus.emit('watch-center:navigate', { type: it.type, instrumentType: it.instrumentType, code: it.code, name: it.name });
       asset.addEventListener('click', nav);
       asset.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); nav(); } });
       const mon = $('.wc-monitor', row);
@@ -557,12 +605,18 @@
           $('#wca-results', el).innerHTML = r.data.map((row) => {
             const code = addType === 'stock' ? (row.symbol || row.code) : row.code;
             const name = row.name || code;
-            return '<button class="wc-add-result" data-code="' + esc(code) + '" data-name="' + esc(name) + '">'
-              + '<span>' + esc(name) + '</span><span class="wc-add-code">' + esc(code) + '</span></button>';
+            const instrumentType = WC.inferInstrumentType
+              ? WC.inferInstrumentType(addType, code, name, row.instrument_type)
+              : (addType === 'stock' ? 'stock' : 'otc_fund');
+            const kindLabel = instrumentType === 'exchange_etf' ? '场内ETF · 交易行情' : (addType === 'fund' ? '场外基金 · 估值/净值' : '股票 · 交易行情');
+            return '<button class="wc-add-result" data-code="' + esc(code) + '" data-name="' + esc(name) + '" data-instrument-type="' + esc(instrumentType) + '">'
+              + '<span>' + esc(name) + '<small class="wc-add-kind">' + esc(kindLabel) + '</small></span><span class="wc-add-code">' + esc(code) + '</span></button>';
           }).join('');
           $all('.wc-add-result', el).forEach((btn) => btn.addEventListener('click', () => {
             const assetName = btn.getAttribute('data-name');
-            const res = WC.addItem(addType, btn.getAttribute('data-code'), assetName);
+            const res = WC.addItem(addType, btn.getAttribute('data-code'), assetName, {
+              instrumentType: btn.getAttribute('data-instrument-type') || undefined,
+            });
             if (res.ok) {
               closeDialog();
               showToast(res.existed ? ('「' + assetName + '」已在自选中') : ('已添加「' + assetName + '」'), res.existed ? 'warning' : 'success');
@@ -630,8 +684,8 @@
           '<span class="wd-item-name">' + esc(it.name || it.code) + (it.monitor ? ' <span class="wd-dot" title="监控中">●</span>' : '') + '</span>' +
           '<span class="wd-item-code">' + esc(it.code) + '</span>' +
         '</div>' +
-        '<div class="wd-item-quote"><span class="wd-item-price">' + price + '</span>' +
-          '<span class="wd-item-pct ' + pctClass(s.changePct) + '">' + pct + '</span></div>' +
+        '<div class="wd-item-quote" title="' + esc(dataTimeTitle(s)) + '"><span class="wd-item-price"><small>' + esc(valueLabel(s, it)) + '</small> ' + price + '</span>' +
+          '<span class="wd-item-pct ' + pctClass(s.changePct) + '">' + (s.valueKind === 'nav' ? '日 ' : '') + pct + ' · ' + esc(dataTimeText(s)) + '</span></div>' +
         '<button class="wd-item-remove" aria-label="移除">✕</button>' +
       '</div>';
     }).join('') + (list.length > DRAWER_RENDER_LIMIT ? '<div class="wc-truncated">仅显示前 ' + DRAWER_RENDER_LIMIT + ' 项，完整管理请进入自选中心</div>' : '');
@@ -641,7 +695,7 @@
       const it = WC.getItem(id);
       if (!it) return;
       const main = $('.wd-item-main', row);
-      const nav = () => { Bus.emit('watch-center:navigate', { type: it.type, code: it.code, name: it.name }); closeDrawer(); };
+      const nav = () => { Bus.emit('watch-center:navigate', { type: it.type, instrumentType: it.instrumentType, code: it.code, name: it.name }); closeDrawer(); };
       main.addEventListener('click', nav);
       main.addEventListener('keydown', (e) => { if (e.key === 'Enter') nav(); });
       $('.wd-item-remove', row).addEventListener('click', (e) => { e.stopPropagation(); WC.removeItem(id); });
@@ -660,8 +714,8 @@
 
   /** 刷新给定项目的行情/估值（成功即更新，失败保留旧值并标失败） */
   function refreshItems(items) {
-    const stocks = items.filter((it) => it.type === 'stock');
-    const funds = items.filter((it) => it.type === 'fund');
+    const stocks = items.filter(isMarketItem);
+    const funds = items.filter(isOtcFund);
     if (stocks.length) refreshStockBatches(stocks);
     if (funds.length) refreshFundBatches(funds);
   }
@@ -674,56 +728,61 @@
   let stockConcurrency = 0;
   const stockQueue = [];
   function refreshStockBatches(stocks) {
-    const batches = chunk(stocks.map((it) => it.code), STOCK_BATCH);
-    batches.forEach((codes) => stockQueue.push(codes));
+    const batches = chunk(stocks.filter((it) => quoteCodeForItem(it)), STOCK_BATCH);
+    batches.forEach((items) => stockQueue.push(items));
     pumpStockQueue();
   }
   function pumpStockQueue() {
     while (stockConcurrency < MAX_CONCURRENCY && stockQueue.length) {
-      const codes = stockQueue.shift();
+      const items = stockQueue.shift();
+      const codes = items.map(quoteCodeForItem);
       stockConcurrency++;
       const url = 'stock_quote_api.php?codes=' + encodeURIComponent(codes.join(','));
       Api.request(url, {
         scope: 'watch:stock-quote',
-        label: '自选股票行情',
+        label: '自选场内行情',
         page: currentScopePage(),
         dedupeKey: 'watch-quote:' + codes.join(','),
       }).then((r) => {
-        applyStockResult(codes, r);
+        applyStockResult(items, r);
       }).finally(() => {
         stockConcurrency--;
+        lastStockRefreshAt = Date.now();
         pumpStockQueue();
       });
     }
-    lastStockRefreshAt = Date.now();
   }
 
-  function applyStockResult(codes, r) {
+  function applyStockResult(items, r) {
     const returned = new Set();
     const resolvedNames = [];
+    const itemByDigits = new Map();
+    items.forEach((it) => {
+      const digits = Util.normalizeFundCode(quoteCodeForItem(it));
+      if (digits) itemByDigits.set(digits, it);
+    });
     if (r.ok && Array.isArray(r.data)) {
       r.data.forEach((q) => {
-        const code = Util.normalizeStockCode(q.symbol || q.code || '');
-        if (!code) return;
-        returned.add(code);
-        const id = 'stock:' + code;
-        snapshot.set(id, {
+        const digits = Util.normalizeFundCode(q.code || q.symbol || '');
+        const it = itemByDigits.get(digits);
+        if (!it) return;
+        returned.add(it.id);
+        snapshot.set(it.id, {
           price: q.price, changePct: q.change_pct, name: q.name,
-          at: nowTimeStr(), status: 'ok', dataStatus: r.dataStatus,
+          dataAt: q.quote_time || (r.meta && r.meta.data_at) || '',
+          receivedAt: nowTimeStr(), receivedAtMs: Date.now(),
+          status: 'ok', dataStatus: r.dataStatus, valueKind: 'market',
         });
-        resolvedNames.push({ type: 'stock', code, name: q.name });
+        resolvedNames.push({ type: it.type, code: it.code, name: q.name });
       });
     }
     // 未返回的标失败（保留旧价，仅置状态）
-    codes.forEach((c) => {
-      const code = Util.normalizeStockCode(c);
-      const id = 'stock:' + code;
-      if (!returned.has(code)) {
-        const prev = snapshot.get(id) || {};
-        snapshot.set(id, Object.assign({}, prev, {
+    items.forEach((it) => {
+      if (!returned.has(it.id)) {
+        const prev = snapshot.get(it.id) || {};
+        snapshot.set(it.id, Object.assign({}, prev, {
           status: r.ok ? 'error' : 'error',
           message: r.message || '未返回',
-          at: prev.at || null,
         }));
       }
     });
@@ -752,10 +811,10 @@
         applyFundResult(codes, r);
       }).finally(() => {
         fundConcurrency--;
+        lastFundRefreshAt = Date.now();
         pumpFundQueue();
       });
     }
-    lastFundRefreshAt = Date.now();
   }
 
   function applyFundResult(codes, r) {
@@ -772,10 +831,13 @@
       if (!code) return;
       returned.add(code);
       const id = 'fund:' + code;
+      const valueKind = (f.estimate_available === false || f.quote_type === 'latest_nav') ? 'nav' : 'estimate';
+      const dataAtByCode = r.meta && r.meta.data_at_by_code ? r.meta.data_at_by_code : {};
       snapshot.set(id, {
         price: f.gsz != null ? f.gsz : f.dwjz, changePct: f.gszzl, name: f.name,
-        at: nowTimeStr(), status: 'ok', dataStatus: r.dataStatus,
-        valueKind: (f.estimate_available === false || f.quote_type === 'latest_nav') ? 'nav' : 'estimate',
+        dataAt: f.gztime || f.jzrq || dataAtByCode[code] || '',
+        receivedAt: nowTimeStr(), receivedAtMs: Date.now(),
+        status: 'ok', dataStatus: r.dataStatus, valueKind,
       });
       resolvedNames.push({ type: 'fund', code, name: f.name });
     });
@@ -784,7 +846,7 @@
       const id = 'fund:' + code;
       if (!returned.has(code)) {
         const prev = snapshot.get(id) || {};
-        snapshot.set(id, Object.assign({}, prev, { status: 'error', message: r.message || '未返回', at: prev.at || null }));
+        snapshot.set(id, Object.assign({}, prev, { status: 'error', message: r.message || '未返回' }));
       }
     });
     WC.resolveNames(resolvedNames);
@@ -809,15 +871,18 @@
       const changeEl = $('.wc-change', row);
       const upd = $('.wc-updated', row);
       if (priceEl) {
-        const label = it.type === 'fund' ? (s.valueKind === 'nav' ? '净值' : '估值') : '现价';
+        const label = valueLabel(s, it);
         priceEl.innerHTML = '<span class="wc-price-label">' + label + '</span>' +
           (failed ? '<span class="wc-cell-fail">失败</span>' : (s.price == null ? '—' : fmtNum(s.price, it.type === 'fund' ? 4 : 2)));
       }
       if (changeEl) {
         changeEl.className = 'wc-change ' + pctClass(s.changePct);
-        changeEl.textContent = failed ? '—' : fmtPct(s.changePct);
+        changeEl.innerHTML = changeHtml(s, failed);
       }
-      if (upd && s.at) upd.textContent = s.at;
+      if (upd) {
+        upd.textContent = dataTimeDisplay(s);
+        upd.title = dataTimeTitle(s);
+      }
     });
   }
 
@@ -841,12 +906,13 @@
         if (monitors.length) refreshItems(monitors);
         return;
       }
-      refreshCurrentScope();
+      const marketItems = currentScopeItems().filter(isMarketItem);
+      if (marketItems.length) refreshStockBatches(marketItems);
     }, stockMs);
     fundTimer = setInterval(() => {
       if (!Util.isPageVisible()) return;
       if (!isPageActive() && !drawerUi.open) return;
-      const funds = currentScopeItems().filter((it) => it.type === 'fund');
+      const funds = currentScopeItems().filter(isOtcFund);
       if (funds.length) refreshFundBatches(funds);
     }, fundMs);
   }
@@ -914,8 +980,8 @@
       const stockMs = Math.max(10, Number(settings.stockRefreshSeconds) || 30) * 1000;
       const fundMs = Math.max(30, Number(settings.fundRefreshSeconds) || 60) * 1000;
       const scope = currentScopeItems();
-      const stocks = scope.filter((it) => it.type === 'stock');
-      const funds = scope.filter((it) => it.type === 'fund');
+      const stocks = scope.filter(isMarketItem);
+      const funds = scope.filter(isOtcFund);
       if (stocks.length && now - lastStockRefreshAt >= stockMs) refreshStockBatches(stocks);
       if (funds.length && now - lastFundRefreshAt >= fundMs) refreshFundBatches(funds);
     });

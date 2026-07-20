@@ -223,11 +223,13 @@
       else if (meta.partial) completeness = 'partial';
 
       let severity = 'ok';
+      const dataRecency = String(meta.data_recency || 'unknown');
+      const nonRealtimeCount = Math.max(0, Number(meta.non_realtime_count) || 0);
       if (route === 'failed') severity = 'error';
-      else if (freshness === 'stale' || completeness === 'partial') severity = 'warning';
+      else if (freshness === 'stale' || completeness === 'partial' || nonRealtimeCount > 0 || dataRecency === 'dated' || dataRecency === 'mixed') severity = 'warning';
       else if (route === 'fallback' || freshness === 'cached') severity = 'info';
 
-      return { severity, freshness, completeness, route, warnings: [] };
+      return { severity, freshness, completeness, route, data_recency: dataRecency, non_realtime_count: nonRealtimeCount, warnings: [] };
     }
 
     /**

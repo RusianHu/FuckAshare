@@ -130,7 +130,16 @@ class MarketDataService
             if ($fallback && count($codeList) === 1) {
                 $xqResult = $this->xueqiu()->quote($codeList[0], $raw);
                 if ($xqResult->hasData()) {
-                    $fallbackResult = DataSourceResult::fallback('xueqiu', 'quote', [$xqResult->data], 'eastmoney', $emResult->errorMessage ?? '东方财富请求失败');
+                    $fallbackMeta = $xqResult->meta;
+                    $fallbackMeta['data_kind'] = $fallbackMeta['data_kind'] ?? 'exchange_quote';
+                    $fallbackResult = DataSourceResult::fallback(
+                        'xueqiu',
+                        'quote',
+                        [$xqResult->data],
+                        'eastmoney',
+                        $emResult->errorMessage ?? '东方财富请求失败',
+                        $fallbackMeta
+                    );
                     $this->annotateQuoteCounts($fallbackResult, $codeList, $raw);
                     return $fallbackResult;
                 }

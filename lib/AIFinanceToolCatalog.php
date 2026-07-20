@@ -222,7 +222,7 @@ class AIFinanceToolCatalog
             ),
             'fa_get_fund_estimate' => AIToolSchema::tool(
                 'fa_get_fund_estimate',
-                'Get real-time estimate for one or more funds.',
+                'Get intraday fund estimates when available. Always inspect quote_type and estimate_available: latest_nav is a dated official NAV fallback, not a real-time estimate or exchange price. For exchange-traded ETF market price, use fa_get_stock_quote instead.',
                 ['codes' => ['type' => 'array', 'items' => $fundCode, 'minItems' => 1, 'maxItems' => 20, 'description' => 'Fund codes.']]
             ),
             'fa_get_fund_history' => AIToolSchema::tool(
